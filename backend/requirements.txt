@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+alembic
+psycopg2-binary
+black
+pytest
+pytest-cov
+httpx
+python-multipart
+aiofiles
+requests
+requests-toolbelt
+sqlalchemy
+asyncpg

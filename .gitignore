@@ -1,0 +1,35 @@
+# Python
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.pytest_cache/
+
+# Node/JS
+**/node_modules/
+**/dist/
+**/build/
+
+# OS/IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Test/Export data
+infra/test-data/
+*.log
+
+# Mattermost plugin build artifacts
+infra/plugin/build/
+infra/plugin/webapp/node_modules/
+infra/plugin/webapp/vendor/
+infra/plugin/webapp/.gitignore
+infra/plugin/webapp/.eslintignore
+
+# Temp files
+*.tmp
+*.bak
+*.orig
+
+# GitHub Actions (если не нужны в репо)
+# .github/

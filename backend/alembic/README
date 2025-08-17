@@ -1,0 +1,7 @@
+Generic single-database configuration.
+
+# Особенности конфигурации Alembic
+- script_location теперь относительный: backend/alembic
+- alembic.ini должен быть в корне проекта
+- Миграции можно запускать как нативно, так и в Docker:
+  alembic -c alembic.ini upgrade head

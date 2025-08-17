@@ -1,0 +1,59 @@
+services:
+  db:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_DB: slack-mm
+      POSTGRES_USER: slack-mm
+      POSTGRES_PASSWORD: slack-mm
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U slack-mm"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      DATABASE_URL: postgresql://slack-mm:slack-mm@db:5432/slack-mm
+      MM_TEAM: ${MM_TEAM}
+      EXPORT_WORKERS: 5
+      MM_URL: ${MM_URL}
+      MM_TOKEN: ${MM_TOKEN}
+      SLACK_VERIFICATION_TOKEN: ${SLACK_VERIFICATION_TOKEN}
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../backend:/app
+      - ../infra:/infra
+      - ../alembic.ini:/alembic.ini
+    restart: always
+    env_file:
+      - ../.env
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    command: ["npm", "run", "build"]
+    ports:
+      - "80:80"
+    volumes:
+      - ../frontend:/app
+    depends_on:
+      - backend
+    restart: always
+
+volumes:
+  db_data: 
