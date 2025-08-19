@@ -59,6 +59,7 @@ services:
       - ../alembic.ini:/alembic.ini
       - ../backend/app:/app/app
       - ../backend/alembic:/app/alembic
+      - ../infra/plugin:/app/infra/plugin:ro
     restart: unless-stopped
 
   frontend:

@@ -11,6 +11,43 @@ def calc_auth_data(username):
     return str(h % 100000)
 
 class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
+    async def _get_mm_team_id(self):
+        """Resolve Mattermost team ID from env or via API."""
+        import os
+        team_id = os.environ.get("MM_TEAM_ID")
+        if team_id:
+            return team_id
+        team_name = os.environ.get("MM_TEAM", "test")
+        try:
+            resp = await self.mm_api_get(f"/api/v4/teams/name/{team_name}")
+            if resp.status_code == 200:
+                data = resp.json()
+                tid = data.get("id")
+                if tid:
+                    return tid
+        except Exception as e:
+            backend_logger.error(f"Ошибка при получении team id: {e}")
+        # Fallback (dev default)
+        return "b7u9rycm43nip86mdiuqsxdcbe"
+
+    async def _ensure_user_in_team(self, mm_user_id: str):
+        """Ensure the given user is a member of the configured team."""
+        team_id = await self._get_mm_team_id()
+        payload = {"team_id": team_id, "user_id": mm_user_id}
+        try:
+            resp = await self.mm_api_post(f"/api/v4/teams/{team_id}/members", payload)
+            if resp.status_code not in (200, 201):
+                # If already a member, server may return an error; log and continue
+                try:
+                    data = resp.json()
+                    backend_logger.debug(f"Добавление пользователя {mm_user_id} в команду {team_id}: {resp.status_code} {data}")
+                except Exception:
+                    backend_logger.debug(f"Добавление пользователя {mm_user_id} в команду {team_id}: {resp.status_code} {resp.text}")
+            else:
+                backend_logger.debug(f"Пользователь {mm_user_id} добавлен в команду {team_id}")
+        except Exception as e:
+            backend_logger.error(f"Ошибка добавления пользователя {mm_user_id} в команду: {e}")
+
     def _get_avatar_url(self, raw_data):
         profile = (raw_data or {}).get("profile") or {}
         # Предпочтение: image_original > image_1024 > image_512 > ...
@@ -76,6 +113,7 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 self.entity.mattermost_id = mm_id
                 await self.set_status("success")
                 backend_logger.debug(f"Пользователь {self.entity.slack_id} экспортирован в Mattermost")
+                # Ручная политика: НЕ добавляем пользователя в команду автоматически
                 # --- Загрузка аватарки ---
                 avatar_url = self._get_avatar_url(self.entity.raw_data)
                 if avatar_url:
@@ -91,6 +129,7 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     self.entity.mattermost_id = mm_id
                     await self.set_status("success")
                     backend_logger.debug(f"Пользователь {self.entity.slack_id} экспортирован в Mattermost")
+                    # Ручная политика: НЕ добавляем пользователя в команду автоматически
                     # --- Загрузка аватарки ---
                     avatar_url = self._get_avatar_url(self.entity.raw_data)
                     if avatar_url:
@@ -104,6 +143,7 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     self.entity.mattermost_id = mm_id
                     await self.set_status("success")
                     backend_logger.debug(f"Пользователь {self.entity.slack_id} экспортирован в Mattermost")
+                    # Ручная политика: НЕ добавляем пользователя в команду автоматически
                     # --- Загрузка аватарки ---
                     avatar_url = self._get_avatar_url(self.entity.raw_data)
                     if avatar_url:

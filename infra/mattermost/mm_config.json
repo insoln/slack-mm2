@@ -622,6 +622,9 @@
             "mattermost-ai": {
                 "Enable": false
             },
+            "mm-importer": {
+                "Enable": true
+            },
             "playbooks": {
                 "Enable": false
             }

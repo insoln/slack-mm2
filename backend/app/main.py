@@ -1,4 +1,5 @@
 import subprocess
+from pathlib import Path
 import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
@@ -10,6 +11,8 @@ import tempfile
 from app.logging_config import backend_logger
 from app.api.upload import router as upload_router
 from app.api.export import router as export_router
+from app.api.plugin import router as plugin_router
+from app.api import plugin as plugin_api
 
 BACKEND_HOST = os.getenv("BACKEND_HOST", "localhost")
 BACKEND_PORT = int(os.getenv("BACKEND_PORT", "8000"))
@@ -21,6 +24,27 @@ async def lifespan(app: FastAPI):
     if db_url:
         subprocess.run(["alembic", "-c", "/alembic.ini", "upgrade", "head"], check=True)
     backend_logger.info(f"Backend available at: http://{BACKEND_HOST}:{BACKEND_PORT}")
+    # Auto-ensure Mattermost importer plugin on startup (best-effort)
+    try:
+        status = await plugin_api._compute_status()
+        if (not status.get("installed")) or status.get("needs_update") or (not status.get("enabled")):
+            backend_logger.info("Ensuring Mattermost importer plugin at startup…")
+            # Try deploy if missing/outdated
+            if (not status.get("installed")) or status.get("needs_update"):
+                bundle_path = status.get("bundle_path")
+                if not status.get("bundle_exists") or not bundle_path:
+                    # This will attempt a build if bundle missing
+                    await plugin_api.plugin_deploy()
+                else:
+                    ok, err = await plugin_api._upload_bundle(Path(bundle_path))
+                    if not ok:
+                        backend_logger.error(f"Plugin upload failed: {err}")
+            # Enable if needed
+            final = await plugin_api._compute_status()
+            if not final.get("enabled"):
+                await plugin_api.plugin_enable()
+    except Exception as e:
+        backend_logger.error(f"Auto-ensure plugin failed: {e}")
     yield
 
 
@@ -36,6 +60,7 @@ app.add_middleware(
 
 app.include_router(upload_router)
 app.include_router(export_router)
+app.include_router(plugin_router)
 
 
 @app.get("/healthcheck")

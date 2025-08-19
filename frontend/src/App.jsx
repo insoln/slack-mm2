@@ -10,6 +10,7 @@ function App() {
   const [uploadProgress, setUploadProgress] = useState(null);
   const [exportStatus, setExportStatus] = useState(null);
   const [exportError, setExportError] = useState(null);
+  const [plugin, setPlugin] = useState({loading: false, data: null, error: null});
 
   useEffect(() => {
     fetch('http://localhost:8000/healthcheck')
@@ -19,6 +20,23 @@ function App() {
       })
       .then((data) => setStatus(data.status))
       .catch((err) => setError(err.message));
+  }, []);
+
+  const refreshPluginStatus = async () => {
+    setPlugin((s) => ({...s, loading: true, error: null}));
+    try {
+      const res = await fetch('http://localhost:8000/plugin/status');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to get plugin status');
+      setPlugin({loading: false, data, error: null});
+    } catch (e) {
+      setPlugin({loading: false, data: null, error: e.message});
+    }
+  };
+
+  useEffect(() => {
+    // initial plugin status
+    refreshPluginStatus();
   }, []);
 
   const handleFileChange = (e) => {
@@ -88,7 +106,42 @@ function App() {
         setExportError(data.error || 'Ошибка запуска экспорта');
       }
     } catch (err) {
-      setExportError('Ошибка сети');
+      setExportError(err?.message || 'Ошибка сети');
+    }
+  };
+
+  const handleDeployPlugin = async () => {
+    try {
+      const res = await fetch('http://localhost:8000/plugin/deploy', {method: 'POST'});
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Deploy failed');
+      await refreshPluginStatus();
+    } catch (e) {
+      setPlugin((s) => ({...s, error: e.message}));
+    }
+  };
+
+  const handleEnablePlugin = async () => {
+    try {
+      const res = await fetch('http://localhost:8000/plugin/enable', {method: 'POST'});
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Enable failed');
+      await refreshPluginStatus();
+    } catch (e) {
+      setPlugin((s) => ({...s, error: e.message}));
+    }
+  };
+
+  const handleEnsurePlugin = async () => {
+    setPlugin((s) => ({...s, loading: true, error: null}));
+    try {
+      const res = await fetch('http://localhost:8000/plugin/ensure', {method: 'POST'});
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Ensure failed');
+    } catch (e) {
+      setPlugin((s) => ({...s, error: e.message}));
+    } finally {
+      await refreshPluginStatus();
     }
   };
 
@@ -120,6 +173,28 @@ function App() {
         {uploadError && (
           <div style={{color: 'red', marginTop: 8}}>
             Ошибка загрузки: {uploadError}
+          </div>
+        )}
+      </div>
+      <div style={{marginTop: 24}}>
+        <h2>Статус плагина MM-Importer</h2>
+        <div style={{marginBottom: 8}}>
+          <button onClick={refreshPluginStatus} disabled={plugin.loading}>Проверить статус</button>
+          <button onClick={handleDeployPlugin} style={{marginLeft: 8}} disabled={plugin.loading}>Залить/обновить</button>
+          <button onClick={handleEnablePlugin} style={{marginLeft: 8}} disabled={plugin.loading}>Включить</button>
+          <button onClick={handleEnsurePlugin} style={{marginLeft: 8}} disabled={plugin.loading}>Автоустановка</button>
+        </div>
+        {plugin.loading && <div>Загрузка статуса…</div>}
+        {plugin.error && <div style={{color:'red'}}>Ошибка: {plugin.error}</div>}
+        {plugin.data && (
+          <div style={{fontSize: 14}}>
+            <div>Plugin ID: <b>{plugin.data.plugin_id}</b></div>
+            <div>Ожидаемая версия: <b>{plugin.data.expected_version || 'n/a'}</b></div>
+            <div>Установлен: <b>{plugin.data.installed ? 'да' : 'нет'}</b></div>
+            <div>Включен: <b style={{color: plugin.data.enabled ? 'green' : 'orange'}}>{plugin.data.enabled ? 'да' : 'нет'}</b></div>
+            <div>Текущая версия: <b>{plugin.data.installed_version || 'n/a'}</b></div>
+            <div>Нужен апдейт: <b style={{color: plugin.data.needs_update ? 'orange' : undefined}}>{plugin.data.needs_update ? 'да' : 'нет'}</b></div>
+            <div>Локальный bundle: <b style={{color: plugin.data.bundle_exists ? 'green' : 'red'}}>{plugin.data.bundle_exists ? 'есть' : 'нет'}</b></div>
           </div>
         )}
       </div>

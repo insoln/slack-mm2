@@ -61,6 +61,8 @@ async def export_worker(queue, mm_user_id):
     while True:
         item = await queue.get()
         if item is None:
+            # Mark sentinel as done to keep queue counters consistent
+            queue.task_done()
             break
         entity, exporter_cls = item
         try:
@@ -88,7 +90,9 @@ async def orchestrate_mm_export():
         backend_logger.info(f"Экспорт сущностей типа {entity_type}")
         entities = await get_entities_to_export(entity_type)
         for entity in entities:
+            backend_logger.debug(f"[EXPORT] enqueue {entity_type} {entity.slack_id}")
             await queue.put((entity, exporter_cls))
+        backend_logger.debug(f"[EXPORT] starting {workers_count} workers for {entity_type}")
         workers = [asyncio.create_task(export_worker(queue, mm_user_id)) for _ in range(workers_count)]
         await queue.join()
         for _ in workers:

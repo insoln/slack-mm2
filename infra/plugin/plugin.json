@@ -2,7 +2,7 @@
     "id": "mm-importer",
     "name": "MM Importer",
     "description": "Import messages and metadata from external sources as any user.",
-    "version": "0.2.0",
+    "version": "0.2.2",
     "min_server_version": "6.0.0",
     "server": {
         "executables": {
@@ -12,9 +12,7 @@
     "homepage_url": "https://github.com/mattermost/mattermost-plugin-starter-template",
     "support_url": "https://github.com/mattermost/mattermost-plugin-starter-template/issues",
     "icon_path": "assets/starter-template-icon.svg",
-    "webapp": {
-        "bundle_path": "webapp/dist/main.js"
-    },
+    
     "settings_schema": {
         "header": "",
         "footer": "",

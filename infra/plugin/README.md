@@ -4,6 +4,81 @@ A Mattermost plugin for importing messages and metadata from external sources as
 
 ## Features
 
+- Import messages as any user
+- Preserve threading via `root_id`
+- Custom timestamps for historical data
+- Create/get channels with normalized names
+- Add channel members in bulk
+- Create/resolve DM and Group DM channels
+- Import reactions
+
+## API Endpoints (implemented here)
+
+- POST `/plugins/mm-importer/api/v1/import` — создать пост от имени любого пользователя
+- POST `/plugins/mm-importer/api/v1/reaction` — добавить реакцию к посту
+- POST `/plugins/mm-importer/api/v1/channel` — создать/получить канал (нормализация имени)
+- POST `/plugins/mm-importer/api/v1/channel/members` — добавить участников (bulk)
+- POST `/plugins/mm-importer/api/v1/channel/archive` — архивировать канал
+- POST `/plugins/mm-importer/api/v1/dm` — создать/получить личный канал (2 пользователя)
+- POST `/plugins/mm-importer/api/v1/gdm` — создать/получить групповой DM
+
+### Channel name normalization
+- lower-case
+- пробелы/точки/подчёркивания → `-`
+- только ASCII буквы/цифры/`-`
+- сжатие повторяющихся дефисов
+- длина 2..64 символа
+
+### Quick examples
+
+Create or get channel:
+
+```bash
+curl -X POST "http://localhost:8065/plugins/mm-importer/api/v1/channel" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"team_id":"<TEAM_ID>","name":"general","display_name":"General","type":"O"}'
+```
+
+Add members:
+
+```bash
+curl -X POST "http://localhost:8065/plugins/mm-importer/api/v1/channel/members" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"channel_id":"<CH_ID>","user_ids":["<U1>","<U2>"]}'
+```
+
+Create/resolve group DM:
+
+```bash
+curl -X POST "http://localhost:8065/plugins/mm-importer/api/v1/gdm" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"user_ids":["<U1>","<U2>","<U3>"]}'
+```
+
+Import message:
+
+```bash
+curl -X POST "http://localhost:8065/plugins/mm-importer/api/v1/import" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"user_id":"<U>","channel_id":"<CH>","message":"hello"}'
+```
+
+## Deployment in this repo
+
+- Backend exposes helper endpoints to manage this plugin:
+  - `GET /plugin/status`, `POST /plugin/deploy`, `POST /plugin/enable`, `POST /plugin/ensure`
+- On backend startup, a best-effort auto-ensure runs to deploy/enable the plugin.
+
+For the original starter template documentation, see below.
+
+---
+
+# MM-Importer Plugin
+
+A Mattermost plugin for importing messages and metadata from external sources as any user, preserving threading and user metadata.
+
+## Features
+
 - **Import messages as any user**: Create posts on behalf of any user in the system
 - **Preserve threading**: Import threaded conversations with proper `root_id` linking
 - **Custom timestamps**: Set custom `create_at` timestamps for historical data
@@ -114,6 +189,88 @@ curl -X POST 'http://localhost:8065/plugins/mm-importer/api/v1/reaction' \
     "post_id": "abc123def456",
     "emoji_name": "heart"
   }'
+```
+
+### Create or Get Channel
+
+**POST** `/plugins/mm-importer/api/v1/channel`
+
+Создать канал (или вернуть существующий) с нормализацией имени.
+
+**Request Body:**
+```json
+{
+  "team_id": "string",
+  "name": "string",         
+  "display_name": "string",
+  "type": "O|P",
+  "header": "string",
+  "purpose": "string"
+}
+```
+
+**Response:**
+```json
+{ "channel_id": "string" }
+```
+
+### Add Channel Members (bulk)
+
+**POST** `/plugins/mm-importer/api/v1/channel/members`
+
+Добавить список пользователей в канал.
+
+**Request Body:**
+```json
+{ "channel_id": "string", "user_ids": ["id1", "id2"] }
+```
+
+**Response:**
+```json
+{ "added": ["id1", "id2"] }
+```
+
+### Archive Channel
+
+**POST** `/plugins/mm-importer/api/v1/channel/archive`
+
+Архивировать (soft-delete) канал.
+
+**Request Body:**
+```json
+{ "channel_id": "string" }
+```
+
+### Create Direct Channel
+
+**POST** `/plugins/mm-importer/api/v1/dm`
+
+Создать (или получить) личный канал для двух пользователей.
+
+**Request Body:**
+```json
+{ "user_ids": ["user1", "user2"] }
+```
+
+**Response:**
+```json
+{ "channel_id": "string" }
+```
+
+### Create Group DM Channel
+
+**POST** `/plugins/mm-importer/api/v1/gdm`
+
+Создать (или получить) групповой DM канал.
+
+**Request Body:**
+```json
+{ "user_ids": ["u1", "u2", "u3"] }
+```
+
+**Response:**
+```json
+{ "channel_id": "string" }
 ```
 
 ## Usage Examples

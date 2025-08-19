@@ -25,7 +25,11 @@ class MMApiMixin:
                 json=payload,
                 timeout=10,
             )
-            backend_logger.debug(f"MM API POST {url} status={resp.status_code} resp={resp.text}")
+            # Log succinctly; on non-2xx include first 200 chars of body for diagnostics
+            if resp.status_code >= 400:
+                backend_logger.error(f"MM API POST {url} status={resp.status_code} body={resp.text[:200]}")
+            else:
+                backend_logger.debug(f"MM API POST {url} status={resp.status_code}")
             return resp
 
     async def mm_api_post_multipart(self, path, data, headers):
