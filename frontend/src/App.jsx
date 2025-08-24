@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import './App.css';
+import { Header, Sidebar, Main, Card, Button, StatusBadge } from './components/UI';
+import './components/ui.css';
 
 function App() {
   const [status, setStatus] = useState('pending');
@@ -11,6 +13,7 @@ function App() {
   const [exportStatus, setExportStatus] = useState(null);
   const [exportError, setExportError] = useState(null);
   const [plugin, setPlugin] = useState({loading: false, data: null, error: null});
+  const [stats, setStats] = useState({loading: false, data: null, error: null});
 
   useEffect(() => {
     fetch('http://localhost:8000/healthcheck')
@@ -34,10 +37,21 @@ function App() {
     }
   };
 
-  useEffect(() => {
-    // initial plugin status
-    refreshPluginStatus();
-  }, []);
+  useEffect(() => { refreshPluginStatus(); }, []);
+
+  const refreshStats = async () => {
+    setStats((s) => ({...s, loading: true, error: null}));
+    try {
+      const res = await fetch('http://localhost:8000/stats/mappings');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Не удалось получить статистику');
+      setStats({loading: false, data, error: null});
+    } catch (e) {
+      setStats({loading: false, data: null, error: e.message});
+    }
+  };
+
+  useEffect(() => { refreshStats(); }, []);
 
   const handleFileChange = (e) => {
     setUploadResult(null);
@@ -50,64 +64,34 @@ function App() {
     setUploadResult(null);
     setUploadError(null);
     setUploadProgress(null);
-    if (!selectedFile) {
-      setUploadError('Файл не выбран');
-      return;
-    }
+    if (!selectedFile) { setUploadError('Файл не выбран'); return; }
     const formData = new FormData();
     formData.append('file', selectedFile);
     try {
       const xhr = new window.XMLHttpRequest();
       xhr.open('POST', 'http://localhost:8000/upload');
-      xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable) {
-          setUploadProgress(Math.round((event.loaded / event.total) * 100));
-        }
-      };
+      xhr.upload.onprogress = (event) => { if (event.lengthComputable) setUploadProgress(Math.round((event.loaded / event.total) * 100)); };
       xhr.onload = () => {
         try {
           const data = JSON.parse(xhr.responseText);
-          console.log('UPLOAD response:', data);
-      if (data.error) {
-        setUploadError(data.error);
-        setUploadResult(null);
-      } else {
-        setUploadResult(data);
-      }
-        } catch (err) {
-          console.error('UPLOAD parse error:', err);
-          setUploadError('Ошибка парсинга ответа');
-        }
+          if (data.error) { setUploadError(data.error); setUploadResult(null); }
+          else { setUploadResult(data); }
+  } catch { setUploadError('Ошибка парсинга ответа'); }
         setUploadProgress(null);
       };
-      xhr.onerror = () => {
-        console.error('UPLOAD network error');
-        setUploadError('Ошибка сети');
-        setUploadProgress(null);
-      };
+      xhr.onerror = () => { setUploadError('Ошибка сети'); setUploadProgress(null); };
       xhr.send(formData);
-    } catch (err) {
-      setUploadError(err.message);
-      setUploadProgress(null);
-    }
+    } catch (err) { setUploadError(err.message); setUploadProgress(null); }
   };
 
   const handleExport = async () => {
     setExportStatus(null);
     setExportError(null);
     try {
-      const response = await fetch('http://localhost:8000/export', {
-        method: 'POST',
-      });
+      const response = await fetch('http://localhost:8000/export', { method: 'POST' });
       const data = await response.json();
-      if (response.ok) {
-        setExportStatus(data.message);
-      } else {
-        setExportError(data.error || 'Ошибка запуска экспорта');
-      }
-    } catch (err) {
-      setExportError(err?.message || 'Ошибка сети');
-    }
+      if (response.ok) setExportStatus(data.message); else setExportError(data.error || 'Ошибка запуска экспорта');
+    } catch (err) { setExportError(err?.message || 'Ошибка сети'); }
   };
 
   const handleDeployPlugin = async () => {
@@ -116,9 +100,7 @@ function App() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Deploy failed');
       await refreshPluginStatus();
-    } catch (e) {
-      setPlugin((s) => ({...s, error: e.message}));
-    }
+    } catch (e) { setPlugin((s) => ({...s, error: e.message})); }
   };
 
   const handleEnablePlugin = async () => {
@@ -127,9 +109,7 @@ function App() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Enable failed');
       await refreshPluginStatus();
-    } catch (e) {
-      setPlugin((s) => ({...s, error: e.message}));
-    }
+    } catch (e) { setPlugin((s) => ({...s, error: e.message})); }
   };
 
   const handleEnsurePlugin = async () => {
@@ -138,79 +118,103 @@ function App() {
       const res = await fetch('http://localhost:8000/plugin/ensure', {method: 'POST'});
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Ensure failed');
-    } catch (e) {
-      setPlugin((s) => ({...s, error: e.message}));
-    } finally {
-      await refreshPluginStatus();
-    }
+    } catch (e) { setPlugin((s) => ({...s, error: e.message})); }
+    finally { await refreshPluginStatus(); }
   };
 
   return (
-    <div className="App">
-      <h1>Slack-MM2 Sync</h1>
-      <p>
-        Backend status: {error ? <span style={{color: 'red'}}>error: {error}</span> : status === 'ok' ? <span style={{color: 'green'}}>connected</span> : 'connecting...'}
-      </p>
-      <div style={{marginTop: 24}}>
-        <h2>Загрузка бэкапа Slack</h2>
-        <form onSubmit={handleSubmit}>
-          <input type="file" accept=".zip" onChange={handleFileChange} />
-          <button type="submit" style={{marginLeft: 8}}>Загрузить</button>
-          {uploadProgress !== null && (
-            <div style={{marginTop: 8, width: 300}}>
-              <div style={{height: 16, background: '#eee', borderRadius: 8, overflow: 'hidden'}}>
-                <div style={{width: `${uploadProgress}%`, height: '100%', background: '#4caf50', transition: 'width 0.2s'}} />
-              </div>
-              <div style={{fontSize: 12, marginTop: 2}}>{uploadProgress}%</div>
+    <div className="app-shell">
+      <Header title="Slack → Mattermost Importer" subtitle="Корпоративная панель управления" right={<StatusBadge status={error ? 'error' : status === 'ok' ? 'ok' : 'pending'} />} />
+      <div className="layout">
+        <Sidebar>
+          <nav>
+            <a href="#upload">Загрузка бэкапа</a>
+            <a href="#stats">Статистика</a>
+            <a href="#plugin">Плагин MM-Importer</a>
+            <a href="#export">Экспорт</a>
+          </nav>
+        </Sidebar>
+        <Main>
+          <div className="grid">
+            <div id="upload" className="col" style={{gridColumn: 'span 7'}}>
+              <Card title="Загрузка бэкапа Slack" actions={null}>
+                <form onSubmit={handleSubmit} className="form-row">
+                  <input type="file" className="input" accept=".zip" onChange={handleFileChange} />
+                  <Button type="submit">Загрузить</Button>
+                </form>
+                {uploadProgress !== null && (
+                  <div style={{marginTop: 12, maxWidth: 360}}>
+                    <div style={{height: 10, background: '#0b1223', border: '1px solid var(--border)', borderRadius: 9999, overflow: 'hidden'}}>
+                      <div style={{width: `${uploadProgress}%`, height: '100%', background: 'linear-gradient(90deg, var(--primary), var(--primary-600))', transition: 'width 0.2s'}} />
+                    </div>
+                    <div className="small" style={{marginTop: 4}}>{uploadProgress}%</div>
+                  </div>
+                )}
+                {uploadResult && <div style={{color: '#34d399', marginTop: 8}}>Файл {uploadResult.filename} загружен ({uploadResult.size} байт)</div>}
+                {uploadError && <div style={{color: '#f87171', marginTop: 8}}>Ошибка загрузки: {uploadError}</div>}
+              </Card>
             </div>
-          )}
-        </form>
-        {uploadResult && (
-          <div style={{color: 'green', marginTop: 8}}>
-            Файл {uploadResult.filename} загружен ({uploadResult.size} байт)
+            <div id="plugin" className="col" style={{gridColumn: 'span 5'}}>
+              <Card title="Статус плагина MM-Importer" actions={
+                <div className="form-row">
+                  <Button onClick={refreshPluginStatus} disabled={plugin.loading} variant="secondary">Обновить</Button>
+                  <Button onClick={handleDeployPlugin} disabled={plugin.loading}>Залить/обновить</Button>
+                  <Button onClick={handleEnablePlugin} disabled={plugin.loading}>Включить</Button>
+                  <Button onClick={handleEnsurePlugin} disabled={plugin.loading}>Автоустановка</Button>
+                </div>
+              }>
+                {plugin.loading && <div>Загрузка статуса…</div>}
+                {plugin.error && <div style={{color:'#f87171'}}>Ошибка: {plugin.error}</div>}
+                {plugin.data && (
+                  <div className="small" style={{lineHeight: 1.8}}>
+                    <div>Plugin ID: <b>{plugin.data.plugin_id}</b></div>
+                    <div>Ожидаемая версия: <b>{plugin.data.expected_version || 'n/a'}</b></div>
+                    <div>Установлен: <b>{plugin.data.installed ? 'да' : 'нет'}</b></div>
+                    <div>Включен: <b style={{color: plugin.data.enabled ? '#34d399' : '#f59e0b'}}>{plugin.data.enabled ? 'да' : 'нет'}</b></div>
+                    <div>Текущая версия: <b>{plugin.data.installed_version || 'n/a'}</b></div>
+                    <div>Нужен апдейт: <b style={{color: plugin.data.needs_update ? '#f59e0b' : undefined}}>{plugin.data.needs_update ? 'да' : 'нет'}</b></div>
+                    <div>Локальный bundle: <b style={{color: plugin.data.bundle_exists ? '#34d399' : '#f87171'}}>{plugin.data.bundle_exists ? 'есть' : 'нет'}</b></div>
+                  </div>
+                )}
+              </Card>
+            </div>
+            <div id="stats" className="col" style={{gridColumn: 'span 12'}}>
+              <Card title="Статистика маппингов" actions={<Button onClick={refreshStats} variant="secondary">Обновить</Button>}>
+                {stats.loading && <div>Загрузка…</div>}
+                {stats.error && <div style={{color:'#f87171'}}>Ошибка: {stats.error}</div>}
+                {stats.data && (
+                  <div style={{overflowX:'auto'}}>
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Тип</th>
+                          {stats.data.statuses.map((s) => (<th key={s}>{s}</th>))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {stats.data.types.map((t) => {
+                          const row = stats.data.matrix[t] || {};
+                          return (
+                            <tr key={t}>
+                              <td>{t}</td>
+                              {stats.data.statuses.map((s) => (<td key={s}>{row[s] || 0}</td>))}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </Card>
+            </div>
+            <div id="export" className="col" style={{gridColumn: 'span 12'}}>
+              <Card title="Экспорт в Mattermost" actions={<Button onClick={handleExport}>Запустить экспорт</Button>}>
+                {exportStatus && <div style={{color: '#34d399'}}>{exportStatus}</div>}
+                {exportError && <div style={{color: '#f87171'}}>Ошибка экспорта: {exportError}</div>}
+              </Card>
+            </div>
           </div>
-        )}
-        {uploadError && (
-          <div style={{color: 'red', marginTop: 8}}>
-            Ошибка загрузки: {uploadError}
-          </div>
-        )}
-      </div>
-      <div style={{marginTop: 24}}>
-        <h2>Статус плагина MM-Importer</h2>
-        <div style={{marginBottom: 8}}>
-          <button onClick={refreshPluginStatus} disabled={plugin.loading}>Проверить статус</button>
-          <button onClick={handleDeployPlugin} style={{marginLeft: 8}} disabled={plugin.loading}>Залить/обновить</button>
-          <button onClick={handleEnablePlugin} style={{marginLeft: 8}} disabled={plugin.loading}>Включить</button>
-          <button onClick={handleEnsurePlugin} style={{marginLeft: 8}} disabled={plugin.loading}>Автоустановка</button>
-        </div>
-        {plugin.loading && <div>Загрузка статуса…</div>}
-        {plugin.error && <div style={{color:'red'}}>Ошибка: {plugin.error}</div>}
-        {plugin.data && (
-          <div style={{fontSize: 14}}>
-            <div>Plugin ID: <b>{plugin.data.plugin_id}</b></div>
-            <div>Ожидаемая версия: <b>{plugin.data.expected_version || 'n/a'}</b></div>
-            <div>Установлен: <b>{plugin.data.installed ? 'да' : 'нет'}</b></div>
-            <div>Включен: <b style={{color: plugin.data.enabled ? 'green' : 'orange'}}>{plugin.data.enabled ? 'да' : 'нет'}</b></div>
-            <div>Текущая версия: <b>{plugin.data.installed_version || 'n/a'}</b></div>
-            <div>Нужен апдейт: <b style={{color: plugin.data.needs_update ? 'orange' : undefined}}>{plugin.data.needs_update ? 'да' : 'нет'}</b></div>
-            <div>Локальный bundle: <b style={{color: plugin.data.bundle_exists ? 'green' : 'red'}}>{plugin.data.bundle_exists ? 'есть' : 'нет'}</b></div>
-          </div>
-        )}
-      </div>
-      <div style={{marginTop: 24}}>
-        <h2>Экспорт в Mattermost</h2>
-        <button onClick={handleExport}>Запустить экспорт</button>
-        {exportStatus && (
-          <div style={{color: 'green', marginTop: 8}}>
-            {exportStatus}
-          </div>
-        )}
-        {exportError && (
-          <div style={{color: 'red', marginTop: 8}}>
-            Ошибка экспорта: {exportError}
-          </div>
-        )}
+        </Main>
       </div>
     </div>
   );
