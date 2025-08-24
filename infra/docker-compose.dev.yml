@@ -92,7 +92,7 @@ services:
     restart: unless-stopped
 
   mattermost:
-    image: mattermost/mattermost-team-edition:release-10.10
+    image: mattermost/mattermost-team-edition:release-10.11
     restart: unless-stopped
     init: true
     stop_signal: SIGTERM

@@ -113,7 +113,8 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 self.entity.mattermost_id = mm_id
                 await self.set_status("success")
                 backend_logger.debug(f"Пользователь {self.entity.slack_id} экспортирован в Mattermost")
-                # Ручная политика: НЕ добавляем пользователя в команду автоматически
+                # Автодобавление пользователя в команду
+                await self._ensure_user_in_team(mm_id)
                 # --- Загрузка аватарки ---
                 avatar_url = self._get_avatar_url(self.entity.raw_data)
                 if avatar_url:
@@ -129,7 +130,8 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     self.entity.mattermost_id = mm_id
                     await self.set_status("success")
                     backend_logger.debug(f"Пользователь {self.entity.slack_id} экспортирован в Mattermost")
-                    # Ручная политика: НЕ добавляем пользователя в команду автоматически
+                    # Автодобавление пользователя в команду
+                    await self._ensure_user_in_team(mm_id)
                     # --- Загрузка аватарки ---
                     avatar_url = self._get_avatar_url(self.entity.raw_data)
                     if avatar_url:
@@ -143,7 +145,8 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     self.entity.mattermost_id = mm_id
                     await self.set_status("success")
                     backend_logger.debug(f"Пользователь {self.entity.slack_id} экспортирован в Mattermost")
-                    # Ручная политика: НЕ добавляем пользователя в команду автоматически
+                    # Автодобавление пользователя в команду
+                    await self._ensure_user_in_team(mm_id)
                     # --- Загрузка аватарки ---
                     avatar_url = self._get_avatar_url(self.entity.raw_data)
                     if avatar_url:

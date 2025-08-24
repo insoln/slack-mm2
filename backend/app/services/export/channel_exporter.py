@@ -196,9 +196,8 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     # Нужно замапить Slack user_id -> Mattermost user_id из Entity
                     mm_user_ids = await self._resolve_mm_user_ids(members)
                     if mm_user_ids:
-                        # Ручная политика: НЕ добавляем пользователей в команду автоматически
-                        # Важно: добавление в канал упадёт, если пользователь не состоит в команде.
-                        # Ожидается, что членство в команде обеспечивается вручную до экспорта.
+                        # Автоматически гарантируем членство пользователей в команде перед добавлением в канал
+                        await self._ensure_team_membership(mm_user_ids)
                         add_resp = await self.mm_api_post(
                             "/plugins/mm-importer/api/v1/channel/members",
                             {"channel_id": self.entity.mattermost_id, "user_ids": mm_user_ids},
