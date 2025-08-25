@@ -10,6 +10,7 @@ from .attachments_import import parse_attachments_from_messages
 from .reactions_import import parse_reactions_from_messages
 from app.services.export.orchestrator import orchestrate_mm_export
 from app.services.entities.custom_emoji import get_slack_emoji_list
+from .custom_emojis_import import parse_custom_emojis_from_messages
 
 async def orchestrate_slack_import(zip_path):
     extract_dir = tempfile.mkdtemp(prefix="slack-extract-")
@@ -28,6 +29,8 @@ async def orchestrate_slack_import(zip_path):
     folder_channel_map = find_channel_for_folder(extract_dir, [])
     backend_logger.debug(f"Сопоставление папок и каналов/групп/чатов: {len(folder_channel_map)}")
     message_entities = await parse_channel_messages(extract_dir, folder_channel_map)
+    # Создаем custom_emoji на основе использования в текстах/блоках до реакций/аттачей
+    await parse_custom_emojis_from_messages(message_entities, emoji_list)
     await parse_reactions_from_messages(message_entities, emoji_list)
     await parse_attachments_from_messages(extract_dir, message_entities)
     try:
