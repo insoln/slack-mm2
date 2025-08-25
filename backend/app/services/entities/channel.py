@@ -54,6 +54,11 @@ class Channel(BaseMapping):
     async def create_member_relations(self):
         async with SessionLocal() as session:
             members = (self.raw_data or {}).get("members") or []
+            # Deduplicate Slack user IDs to avoid duplicate inserts in one batch
+            try:
+                members = list(dict.fromkeys(members))
+            except Exception:
+                members = list(set(members))
             relations = []
             for user_id in members:
                 user_query = await session.execute(
@@ -63,6 +68,16 @@ class Channel(BaseMapping):
                 )
                 user_entity = user_query.scalar_one_or_none()
                 if user_entity:
+                    # Skip if relation already exists (idempotent across re-imports)
+                    existing_rel = await session.execute(
+                        select(EntityRelation).where(
+                            (EntityRelation.from_entity_id == user_entity.id)
+                            & (EntityRelation.to_entity_id == self.id)
+                            & (EntityRelation.relation_type == "member_of")
+                        )
+                    )
+                    if existing_rel.scalar_one_or_none():
+                        continue
                     relation = EntityRelation(
                         from_entity_id=user_entity.id,
                         to_entity_id=self.id,

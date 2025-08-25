@@ -26,14 +26,23 @@ class Message(BaseMapping):
             )
             channel_entity = query.scalar_one_or_none()
             if channel_entity:
-                relation = EntityRelation(
-                    from_entity_id=self.id,
-                    to_entity_id=channel_entity.id,
-                    relation_type="posted_in",
-                    raw_data=None
+                # Skip if relation already exists
+                existing_rel = await session.execute(
+                    select(EntityRelation).where(
+                        (EntityRelation.from_entity_id == self.id) &
+                        (EntityRelation.to_entity_id == channel_entity.id) &
+                        (EntityRelation.relation_type == "posted_in")
+                    )
                 )
-                session.add(relation)
-                await session.commit()
+                if not existing_rel.scalar_one_or_none():
+                    relation = EntityRelation(
+                        from_entity_id=self.id,
+                        to_entity_id=channel_entity.id,
+                        relation_type="posted_in",
+                        raw_data=None
+                    )
+                    session.add(relation)
+                    await session.commit()
 
     async def create_posted_by_relation(self):
         user_id = (self.raw_data or {}).get("user")
@@ -63,14 +72,23 @@ class Message(BaseMapping):
             if user_entity:
                 try:
                     backend_logger.debug(f"Пробую создать связь posted_by: from_entity_id={user_entity.id}, to_entity_id={self.id}")
-                    relation = EntityRelation(
-                        from_entity_id=user_entity.id,
-                            to_entity_id=self.id,
-                        relation_type="posted_by",
-                        raw_data=None
+                    # Skip if relation already exists
+                    existing_rel = await session.execute(
+                        select(EntityRelation).where(
+                            (EntityRelation.from_entity_id == user_entity.id) &
+                            (EntityRelation.to_entity_id == self.id) &
+                            (EntityRelation.relation_type == "posted_by")
+                        )
                     )
-                    session.add(relation)
-                    await session.commit()
+                    if not existing_rel.scalar_one_or_none():
+                        relation = EntityRelation(
+                            from_entity_id=user_entity.id,
+                                to_entity_id=self.id,
+                            relation_type="posted_by",
+                            raw_data=None
+                        )
+                        session.add(relation)
+                        await session.commit()
                     backend_logger.debug(f"Связь posted_by создана: from_entity_id={user_entity.id}, to_entity_id={self.id}")
                 except Exception as e:
                     backend_logger.error(f"Ошибка при создании связи posted_by: from_entity_id={user_entity.id}, to_entity_id={self.id}, ошибка: {e}")
@@ -91,11 +109,20 @@ class Message(BaseMapping):
             parent_entity = query_parent.scalar_one_or_none()
             if not parent_entity:
                 return
-            relation = EntityRelation(
-                from_entity_id=self.id,
-                to_entity_id=parent_entity.id,
-                relation_type="thread_reply",
-                raw_data=None
+            # Skip if relation already exists
+            existing_rel = await session.execute(
+                select(EntityRelation).where(
+                    (EntityRelation.from_entity_id == self.id) &
+                    (EntityRelation.to_entity_id == parent_entity.id) &
+                    (EntityRelation.relation_type == "thread_reply")
+                )
             )
-            session.add(relation)
-            await session.commit() 
+            if not existing_rel.scalar_one_or_none():
+                relation = EntityRelation(
+                    from_entity_id=self.id,
+                    to_entity_id=parent_entity.id,
+                    relation_type="thread_reply",
+                    raw_data=None
+                )
+                session.add(relation)
+                await session.commit() 

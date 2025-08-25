@@ -19,7 +19,11 @@ def _extract_reactions_from_message(message):
         for user_id in user_ids:
             reaction_data = dict(reaction)
             reaction_data["user"] = user_id
-            
+            # Add convenience fields for later dedupe/merging
+            reaction_data["message_ts"] = ts
+            reaction_data["emoji_name"] = name
+            reaction_data["composite_id"] = f"{ts}_{name}"
+
             reaction_entity = Reaction(
                 slack_id=f"{ts}_{name}_{user_id}",
                 mattermost_id=None,

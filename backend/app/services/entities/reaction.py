@@ -11,8 +11,12 @@ class Reaction(BaseMapping):
     # Можно добавить специфичные методы/валидацию, если нужно
 
     async def save_to_db(self):
-        if self.raw_data is not None and 'ts' not in self.raw_data:
-            self.raw_data['ts'] = self.slack_id
+        # Ensure raw_data.ts is a proper Slack ts (not the whole slack_id)
+        if self.raw_data is not None and 'ts' not in self.raw_data and self.slack_id:
+            try:
+                self.raw_data['ts'] = str(self.slack_id).split('_')[0]
+            except Exception:
+                pass
         return await super().save_to_db()
 
     async def create_custom_emoji_relation(self, emoji_name):
@@ -39,6 +43,16 @@ class Reaction(BaseMapping):
             reaction_entity = query_reaction.scalar_one_or_none()
             if not reaction_entity:
                 return
+            # Check if relation already exists
+            existing_rel = await session.execute(
+                select(EntityRelation).where(
+                    (EntityRelation.from_entity_id == reaction_entity.id) &
+                    (EntityRelation.to_entity_id == emoji_entity.id) &
+                    (EntityRelation.relation_type == "custom_emoji_used")
+                )
+            )
+            if existing_rel.scalar_one_or_none():
+                return
             relation = EntityRelation(
                 from_entity_id=reaction_entity.id,
                 to_entity_id=emoji_entity.id,
@@ -62,6 +76,16 @@ class Reaction(BaseMapping):
             user_entity = query_user.scalar_one_or_none()
             if not user_entity:
                 return
+            # Check if relation already exists
+            existing_rel = await session.execute(
+                select(EntityRelation).where(
+                    (EntityRelation.from_entity_id == user_entity.id) &
+                    (EntityRelation.to_entity_id == self.id) &
+                    (EntityRelation.relation_type == "reacted_by")
+                )
+            )
+            if existing_rel.scalar_one_or_none():
+                return
             relation = EntityRelation(
                 from_entity_id=user_entity.id,
                 to_entity_id=self.id,
@@ -72,12 +96,20 @@ class Reaction(BaseMapping):
             await session.commit()
 
     async def create_reacted_to_relation(self):
-        item = (self.raw_data or {}).get("item")
-        if not item or item.get("type") != "message":
-            return
-        channel_id = item.get("channel")
-        ts = item.get("ts")
-        if not channel_id or not ts:
+        raw = self.raw_data or {}
+        item = raw.get("item")
+        ts = None
+        if item and item.get("type") == "message":
+            ts = item.get("ts")
+        # Fallback: use raw ts captured from the parent message
+        if not ts:
+            ts = raw.get("ts")
+            if not ts and self.slack_id:
+                try:
+                    ts = str(self.slack_id).split('_')[0]
+                except Exception:
+                    ts = None
+        if not ts:
             return
         async with SessionLocal() as session:
             query_msg = await session.execute(
@@ -88,6 +120,16 @@ class Reaction(BaseMapping):
             )
             msg_entity = query_msg.scalar_one_or_none()
             if not msg_entity:
+                return
+            # Check if relation already exists
+            existing_rel = await session.execute(
+                select(EntityRelation).where(
+                    (EntityRelation.from_entity_id == self.id) &
+                    (EntityRelation.to_entity_id == msg_entity.id) &
+                    (EntityRelation.relation_type == "reacted_to")
+                )
+            )
+            if existing_rel.scalar_one_or_none():
                 return
             relation = EntityRelation(
                 from_entity_id=self.id,

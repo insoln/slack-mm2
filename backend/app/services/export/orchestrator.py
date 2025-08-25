@@ -7,6 +7,7 @@ from .user_exporter import UserExporter
 from .custom_emoji_exporter import CustomEmojiExporter
 from .attachment_exporter import AttachmentExporter
 from .message_exporter import MessageExporter
+from .reaction_exporter import ReactionExporter
 from .channel_exporter import ChannelExporter
 from app.logging_config import backend_logger
 from app.models.entity import Entity
@@ -21,7 +22,7 @@ EXPORT_ORDER = [
     ("channel", ChannelExporter),
     ("attachment", AttachmentExporter),
     ("message", MessageExporter),
-    # ("reaction", ReactionExporter),
+    ("reaction", ReactionExporter),
 ]
 
 async def get_mm_user_id():
@@ -49,8 +50,8 @@ async def get_entities_to_export(entity_type):
     async with SessionLocal() as session:
         query = await session.execute(
             select(Entity).where(
-                (Entity.entity_type == entity_type) &
-                (Entity.status.in_(["pending", "skipped", "failed"]))
+                (Entity.entity_type == entity_type)
+                & (Entity.status.in_(["pending", "skipped", "failed"]))
             )
         )
         entities = query.scalars().all()
@@ -70,8 +71,8 @@ async def get_entities_to_export(entity_type):
                 if ids:
                     rel_rows = await session.execute(
                         select(EntityRelation.from_entity_id).where(
-                            (EntityRelation.relation_type == "thread_reply") &
-                            (EntityRelation.from_entity_id.in_(ids))
+                            (EntityRelation.relation_type == "thread_reply")
+                            & (EntityRelation.from_entity_id.in_(ids))
                         )
                     )
                     reply_set = {row[0] for row in rel_rows.all()}
@@ -84,12 +85,23 @@ async def get_entities_to_export(entity_type):
 
                 entities_sorted = sorted(
                     entities,
-                    key=lambda ent: (0 if ent.id not in reply_set else 1, ts_key(ent))
+                    key=lambda ent: (0 if ent.id not in reply_set else 1, ts_key(ent)),
                 )
                 return entities_sorted
             except Exception as e:
-                backend_logger.error(f"Не удалось отсортировать сообщения для тредов: {e}")
+                backend_logger.error(
+                    f"Не удалось отсортировать сообщения для тредов: {e}"
+                )
                 return entities
+        elif entity_type == "reaction":
+            # Ensure reactions are processed after their target messages; simple ts sort as tie-breaker
+            def ts_key(ent):
+                try:
+                    # slack_id format might be "<ts>_<name>_<user>"; take ts part
+                    return float(str(ent.slack_id).split("_")[0])
+                except Exception:
+                    return float("inf")
+            return sorted(entities, key=ts_key)
         return entities
 
 async def export_worker(queue, mm_user_id):

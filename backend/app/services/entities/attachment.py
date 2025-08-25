@@ -24,11 +24,20 @@ class Attachment(BaseMapping):
             msg_entity = query_msg.scalar_one_or_none()
             if not msg_entity:
                 return
-            relation = EntityRelation(
-                from_entity_id=self.id,
-                to_entity_id=msg_entity.id,
-                relation_type="attached_to",
-                raw_data=None
+            # Skip if relation already exists
+            existing_rel = await session.execute(
+                select(EntityRelation).where(
+                    (EntityRelation.from_entity_id == self.id) &
+                    (EntityRelation.to_entity_id == msg_entity.id) &
+                    (EntityRelation.relation_type == "attached_to")
+                )
             )
-            session.add(relation)
-            await session.commit() 
+            if not existing_rel.scalar_one_or_none():
+                relation = EntityRelation(
+                    from_entity_id=self.id,
+                    to_entity_id=msg_entity.id,
+                    relation_type="attached_to",
+                    raw_data=None
+                )
+                session.add(relation)
+                await session.commit() 
