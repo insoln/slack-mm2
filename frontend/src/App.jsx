@@ -59,17 +59,28 @@ function App() {
   const handleFileChange = (e) => {
     setUploadResult(null);
     setUploadError(null);
-    setSelectedFile(e.target.files[0] || null);
+    const file = e.target.files[0] || null;
+    setSelectedFile(file);
+    if (file) {
+      // Auto-start upload on selection
+      doUpload(file);
+      // Reset input so the same file can be re-selected later
+      e.target.value = '';
+    }
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!selectedFile) { setUploadError('Файл не выбран'); return; }
+    await doUpload(selectedFile);
+  };
+
+  const doUpload = async (file) => {
     setUploadResult(null);
     setUploadError(null);
-    setUploadProgress(null);
-    if (!selectedFile) { setUploadError('Файл не выбран'); return; }
+    setUploadProgress(0);
     const formData = new FormData();
-    formData.append('file', selectedFile);
+    formData.append('file', file);
     try {
       const xhr = new window.XMLHttpRequest();
       xhr.open('POST', 'http://localhost:8000/upload');
@@ -79,12 +90,15 @@ function App() {
           const data = JSON.parse(xhr.responseText);
           if (data.error) { setUploadError(data.error); setUploadResult(null); }
           else { setUploadResult(data); }
-  } catch { setUploadError('Ошибка парсинга ответа'); }
+        } catch { setUploadError('Ошибка парсинга ответа'); }
         setUploadProgress(null);
       };
       xhr.onerror = () => { setUploadError('Ошибка сети'); setUploadProgress(null); };
       xhr.send(formData);
-    } catch (err) { setUploadError(err.message); setUploadProgress(null); }
+    } catch (err) {
+      setUploadError(err.message);
+      setUploadProgress(null);
+    }
   };
 
   const handleExport = async () => {
@@ -128,8 +142,7 @@ function App() {
             <div id="upload" className="col" style={{gridColumn: 'span 7'}}>
               <Card title="Загрузка бэкапа Slack" actions={null}>
                 <form onSubmit={handleSubmit} className="form-row">
-                  <input type="file" className="input" accept=".zip" onChange={handleFileChange} />
-                  <Button type="submit">Загрузить</Button>
+                  <input type="file" className="input" accept=".zip" onChange={handleFileChange} disabled={uploadProgress !== null} />
                 </form>
                 {uploadProgress !== null && (
                   <div style={{marginTop: 12, maxWidth: 360}}>

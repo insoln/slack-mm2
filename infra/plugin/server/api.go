@@ -212,6 +212,7 @@ func (p *Plugin) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Invalid base64 content"})
 		return
 	}
+	// Upload the file; it will become fully downloadable via API after being attached to a post
 	fi, appErr := p.API.UploadFile(data, req.ChannelID, req.Filename)
 	if appErr != nil {
 		w.WriteHeader(http.StatusInternalServerError)

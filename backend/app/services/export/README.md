@@ -3,7 +3,7 @@
 В этом модуле реализован экспорт данных в Mattermost. Здесь не должно быть логики парсинга или импорта — только экспорт.
 
 ## Архитектура
-- Экспорт реализован через оркестратор (см. orchestrator.py), который обрабатывает сущности по очереди: user, custom_emoji, channel, message, reaction.
+- Экспорт реализован через оркестратор (см. orchestrator.py), который обрабатывает сущности по очереди: user, custom_emoji, channel, attachment, message, reaction.
 - Для каждого типа сущности используется отдельный экспортер (например, UserExporter), реализующий бизнес-логику экспорта.
 - HTTP-запросы к Mattermost вынесены в MMApiMixin (mm_api_mixin.py), что позволяет легко переключаться между штатным API и плагином.
 - Логирование централизовано через backend_logger.
@@ -50,5 +50,10 @@
 - Оркестратор получает `mm_user_id` один раз в начале экспорта
 - Параметр `mm_user_id` передается только в экспортеры, которые его требуют (например, CustomEmojiExporter)
 - Статусы обновляются асинхронно и не блокируют основной поток экспорта
+
+### MessageExporter
+- Формирует POST на `/plugins/mm-importer/api/v1/import` с полями `user_id`, `channel_id`, `message`, `create_at`, `root_id` (опц.), `file_ids` (опц.)
+- Канал определяется по связи `posted_in`, автор — по `posted_by` (или по slack_id), вложения собираются по `attached_to`
+- Треды: если `thread_ts != ts`, ищется `mattermost_id` родителя и передается как `root_id`
 
 Подробнее см. раздел "Экспорт данных в Mattermost" в backend/README.md 

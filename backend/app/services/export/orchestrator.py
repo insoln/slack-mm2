@@ -6,6 +6,7 @@ from sqlalchemy import select
 from .user_exporter import UserExporter
 from .custom_emoji_exporter import CustomEmojiExporter
 from .attachment_exporter import AttachmentExporter
+from .message_exporter import MessageExporter
 from .channel_exporter import ChannelExporter
 from app.logging_config import backend_logger
 from app.models.entity import Entity
@@ -19,7 +20,7 @@ EXPORT_ORDER = [
     ("custom_emoji", CustomEmojiExporter),
     ("channel", ChannelExporter),
     ("attachment", AttachmentExporter),
-    # ("message", MessageExporter),
+    ("message", MessageExporter),
     # ("reaction", ReactionExporter),
 ]
 
@@ -60,6 +61,35 @@ async def get_entities_to_export(entity_type):
         elif entity_type == "attachment":
             # For attachments we can use BaseMapping as-is (no special from_entity)
             return entities
+        elif entity_type == "message":
+            # Sort messages so that roots go before replies, and by timestamp ascending
+            try:
+                from app.models.entity_relation import EntityRelation
+                ids = [e.id for e in entities]
+                reply_set = set()
+                if ids:
+                    rel_rows = await session.execute(
+                        select(EntityRelation.from_entity_id).where(
+                            (EntityRelation.relation_type == "thread_reply") &
+                            (EntityRelation.from_entity_id.in_(ids))
+                        )
+                    )
+                    reply_set = {row[0] for row in rel_rows.all()}
+
+                def ts_key(ent):
+                    try:
+                        return float(ent.slack_id)
+                    except Exception:
+                        return float("inf")
+
+                entities_sorted = sorted(
+                    entities,
+                    key=lambda ent: (0 if ent.id not in reply_set else 1, ts_key(ent))
+                )
+                return entities_sorted
+            except Exception as e:
+                backend_logger.error(f"Не удалось отсортировать сообщения для тредов: {e}")
+                return entities
         return entities
 
 async def export_worker(queue, mm_user_id):
@@ -97,8 +127,10 @@ async def orchestrate_mm_export():
         for entity in entities:
             backend_logger.debug(f"[EXPORT] enqueue {entity_type} {entity.slack_id}")
             await queue.put((entity, exporter_cls))
-        backend_logger.debug(f"[EXPORT] starting {workers_count} workers for {entity_type}")
-        workers = [asyncio.create_task(export_worker(queue, mm_user_id)) for _ in range(workers_count)]
+        # Use a single worker for messages to preserve order (root before replies)
+        workers_for_type = 1 if entity_type == "message" else workers_count
+        backend_logger.debug(f"[EXPORT] starting {workers_for_type} workers for {entity_type}")
+        workers = [asyncio.create_task(export_worker(queue, mm_user_id)) for _ in range(workers_for_type)]
         await queue.join()
         for _ in workers:
             await queue.put(None)
