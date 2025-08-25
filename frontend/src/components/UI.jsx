@@ -62,3 +62,24 @@ export const Modal = ({ open, title, children, actions, width = 520 }) => {
     </div>
   );
 };
+
+export const FileButton = ({ children = 'Выбрать файл', accept, onChange, disabled, variant = 'primary', ariaLabel }) => (
+  <div className={`btn btn--${variant} filebtn ${disabled ? 'filebtn--disabled' : ''}`} aria-disabled={disabled ? 'true' : undefined}>
+    <span className="filebtn__icon" aria-hidden>
+      {/* upload icon */}
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12 3v12m0-12 4 4m-4-4-4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+        <path d="M20 21H4a2 2 0 0 1-2-2v-2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+      </svg>
+    </span>
+    <span>{children}</span>
+    <input
+      type="file"
+      className="filebtn__input"
+      accept={accept}
+      onChange={onChange}
+      disabled={disabled}
+      aria-label={ariaLabel || (typeof children === 'string' ? children : 'Выбрать файл')}
+    />
+  </div>
+);

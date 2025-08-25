@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import './App.css';
-import { Header, Sidebar, Main, Card, Button, StatusBadge, Modal } from './components/UI';
+import { Header, Sidebar, Main, Card, Button, StatusBadge, Modal, FileButton } from './components/UI';
 import './components/ui.css';
 
 function App() {
@@ -142,7 +142,9 @@ function App() {
             <div id="upload" className="col" style={{gridColumn: 'span 7'}}>
               <Card title="Загрузка бэкапа Slack" actions={null}>
                 <form onSubmit={handleSubmit} className="form-row">
-                  <input type="file" className="input" accept=".zip" onChange={handleFileChange} disabled={uploadProgress !== null} />
+                  <FileButton accept=".zip" onChange={handleFileChange} disabled={uploadProgress !== null}>
+                    Выбрать архив .zip
+                  </FileButton>
                 </form>
                 {uploadProgress !== null && (
                   <div style={{marginTop: 12, maxWidth: 360}}>

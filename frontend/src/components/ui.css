@@ -44,6 +44,13 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: Inter,
 .btn--secondary { background: transparent; border-color: var(--border); color: var(--text); }
 .btn--danger { background: var(--danger); }
 
+/* File button */
+.filebtn { position: relative; display: inline-flex; align-items: center; gap: 8px; user-select: none; }
+.filebtn__icon { display: inline-flex; }
+.filebtn__input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.filebtn--disabled { opacity: .6; cursor: not-allowed; }
+.filebtn--disabled .filebtn__input { cursor: not-allowed; }
+
 .badge { display:inline-block; padding:2px 8px; border-radius:9999px; font-size:12px; border:1px solid var(--border); }
 .badge--success { background: rgba(22,163,74,.15); color: #34d399; border-color: rgba(22,163,74,.5); }
 .badge--warning { background: rgba(217,119,6,.15); color: #f59e0b; border-color: rgba(217,119,6,.5); }
