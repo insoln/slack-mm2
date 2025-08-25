@@ -5,18 +5,20 @@ from app.models.base import SessionLocal
 from sqlalchemy import select
 from .user_exporter import UserExporter
 from .custom_emoji_exporter import CustomEmojiExporter
+from .attachment_exporter import AttachmentExporter
 from .channel_exporter import ChannelExporter
 from app.logging_config import backend_logger
 from app.models.entity import Entity
 from app.services.entities.user import User
 from app.services.entities.custom_emoji import CustomEmoji
+from app.services.entities.attachment import Attachment
 # TODO: добавить остальные экспортеры (AttachmentExporter, MessageExporter, ReactionExporter)
 
 EXPORT_ORDER = [
     ("user", UserExporter),
     ("custom_emoji", CustomEmojiExporter),
     ("channel", ChannelExporter),
-    # ("attachment", AttachmentExporter),
+    ("attachment", AttachmentExporter),
     # ("message", MessageExporter),
     # ("reaction", ReactionExporter),
 ]
@@ -55,6 +57,9 @@ async def get_entities_to_export(entity_type):
             return [User.from_entity(e) for e in entities]
         elif entity_type == "custom_emoji":
             return [CustomEmoji.from_entity(e) for e in entities]
+        elif entity_type == "attachment":
+            # For attachments we can use BaseMapping as-is (no special from_entity)
+            return entities
         return entities
 
 async def export_worker(queue, mm_user_id):

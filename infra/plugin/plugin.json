@@ -2,7 +2,7 @@
     "id": "mm-importer",
     "name": "MM Importer",
     "description": "Import messages and metadata from external sources as any user.",
-    "version": "0.2.2",
+    "version": "0.3.0",
     "min_server_version": "6.0.0",
     "server": {
         "executables": {

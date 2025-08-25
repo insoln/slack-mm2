@@ -20,12 +20,18 @@ def get_plugin_repo_root() -> Path:
     env_path = os.environ.get("PLUGIN_REPO_PATH")
     if env_path:
         return Path(env_path)
-    # Default relative: backend/app/api/plugin.py -> /app
+    # Try common locations both on host and inside container
     here = Path(__file__).resolve()
-    # parents: [api, app, /app]
-    root = here.parents[2]
-    plugin_root = root / "infra" / "plugin"
-    return plugin_root
+    candidates = [
+        here.parents[2] / "infra" / "plugin",  # /app + infra/plugin (container layout)
+        here.parents[3] / "infra" / "plugin",  # repo root / infra/plugin (host layout)
+        Path("/app/infra/plugin"),
+    ]
+    for p in candidates:
+        if (p / "plugin.json").exists():
+            return p
+    # Fallback to /app/infra/plugin even if not present; callers will handle errors
+    return Path("/app/infra/plugin")
 
 
 def read_plugin_manifest() -> dict:
@@ -61,6 +67,40 @@ async def mm_post(path: str, json_body: dict | None = None):
             f"{MM_URL}{path}", headers={"Authorization": f"Bearer {MM_TOKEN}"}, json=json_body, timeout=60
         )
         return resp
+
+
+async def mm_delete(path: str):
+    async with httpx.AsyncClient() as client:
+        resp = await client.delete(
+            f"{MM_URL}{path}", headers={"Authorization": f"Bearer {MM_TOKEN}"}, timeout=60
+        )
+        return resp
+
+
+async def _disable_plugin(plugin_id: str) -> tuple[bool, str | None]:
+    resp = await mm_post(f"/api/v4/plugins/{plugin_id}/disable")
+    if resp.status_code == 200:
+        return True, None
+    return False, resp.text
+
+
+async def _uninstall_plugin(plugin_id: str) -> tuple[bool, str | None]:
+    # Best-effort disable then delete
+    await _disable_plugin(plugin_id)
+    resp = await mm_delete(f"/api/v4/plugins/{plugin_id}")
+    if resp.status_code in (200, 204):
+        return True, None
+    return False, resp.text
+
+
+async def _wait_until_uninstalled(plugin_id: str, timeout_sec: int = 20) -> bool:
+    import asyncio
+    for _ in range(timeout_sec * 2):  # check every 0.5s
+        st = await _compute_status()
+        if not st.get("installed"):
+            return True
+        await asyncio.sleep(0.5)
+    return False
 
 
 async def _compute_status() -> dict:
@@ -170,10 +210,17 @@ async def plugin_deploy(path: str | None = None):
         if not bundle_path or not bundle_path.exists():
             return JSONResponse(status_code=404, content={"error": f"Bundle still not found after build: {bundle_path}"})
 
+    # If already installed, try disable first (allows replacement), then fallback to uninstall
+    st0 = await _compute_status()
+    if st0.get("installed"):
+        backend_logger.info("plugin_deploy: disabling existing plugin before upload…")
+        await _disable_plugin(plugin_id)
     ok, err = await _upload_bundle(bundle_path)
     if not ok:
         return JSONResponse(status_code=502, content={"error": err})
-    return JSONResponse(content={"status": "uploaded", "version": version, "plugin_id": plugin_id})
+    # Refresh status after upload
+    final = await _compute_status()
+    return JSONResponse(content={"status": "uploaded", "version": version, "plugin_id": plugin_id, **final})
 
 
 @router.post("/plugin/enable")
@@ -214,9 +261,30 @@ async def plugin_ensure():
             except Exception as e:
                 return JSONResponse(status_code=409, content={"error": f"Bundle not found and build failed: {e}", **status})
             bundle_path = str(get_local_bundle_path(plugin_id, version))
+        # Always uninstall first when updating
+        if status.get("installed"):
+            backend_logger.info("Ensure: uninstalling existing plugin before upload…")
+            uok, uerr = await _uninstall_plugin(plugin_id)
+            if not uok:
+                return JSONResponse(status_code=502, content={"error": f"Uninstall failed: {uerr}", **status})
+            if not await _wait_until_uninstalled(plugin_id):
+                return JSONResponse(status_code=504, content={"error": "Timeout waiting for plugin to uninstall", **status})
+        # Always disable before upload to allow replacement; uninstall if still needed
+        if status.get("installed"):
+            backend_logger.info("Ensure: disabling existing plugin before upload…")
+            await _disable_plugin(plugin_id)
         ok, err = await _upload_bundle(Path(bundle_path))
         if not ok:
-            return JSONResponse(status_code=502, content={"error": err, **status})
+            # As a last resort, uninstall and retry once
+            backend_logger.info("Ensure: uninstalling existing plugin as upload failed…")
+            uok, uerr = await _uninstall_plugin(plugin_id)
+            if not uok:
+                return JSONResponse(status_code=502, content={"error": f"Uninstall failed: {uerr}", **status})
+            if not await _wait_until_uninstalled(plugin_id):
+                return JSONResponse(status_code=504, content={"error": "Timeout waiting for plugin to uninstall", **status})
+            ok2, err2 = await _upload_bundle(Path(bundle_path))
+            if not ok2:
+                return JSONResponse(status_code=502, content={"error": err2, **status})
 
     # Enable if disabled
     if not status.get("enabled"):
@@ -226,3 +294,47 @@ async def plugin_ensure():
 
     final_status = await _compute_status()
     return JSONResponse(content={"status": "ensured", **final_status})
+
+
+@router.post("/plugin/reinstall")
+async def plugin_reinstall():
+    """Hard reinstall flow: disable -> uninstall -> build (if needed) -> upload -> enable -> status."""
+    status = await _compute_status()
+    plugin_id = status.get("plugin_id") or PLUGIN_DEFAULT_ID
+
+    if not MM_URL or not MM_TOKEN:
+        return JSONResponse(status_code=400, content={"error": "MM_URL or MM_TOKEN not set", **status})
+
+    # Disable and uninstall if present
+    if status.get("installed"):
+        await _disable_plugin(plugin_id)
+        uok, uerr = await _uninstall_plugin(plugin_id)
+        if not uok:
+            return JSONResponse(status_code=502, content={"error": f"Uninstall failed: {uerr}", **status})
+        if not await _wait_until_uninstalled(plugin_id):
+            return JSONResponse(status_code=504, content={"error": "Timeout waiting for plugin to uninstall", **status})
+
+    # Ensure bundle exists (build if missing)
+    manifest = read_plugin_manifest()
+    version = manifest.get("version")
+    bundle_path = get_local_bundle_path(plugin_id, version)
+    if not bundle_path or not bundle_path.exists():
+        try:
+            backend_logger.info("Reinstall: bundle missing, building via make dist…")
+            subprocess.run(["make", "-C", str(get_plugin_repo_root()), "dist"], check=True)
+        except Exception as e:
+            return JSONResponse(status_code=409, content={"error": f"Bundle not found and build failed: {e}", **status})
+        bundle_path = get_local_bundle_path(plugin_id, version)
+        if not bundle_path or not bundle_path.exists():
+            return JSONResponse(status_code=404, content={"error": f"Bundle still not found after build: {bundle_path}", **status})
+
+    # Upload and enable
+    ok, err = await _upload_bundle(bundle_path)
+    if not ok:
+        return JSONResponse(status_code=502, content={"error": err, **status})
+    ok2, err2 = await _enable_plugin(plugin_id)
+    if not ok2:
+        return JSONResponse(status_code=502, content={"error": err2, **status})
+
+    final_status = await _compute_status()
+    return JSONResponse(content={"status": "reinstalled", **final_status})

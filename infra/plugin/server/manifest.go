@@ -19,16 +19,13 @@ const manifestStr = `
   "homepage_url": "https://github.com/mattermost/mattermost-plugin-starter-template",
   "support_url": "https://github.com/mattermost/mattermost-plugin-starter-template/issues",
   "icon_path": "assets/starter-template-icon.svg",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "min_server_version": "6.0.0",
   "server": {
     "executables": {
       "linux-amd64": "server/dist/plugin-linux-amd64"
     },
     "executable": ""
-  },
-  "webapp": {
-    "bundle_path": "webapp/dist/main.js"
   },
   "settings_schema": {
     "header": "",

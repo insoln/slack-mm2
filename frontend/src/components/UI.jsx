@@ -46,3 +46,19 @@ export const StatusBadge = ({ status }) => {
   const v = map[status] || { text: status, tone: 'neutral' };
   return <span className={`badge badge--${v.tone}`}>{v.text}</span>;
 };
+
+export const Modal = ({ open, title, children, actions, width = 520 }) => {
+  if (!open) return null;
+  return (
+    <div className="modal">
+      <div className="modal__backdrop" />
+      <div className="modal__content" style={{ maxWidth: width }} role="dialog" aria-modal="true">
+        <div className="modal__head">
+          <h3>{title}</h3>
+        </div>
+        <div className="modal__body">{children}</div>
+        {actions && <div className="modal__actions">{actions}</div>}
+      </div>
+    </div>
+  );
+};

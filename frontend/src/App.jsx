@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import './App.css';
-import { Header, Sidebar, Main, Card, Button, StatusBadge } from './components/UI';
+import { Header, Sidebar, Main, Card, Button, StatusBadge, Modal } from './components/UI';
 import './components/ui.css';
 
 function App() {
@@ -13,6 +13,7 @@ function App() {
   const [exportStatus, setExportStatus] = useState(null);
   const [exportError, setExportError] = useState(null);
   const [plugin, setPlugin] = useState({loading: false, data: null, error: null});
+  const [fixingPlugin, setFixingPlugin] = useState(false);
   const [stats, setStats] = useState({loading: false, data: null, error: null});
 
   useEffect(() => {
@@ -38,6 +39,8 @@ function App() {
   };
 
   useEffect(() => { refreshPluginStatus(); }, []);
+
+  const needsPluginFix = !!(plugin?.data && (!plugin.data.installed || plugin.data.needs_update || !plugin.data.enabled));
 
   const refreshStats = async () => {
     setStats((s) => ({...s, loading: true, error: null}));
@@ -94,32 +97,18 @@ function App() {
     } catch (err) { setExportError(err?.message || 'Ошибка сети'); }
   };
 
-  const handleDeployPlugin = async () => {
+  const handleFixPlugin = async () => {
+    setFixingPlugin(true);
     try {
-      const res = await fetch('http://localhost:8000/plugin/deploy', {method: 'POST'});
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Deploy failed');
-      await refreshPluginStatus();
-    } catch (e) { setPlugin((s) => ({...s, error: e.message})); }
-  };
-
-  const handleEnablePlugin = async () => {
-    try {
-      const res = await fetch('http://localhost:8000/plugin/enable', {method: 'POST'});
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Enable failed');
-      await refreshPluginStatus();
-    } catch (e) { setPlugin((s) => ({...s, error: e.message})); }
-  };
-
-  const handleEnsurePlugin = async () => {
-    setPlugin((s) => ({...s, loading: true, error: null}));
-    try {
-      const res = await fetch('http://localhost:8000/plugin/ensure', {method: 'POST'});
+      const res = await fetch('http://localhost:8000/plugin/ensure', { method: 'POST' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Ensure failed');
-    } catch (e) { setPlugin((s) => ({...s, error: e.message})); }
-    finally { await refreshPluginStatus(); }
+    } catch (e) {
+      setPlugin((s) => ({ ...s, error: e.message }));
+    } finally {
+      setFixingPlugin(false);
+      await refreshPluginStatus();
+    }
   };
 
   return (
@@ -155,14 +144,7 @@ function App() {
               </Card>
             </div>
             <div id="plugin" className="col" style={{gridColumn: 'span 5'}}>
-              <Card title="Статус плагина MM-Importer" actions={
-                <div className="form-row">
-                  <Button onClick={refreshPluginStatus} disabled={plugin.loading} variant="secondary">Обновить</Button>
-                  <Button onClick={handleDeployPlugin} disabled={plugin.loading}>Залить/обновить</Button>
-                  <Button onClick={handleEnablePlugin} disabled={plugin.loading}>Включить</Button>
-                  <Button onClick={handleEnsurePlugin} disabled={plugin.loading}>Автоустановка</Button>
-                </div>
-              }>
+              <Card title="Статус плагина MM-Importer" actions={<div className="form-row"><Button onClick={refreshPluginStatus} disabled={plugin.loading} variant="secondary">Обновить</Button></div>}>
                 {plugin.loading && <div>Загрузка статуса…</div>}
                 {plugin.error && <div style={{color:'#f87171'}}>Ошибка: {plugin.error}</div>}
                 {plugin.data && (
@@ -216,6 +198,31 @@ function App() {
           </div>
         </Main>
       </div>
+      {/* Blocking modal for plugin issues */}
+      <Modal
+        open={!!plugin.data && needsPluginFix}
+        title="Требуется действие: плагин MM-Importer"
+        width={640}
+        actions={
+          <>
+            <Button onClick={handleFixPlugin} disabled={fixingPlugin}>
+              {fixingPlugin ? 'Исправляю…' : 'Сделать хорошо'}
+            </Button>
+          </>
+        }
+      >
+        <div className="small" style={{lineHeight: 1.8}}>
+          <p>
+            Для работы импорта необходим плагин MM-Importer.
+            Сейчас состояние: установлен — <b>{plugin?.data?.installed ? 'да' : 'нет'}</b>,
+            включен — <b>{plugin?.data?.enabled ? 'да' : 'нет'}</b>,
+            нуждается в обновлении — <b>{plugin?.data?.needs_update ? 'да' : 'нет'}</b>.
+          </p>
+          <p>
+            Нажмите «Сделать хорошо», чтобы выполнить автоустановку/обновление и включение плагина.
+          </p>
+        </div>
+      </Modal>
     </div>
   );
 }

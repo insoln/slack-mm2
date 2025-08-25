@@ -57,10 +57,10 @@ class MMApiMixin:
             backend_logger.debug(f"MM API POST multipart {url} status={resp.status_code} resp={resp.text}")
             return resp
 
-    async def download_file(self, url):
-        """Скачать файл по URL"""
+    async def download_file(self, url, headers=None):
+        """Скачать файл по URL. Опционально с заголовками (например, Slack Bearer Token)."""
         backend_logger.debug(f"Downloading file from {url}")
         async with httpx.AsyncClient(follow_redirects=True) as client:
-            resp = await client.get(url, timeout=30)
+            resp = await client.get(url, headers=headers or {}, timeout=30)
             backend_logger.debug(f"Download {url} status={resp.status_code}")
             return resp 

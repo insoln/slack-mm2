@@ -59,3 +59,11 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: Inter,
 .table th:first-child, .table td:first-child { text-align: left; }
 .table thead th { background: var(--bg-elev-1); color: var(--muted); font-weight: 600; }
 .table tfoot td { background: var(--bg-elev-1); font-weight: 600; }
+
+/* Modal */
+.modal { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; }
+.modal__backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(2px); }
+.modal__content { position: relative; background: #0b1223; border: 1px solid var(--border); border-radius: 12px; padding: 20px; width: calc(100% - 32px); box-shadow: 0 20px 40px rgba(0,0,0,0.5); }
+.modal__head { margin-bottom: 12px; }
+.modal__body { color: #e5e7eb; line-height: 1.6; }
+.modal__actions { margin-top: 16px; display: flex; gap: 8px; justify-content: flex-end; }
