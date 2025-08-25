@@ -14,6 +14,9 @@ function App() {
   const [exportError, setExportError] = useState(null);
   const [plugin, setPlugin] = useState({loading: false, data: null, error: null});
   const [fixingPlugin, setFixingPlugin] = useState(false);
+  const [installingPlugin, setInstallingPlugin] = useState(false);
+  const [reloadCountdown, setReloadCountdown] = useState(5);
+  const [installSession, setInstallSession] = useState(false);
   const [stats, setStats] = useState({loading: false, data: null, error: null});
 
   useEffect(() => {
@@ -41,6 +44,61 @@ function App() {
   useEffect(() => { refreshPluginStatus(); }, []);
 
   const needsPluginFix = !!(plugin?.data && (!plugin.data.installed || plugin.data.needs_update || !plugin.data.enabled));
+  const pluginNotInstalled = !!(plugin?.data && !plugin.data.installed);
+  // Auto-ensure flow: if page opens while plugin is not installed, start ensure in background and show blocking modal
+  useEffect(() => {
+    const run = async () => {
+      if (!pluginNotInstalled || installingPlugin) return;
+      setInstallingPlugin(true);
+      setInstallSession(true);
+      try {
+        await fetch('http://localhost:8000/plugin/ensure', { method: 'POST' });
+  } catch {
+        // swallow; UI will fall back to actionable modal
+      } finally {
+        // poll status a few times while installing (fetch fresh each attempt)
+        let attempts = 0;
+        const maxAttempts = 6; // ~30s with 5s interval
+        while (attempts < maxAttempts) {
+          // wait 5s
+          await new Promise(r => setTimeout(r, 5000));
+          try {
+            const res = await fetch('http://localhost:8000/plugin/status');
+            const data = await res.json();
+            setPlugin({ loading: false, data, error: null });
+            if (data && data.installed && data.enabled && !data.needs_update) {
+              break;
+            }
+          } catch {
+            // ignore
+          }
+          attempts += 1;
+        }
+        setInstallingPlugin(false);
+      }
+    };
+    run();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pluginNotInstalled]);
+
+  // When install completed, schedule auto-reload after a short countdown to close the modal and refresh state
+  useEffect(() => {
+    if (!installSession || installingPlugin) return;
+    const ok = plugin?.data && plugin.data.installed && plugin.data.enabled && !plugin.data.needs_update;
+    if (!ok) return;
+    setReloadCountdown(5);
+    const timer = setInterval(() => {
+      setReloadCountdown((n) => {
+        if (n <= 1) {
+          clearInterval(timer);
+          window.location.reload();
+          return 0;
+        }
+        return n - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [installSession, installingPlugin, plugin]);
 
   const refreshStats = async () => {
     setStats((s) => ({...s, loading: true, error: null}));
@@ -213,9 +271,22 @@ function App() {
           </div>
         </Main>
       </div>
-      {/* Blocking modal for plugin issues */}
+      {/* Blocking modal during auto-install (no actions) */}
       <Modal
-        open={!!plugin.data && needsPluginFix}
+        open={!!plugin.data && installingPlugin}
+        title="Устанавливается плагин MM-Importer"
+        width={560}
+        actions={null}
+      >
+        <div className="small" style={{lineHeight: 1.8}}>
+          <p>Подождите, плагин устанавливается… Это может занять до 30 секунд.</p>
+          <p>После завершения страница перезагрузится автоматически{reloadCountdown > 0 ? ` через ${reloadCountdown} с` : ''}.</p>
+        </div>
+      </Modal>
+
+      {/* Blocking modal for plugin issues with action button */}
+      <Modal
+        open={!!plugin.data && needsPluginFix && !installingPlugin}
         title="Требуется действие: плагин MM-Importer"
         width={640}
         actions={
