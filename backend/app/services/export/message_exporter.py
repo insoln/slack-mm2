@@ -40,6 +40,8 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
 
         # Build message text with rich-text conversion when possible
         text = await self._build_message_text(raw)
+        # Replace any @Sxxxx subteam IDs with @handle using original Slack tokens
+        text = await self._rewrite_subteam_ids_to_handles(raw, text)
         if not (text and text.strip()):
             # If attachments exist, a single space is enough; otherwise put a hyphen to make it visible
             text = " " if file_ids else "-"
@@ -63,6 +65,7 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         except Exception as e:  # noqa: BLE001
             backend_logger.debug(f"Ensure channel membership failed (non-fatal): {e}")
 
+        props = await self._build_post_props(raw, text)
         payload = {
             "user_id": user_id,
             "channel_id": channel_id,
@@ -73,6 +76,8 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
             payload["root_id"] = root_id
         if file_ids:
             payload["file_ids"] = file_ids
+        if props:
+            payload["props"] = props
 
         try:
             resp = await self.mm_api_post("/plugins/mm-importer/api/v1/import", payload)
@@ -94,6 +99,71 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
             backend_logger.debug(f"Message exported, post_id={post_id}")
         except Exception as e:  # noqa: BLE001
             await self.set_status("failed", error=str(e))
+
+    async def _build_post_props(self, raw: dict, rendered_text: str) -> dict:
+        """Prepare post props for future subteam plugin and enterprise groups compatibility.
+        - Capture Slack subteam tokens in source (from blocks or text) and resolved mentions
+        - Provide a structured list under props["subteams"] with fields id, handle, name, members (optional)
+        - Also include props["mentions_subteams"]: list of @handles present in final text
+        """
+        props: dict = {}
+        try:
+            import re
+            subteams: list[dict] = []
+            seen_ids: set[str] = set()
+            seen_handles: set[str] = set()
+            # From raw text tokens like <!subteam^S123|@group>
+            txt = (raw.get("text") or "")
+            for m in re.finditer(r"<!subteam\^([A-Z0-9]+)\|(@[\w.-]+)>", txt):
+                sid, handle = m.group(1), m.group(2)
+                if sid not in seen_ids:
+                    subteams.append({"id": sid, "handle": handle})
+                    seen_ids.add(sid)
+            # From rich blocks usergroup elements
+            for b in (raw.get("blocks") or []):
+                if b.get("type") == "rich_text":
+                    for el in b.get("elements", []) or []:
+                        for e in el.get("elements", []) or []:
+                            if isinstance(e, dict) and e.get("type") == "usergroup":
+                                sid = e.get("usergroup_id")
+                                if sid and sid not in seen_ids:
+                                    subteams.append({"id": sid})
+                                    seen_ids.add(sid)
+            if subteams:
+                props["subteams"] = subteams
+            # Mentions of @handles in final text (could be enterprise groups or our plugin groups)
+            handles = set(re.findall(r"(^|\s)@([\w.-]{2,})\b", rendered_text))
+            # re.findall returns tuples (prefix, handle), take handle
+            mention_handles = [h[1] for h in handles]
+            if mention_handles:
+                props["mentions_subteams"] = mention_handles
+        except Exception as _:
+            return props
+        return props
+
+    async def _rewrite_subteam_ids_to_handles(self, raw: dict, text: str) -> str:
+        """If final text still contains @S… subteam ids, replace them with @handle
+        using mappings found in original raw text tokens.
+        """
+        try:
+            import re
+            orig = raw.get("text") or ""
+            id_to_handle: dict[str, str] = {}
+            for m in re.finditer(r"<!subteam\^([A-Z0-9]+)\|(@[^>]+)>", orig):
+                sid, handle = m.group(1), m.group(2)
+                if sid and handle:
+                    id_to_handle[sid] = handle
+            if not id_to_handle:
+                return text
+            def sub(m):
+                full = m.group(0)  # like @S02AMBN3W1K
+                sid = full[1:]
+                handle = id_to_handle.get(sid)
+                return handle if handle is not None else full
+            # Replace occurrences of @SXXXX with mapped @handle
+            return re.sub(r"@S[0-9A-Z]+", sub, text)
+        except Exception:  # noqa: BLE001
+            return text
 
     async def _build_message_text(self, raw: dict) -> str:
         """Convert Slack message (text or blocks) to Mattermost-friendly Markdown.
@@ -171,6 +241,12 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         txt = re.sub(r"<!here>", "@here", txt)
         txt = re.sub(r"<!channel>", "@channel", txt)
         txt = re.sub(r"<!everyone>", "@all", txt)
+
+        # Slack subteam tokens: <!subteam^S123|@handle> -> @handle
+        def repl_subteam(m):
+            handle = m.group(2)  # includes leading @ from Slack token
+            return handle
+        txt = re.sub(r"<!subteam\^([A-Z0-9]+)\|(@[^>]+)>", repl_subteam, txt)
 
         # Links with labels: <url|label>
         def repl_link(m):
@@ -333,9 +409,14 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
             uname = await self._resolve_username_by_slack_id(uid) if uid else None
             return f"@{uname}" if uname else (f"@{uid}" if uid else "")
         if t == "usergroup":
-            # Represent user groups as @group_name if possible; fallback to ID
+            # Try to resolve @handle from original text tokens; fallback to @ID
             gid = el.get("usergroup_id")
-            return f"@{gid}" if gid else ""
+            if gid:
+                handle = await self._resolve_usergroup_handle_by_id(gid)
+                if handle:
+                    return handle
+                return f"@{gid}"
+            return ""
         if t == "channel":
             cid = el.get("channel_id")
             ch_name = await self._resolve_channel_name_by_slack_id(cid) if cid else None
@@ -527,3 +608,21 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
             return ms
         except Exception:  # noqa: BLE001
             return None
+
+    async def _resolve_usergroup_handle_by_id(self, gid: Optional[str]) -> Optional[str]:
+        """Best-effort: find @handle for a Slack subteam id by scanning original text tokens
+        like <!subteam^S123|@handle> in raw_data.text. This avoids needing Slack API usergroups.
+        """
+        if not gid:
+            return None
+        try:
+            import re
+            raw = self.entity.raw_data or {}
+            txt = raw.get("text") or ""
+            for m in re.finditer(r"<!subteam\^([A-Z0-9]+)\|(@[^>]+)>", txt):
+                sid, handle = m.group(1), m.group(2)
+                if sid == gid and handle:
+                    return handle
+        except Exception:  # noqa: BLE001
+            return None
+        return None

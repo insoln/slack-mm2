@@ -11,8 +11,9 @@ class Message(BaseMapping):
     entity_type = "message"
     # Можно добавить специфичные методы/валидацию, если нужно
 
-    async def save_to_db(self, channel_id):
-        if self.raw_data is not None and 'channel_id' not in self.raw_data:
+    async def save_to_db(self, channel_id=None):
+        # Keep signature compatible with BaseMapping.save_to_db()
+        if channel_id is not None and self.raw_data is not None and 'channel_id' not in self.raw_data:
             self.raw_data['channel_id'] = channel_id
         return await super().save_to_db()
 

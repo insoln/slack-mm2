@@ -84,6 +84,7 @@ type ImportPostRequest struct {
 	CreateAt  int64    `json:"create_at"`
 	RootID    string   `json:"root_id,omitempty"`
 	FileIDs   []string `json:"file_ids,omitempty"`
+	Props     map[string]any `json:"props,omitempty"`
 }
 
 type ImportPostResponse struct {
@@ -116,6 +117,9 @@ func (p *Plugin) ImportPost(w http.ResponseWriter, r *http.Request) {
 		CreateAt:  req.CreateAt,
 		RootId:    req.RootID,
 		FileIds:   req.FileIDs,
+	}
+	if req.Props != nil {
+		post.Props = req.Props
 	}
 	created, appErr := p.API.CreatePost(post)
 	if appErr != nil {
