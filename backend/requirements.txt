@@ -12,3 +12,4 @@ requests
 requests-toolbelt
 sqlalchemy
 asyncpg
+ijson

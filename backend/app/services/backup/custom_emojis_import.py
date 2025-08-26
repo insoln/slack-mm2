@@ -1,5 +1,8 @@
 import re
 from typing import Dict, Set, Optional
+import os
+import glob
+import ijson
 from app.logging_config import backend_logger
 from app.services.entities.custom_emoji import CustomEmoji
 from app.models.base import SessionLocal
@@ -129,4 +132,58 @@ async def parse_custom_emojis_from_messages(message_entities, emoji_list=None):
             created.append(emoji_entity)
 
     backend_logger.info(f"Импортировано кастомных эмодзи из сообщений: {len(created)}")
+    return created
+
+
+async def parse_custom_emojis_from_export(export_dir: str, folder_channel_map: Dict[str, dict], emoji_list: Optional[Dict[str, str]] = None) -> int:
+    """Stream files in export to collect custom emoji usages and create entities.
+    Returns number of created emojis.
+    """
+    if not emoji_list:
+        backend_logger.info("Список эмодзи Slack пуст или не задан; пропускаю создание custom_emoji из экспорта")
+        return 0
+
+    wanted: Set[str] = set()
+    for folder, _ in folder_channel_map.items():
+        folder_path = os.path.join(export_dir, folder)
+        if not os.path.isdir(folder_path):
+            continue
+        for msg_file in glob.glob(os.path.join(folder_path, "*.json")):
+            try:
+                with open(msg_file, 'r', encoding='utf-8') as f:
+                    for msg in ijson.items(f, 'item'):
+                        # From plain text
+                        wanted |= set(EMOJI_PATTERN.findall((msg or {}).get("text") or ""))
+                        # From blocks
+                        wanted |= _collect_emoji_from_blocks((msg or {}).get("blocks") or [])
+                        # From classic attachments
+                        for a in (msg or {}).get("attachments", []) or []:
+                            for key in ("pretext", "title", "text", "fallback"):
+                                val = a.get(key)
+                                if isinstance(val, str):
+                                    wanted |= set(EMOJI_PATTERN.findall(val))
+            except Exception as e:
+                backend_logger.error(f"Ошибка чтения {msg_file} при сборе custom emojis: {e}")
+                continue
+
+    resolved = {name: _resolve_emoji_url(name, emoji_list) for name in wanted}
+    resolved = {k: v for k, v in resolved.items() if v}
+    if not resolved:
+        backend_logger.info("В экспорте не найдено кастомных эмодзи со ссылками в Slack API")
+        return 0
+
+    # Exclude already present
+    existing: Set[str] = set()
+    async with SessionLocal() as session:
+        q = await session.execute(select(Entity.slack_id).where(Entity.entity_type == "custom_emoji"))
+        existing = {row[0] for row in q.all()}
+
+    to_create = [name for name in resolved.keys() if name not in existing]
+    created = 0
+    for name in to_create:
+        emoji_entity = CustomEmoji(slack_id=name, raw_data={"name": name, "url": resolved[name]}, status="pending", auto_save=False)
+        ent = await emoji_entity.save_to_db()
+        if ent is not None:
+            created += 1
+    backend_logger.info(f"Импортировано кастомных эмодзи из экспорта: {created}")
     return created

@@ -3,6 +3,18 @@ import httpx
 from app.logging_config import backend_logger
 
 class MMApiMixin:
+    def _redact_payload(self, payload):
+        """Return a payload copy safe for logging: mask large/sensitive fields."""
+        try:
+            if isinstance(payload, dict):
+                safe = dict(payload)
+                if 'content_base64' in safe and isinstance(safe['content_base64'], str):
+                    safe['content_base64'] = f"[redacted base64, {len(payload['content_base64'])} chars]"
+                return safe
+        except Exception:
+            # Best-effort redaction; on any issue just return a placeholder
+            return '[unloggable payload]'
+        return payload
     async def mm_api_get(self, path):
         url = f"{os.environ['MM_URL']}{path}"
         backend_logger.debug(f"MM API GET {url}")
@@ -17,7 +29,7 @@ class MMApiMixin:
 
     async def mm_api_post(self, path, payload):
         url = f"{os.environ['MM_URL']}{path}"
-        backend_logger.debug(f"MM API POST {url} payload={payload}")
+        backend_logger.debug(f"MM API POST {url} payload={self._redact_payload(payload)}")
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 url,
