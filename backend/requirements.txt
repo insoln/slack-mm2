@@ -13,3 +13,4 @@ requests-toolbelt
 sqlalchemy
 asyncpg
 ijson
+aiosqlite

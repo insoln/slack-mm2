@@ -10,6 +10,7 @@ from app.logging_config import backend_logger
 from app.models.base import SessionLocal
 from app.models.entity import Entity
 from sqlalchemy import select
+from app.utils.filters import job_scoped_condition
 
 
 class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
@@ -643,16 +644,9 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
 
         # Find parent message entity by slack thread_ts
         async with SessionLocal() as session:
-            q = await session.execute(
-                select(Entity).where(
-                    (Entity.entity_type == "message")
-                    & (Entity.slack_id == thread_ts)
-                    & (
-                        (Entity.job_id == getattr(self.entity, "job_id", None))
-                        | (Entity.job_id.is_(None))
-                    )
-                )
-            )
+            cond = (Entity.entity_type == "message") & (Entity.slack_id == thread_ts)
+            cond = job_scoped_condition(cond, "message", getattr(self.entity, "job_id", None))
+            q = await session.execute(select(Entity).where(cond))
             parent = q.scalar_one_or_none()
             if parent:
                 mmid = getattr(parent, "mattermost_id", None)

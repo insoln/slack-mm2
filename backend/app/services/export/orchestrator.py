@@ -18,6 +18,8 @@ from app.models.status_enum import MappingStatus
 from app.services.entities.user import User
 from app.services.entities.custom_emoji import CustomEmoji
 from app.services.entities.attachment import Attachment
+from app.utils.time import parse_slack_ts
+from app.utils.filters import job_scoped_condition
 
 EXPORT_ORDER = [
     ("user", UserExporter),
@@ -59,16 +61,7 @@ async def get_entities_to_export(entity_type: str, job_id=None):
             (Entity.entity_type == entity_type)
             & (Entity.status.in_([MappingStatus.pending, MappingStatus.skipped, MappingStatus.failed]))
         )
-        # Scope per-job for job-specific types
-        if entity_type in ("message", "reaction", "attachment"):
-            if job_id is not None:
-                cond = cond & (Entity.job_id == job_id)
-            else:
-                # If no job specified, do not export job-scoped items
-                cond = cond & (Entity.job_id.is_(None))
-    # Global types (user, channel, custom_emoji): don't filter by job_id to pick up any legacy rows
-    # elif entity_type in ("user", "channel", "custom_emoji"):
-    #     cond = cond & (Entity.job_id.is_(None))
+        cond = job_scoped_condition(cond, entity_type, job_id)
 
         query = await session.execute(select(Entity).where(cond))
         entities = query.scalars().all()
@@ -95,10 +88,7 @@ async def get_entities_to_export(entity_type: str, job_id=None):
                     reply_set = {row[0] for row in rel_rows.all()}
 
                 def ts_key(ent):
-                    try:
-                        return float(str(ent.slack_id))
-                    except Exception:
-                        return float("inf")
+                    return parse_slack_ts(ent.slack_id)
 
                 entities_sorted = sorted(
                     entities,
@@ -113,11 +103,7 @@ async def get_entities_to_export(entity_type: str, job_id=None):
         elif entity_type == "reaction":
             # Ensure reactions are processed after their target messages; simple ts sort as tie-breaker
             def ts_key(ent):
-                try:
-                    # slack_id format might be "<ts>_<name>_<user>"; take ts part
-                    return float(str(ent.slack_id).split("_")[0])
-                except Exception:
-                    return float("inf")
+                return parse_slack_ts(ent.slack_id)
             return sorted(entities, key=ts_key)
         return entities
 
@@ -245,12 +231,14 @@ async def orchestrate_mm_export(job_id=None):
 
             # Mark job as completed to let the scheduler advance to the next one
             try:
+                from sqlalchemy import update
                 async with SessionLocal() as session:
-                    job_row = await session.get(ImportJob, j.id)
-                    if job_row is not None:
-                        setattr(job_row, "current_stage", "done")
-                        setattr(job_row, "status", JobStatus.success)
-                        await session.commit()
+                    await session.execute(
+                        update(ImportJob)
+                        .where(ImportJob.id == j.id)
+                        .values(current_stage="done", status=JobStatus.success)
+                    )
+                    await session.commit()
             except Exception as ex:  # noqa: BLE001
                 backend_logger.error(f"Не удалось обновить статус job_id={j.id} на done: {ex}")
 
@@ -311,10 +299,7 @@ async def _export_messages_per_channel(job_id: int, mm_user_id: str) -> None:
             groups.setdefault(ch, []).append(m)
 
         def ts_key(ent: Entity) -> float:
-            try:
-                return float(str(ent.slack_id))
-            except Exception:
-                return float("inf")
+            return parse_slack_ts(ent.slack_id)
 
         # Sort each channel: roots first then ts asc
         for ch_id, lst in groups.items():

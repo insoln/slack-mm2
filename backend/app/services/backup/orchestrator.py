@@ -329,19 +329,23 @@ async def orchestrate_slack_import(zip_path):
 
         # done
         async with SessionLocal() as session:
-            job = await session.get(ImportJob, job_id)
-            if job:
-                setattr(job, "current_stage", "done")
-                setattr(job, "status", JobStatus.success)
-                await session.commit()
+            from sqlalchemy import update
+            await session.execute(
+                update(ImportJob)
+                .where(ImportJob.id == job_id)
+                .values(current_stage="done", status=JobStatus.success)
+            )
+            await session.commit()
     except Exception as e:
         backend_logger.error(f"Оркестратор импорта завершился с ошибкой: {e}")
         async with SessionLocal() as session:
-            job = await session.get(ImportJob, job_id)
-            if job:
-                setattr(job, "status", JobStatus.failed)
-                setattr(job, "error_message", str(e))
-                await session.commit()
+            from sqlalchemy import update
+            await session.execute(
+                update(ImportJob)
+                .where(ImportJob.id == job_id)
+                .values(status=JobStatus.failed, error_message=str(e))
+            )
+            await session.commit()
         raise
     finally:
         try:
