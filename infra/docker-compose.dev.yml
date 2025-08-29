@@ -123,11 +123,23 @@ services:
     ports:
       - "8065:8065"
     volumes:
-      # Монтируем всю директорию конфигов, чтобы контейнер мог писать mm_config.json
-      # Для систем с SELinux добавляем :Z; убедитесь, что директория на хосте доступна на запись UID/GID контейнера (обычно 2000:2000)
-      - ../infra/mattermost:/mattermost/config:Z
+      - mm_config:/mattermost/config
     depends_on:
-      - db 
+      db:
+        condition: service_started
+      mm-config-init:
+        condition: service_completed_successfully
+
+  # Одноразовый инициализатор конфигурации Mattermost: копирует seed и выставляет права
+  mm-config-init:
+    image: alpine:3.20
+    user: "0:0"
+    command: ["/bin/sh", "-lc", "set -e; mkdir -p /config; if [ ! -f /config/mm_config.json ]; then cp /seed/mm_config.json /config/mm_config.json; fi; chown -R 2000:2000 /config"]
+    volumes:
+      - mm_config:/config
+      - ../infra/mattermost/mm_config.json:/seed/mm_config.json:ro
+    restart: "no"
 
 volumes:
   frontend_node_modules:
+  mm_config:

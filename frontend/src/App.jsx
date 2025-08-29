@@ -22,7 +22,7 @@ function App() {
   const [jobs, setJobs] = useState({ loading: false, data: [], error: null });
 
   useEffect(() => {
-    fetch('http://localhost:8000/healthcheck')
+    fetch('/api/healthcheck')
       .then((res) => {
         if (!res.ok) throw new Error('Network response was not ok');
         return res.json();
@@ -34,7 +34,7 @@ function App() {
   const refreshPluginStatus = async () => {
     setPlugin((s) => ({...s, loading: true, error: null}));
     try {
-      const res = await fetch('http://localhost:8000/plugin/status');
+  const res = await fetch('/api/plugin/status');
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to get plugin status');
       setPlugin({loading: false, data, error: null});
@@ -54,7 +54,7 @@ function App() {
       setInstallingPlugin(true);
       setInstallSession(true);
       try {
-        await fetch('http://localhost:8000/plugin/ensure', { method: 'POST' });
+  await fetch('/api/plugin/ensure', { method: 'POST' });
   } catch {
         // swallow; UI will fall back to actionable modal
       } finally {
@@ -65,7 +65,7 @@ function App() {
           // wait 5s
           await new Promise(r => setTimeout(r, 5000));
           try {
-            const res = await fetch('http://localhost:8000/plugin/status');
+            const res = await fetch('/api/plugin/status');
             const data = await res.json();
             setPlugin({ loading: false, data, error: null });
             if (data && data.installed && data.enabled && !data.needs_update) {
@@ -105,7 +105,7 @@ function App() {
   const refreshStats = async () => {
     setStats((s) => ({...s, loading: true, error: null}));
     try {
-      const res = await fetch('http://localhost:8000/stats/mappings');
+      const res = await fetch('/api/stats/mappings');
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Не удалось получить статистику');
       setStats({loading: false, data, error: null});
@@ -122,7 +122,7 @@ function App() {
     const load = async () => {
       try {
         setJobs((s) => ({ ...s, loading: true }));
-  const res = await fetch('http://localhost:8000/jobs');
+  const res = await fetch('/api/jobs');
         const data = await res.json();
         if (!mounted) return;
   if (!res.ok) throw new Error(data.error || 'Не удалось получить список задач');
@@ -139,7 +139,7 @@ function App() {
 
   // Subscribe to live progress via SSE
   useEffect(() => {
-    const es = new EventSource('http://localhost:8000/progress/stream');
+  const es = new EventSource('/api/progress/stream');
     es.addEventListener('stats', (e) => {
       try { setLiveStats(JSON.parse(e.data)); } catch { /* ignore parse error */ }
     });
@@ -174,7 +174,7 @@ function App() {
     formData.append('file', file);
     try {
       const xhr = new window.XMLHttpRequest();
-      xhr.open('POST', 'http://localhost:8000/upload');
+  xhr.open('POST', '/api/upload');
       xhr.upload.onprogress = (event) => { if (event.lengthComputable) setUploadProgress(Math.round((event.loaded / event.total) * 100)); };
       xhr.onload = () => {
         try {
@@ -196,7 +196,7 @@ function App() {
     setExportStatus(null);
     setExportError(null);
     try {
-      const response = await fetch('http://localhost:8000/export', { method: 'POST' });
+  const response = await fetch('/api/export', { method: 'POST' });
       const data = await response.json();
       if (response.ok) setExportStatus(data.message); else setExportError(data.error || 'Ошибка запуска экспорта');
     } catch (err) { setExportError(err?.message || 'Ошибка сети'); }
@@ -205,7 +205,7 @@ function App() {
   const handleFixPlugin = async () => {
     setFixingPlugin(true);
     try {
-      const res = await fetch('http://localhost:8000/plugin/ensure', { method: 'POST' });
+  const res = await fetch('/api/plugin/ensure', { method: 'POST' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Ensure failed');
     } catch (e) {
