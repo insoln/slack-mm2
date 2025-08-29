@@ -2,6 +2,7 @@ from __future__ import annotations
 from sqlalchemy import and_, or_
 from app.models.entity import Entity
 
+
 def job_scoped_condition(base_cond, entity_type: str, job_id):
     """
     Build a condition adding job scoping rules:

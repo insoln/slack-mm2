@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 def parse_slack_ts(slack_id) -> float:
     """
     Convert a Slack message/reaction ID timestamp to float.

@@ -7,14 +7,19 @@ from app.models.base import SessionLocal
 from sqlalchemy import select
 from app.logging_config import backend_logger
 
+
 class Message(BaseMapping):
     entity_type = "message"
     # Можно добавить специфичные методы/валидацию, если нужно
 
     async def save_to_db(self, channel_id=None):
         # Keep signature compatible with BaseMapping.save_to_db()
-        if channel_id is not None and self.raw_data is not None and 'channel_id' not in self.raw_data:
-            self.raw_data['channel_id'] = channel_id
+        if (
+            channel_id is not None
+            and self.raw_data is not None
+            and "channel_id" not in self.raw_data
+        ):
+            self.raw_data["channel_id"] = channel_id
         return await super().save_to_db()
 
     async def create_posted_in_relation(self, channel_id):
@@ -24,7 +29,7 @@ class Message(BaseMapping):
                     (Entity.entity_type == "channel")
                     & (Entity.slack_id == channel_id)
                     & (
-                        (Entity.job_id == getattr(self, 'job_id', None))
+                        (Entity.job_id == getattr(self, "job_id", None))
                         | (Entity.job_id.is_(None))
                     )
                 )
@@ -34,9 +39,9 @@ class Message(BaseMapping):
                 # Skip if relation already exists
                 existing_rel = await session.execute(
                     select(EntityRelation).where(
-                        (EntityRelation.from_entity_id == self.id) &
-                        (EntityRelation.to_entity_id == channel_entity.id) &
-                        (EntityRelation.relation_type == "posted_in")
+                        (EntityRelation.from_entity_id == self.id)
+                        & (EntityRelation.to_entity_id == channel_entity.id)
+                        & (EntityRelation.relation_type == "posted_in")
                     )
                 )
                 if not existing_rel.scalar_one_or_none():
@@ -45,7 +50,7 @@ class Message(BaseMapping):
                         to_entity_id=channel_entity.id,
                         relation_type="posted_in",
                         raw_data=None,
-                        job_id=getattr(self, 'job_id', None),
+                        job_id=getattr(self, "job_id", None),
                     )
                     session.add(relation)
                     await session.commit()
@@ -62,23 +67,38 @@ class Message(BaseMapping):
                     (Entity.entity_type == "user")
                     & (Entity.slack_id == user_id)
                     & (
-                        (Entity.job_id == getattr(self, 'job_id', None))
+                        (Entity.job_id == getattr(self, "job_id", None))
                         | (Entity.job_id.is_(None))
                     )
                 )
             )
             user_entity = query.scalar_one_or_none()
             # Если user не найден, а user_id похож на bot_id, создать user-entity для бота
-            if not user_entity and user_id and (user_id.startswith('B') or user_id == 'USLACKBOT'):
+            if (
+                not user_entity
+                and user_id
+                and (user_id.startswith("B") or user_id == "USLACKBOT")
+            ):
                 backend_logger.debug(f"Создание user-entity для бота: {user_id}")
                 from app.services.entities.user import User
+
                 username = self.raw_data.get("username") if self.raw_data else None
-                bot_user = User(slack_id=user_id, raw_data={"is_bot": True, "first_name": username}, status="pending", auto_save=False, job_id=getattr(self, 'job_id', None))
+                bot_user = User(
+                    slack_id=user_id,
+                    raw_data={"is_bot": True, "first_name": username},
+                    status="pending",
+                    auto_save=False,
+                    job_id=getattr(self, "job_id", None),
+                )
                 user_entity = await bot_user.save_to_db()
                 if user_entity:
-                    backend_logger.debug(f"user-entity для бота создан: id={user_entity.id}, slack_id={user_id}")
+                    backend_logger.debug(
+                        f"user-entity для бота создан: id={user_entity.id}, slack_id={user_id}"
+                    )
                 else:
-                    backend_logger.error(f"user-entity для бота НЕ создан: slack_id={user_id}")
+                    backend_logger.error(
+                        f"user-entity для бота НЕ создан: slack_id={user_id}"
+                    )
             if user_entity:
                 try:
                     backend_logger.debug(
@@ -121,7 +141,7 @@ class Message(BaseMapping):
                 select(Entity).where(
                     (Entity.entity_type == "message")
                     & (Entity.slack_id == thread_ts)
-                    & (Entity.job_id == getattr(self, 'job_id', None))
+                    & (Entity.job_id == getattr(self, "job_id", None))
                 )
             )
             parent_entity = query_parent.scalar_one_or_none()
@@ -130,9 +150,9 @@ class Message(BaseMapping):
             # Skip if relation already exists
             existing_rel = await session.execute(
                 select(EntityRelation).where(
-                    (EntityRelation.from_entity_id == self.id) &
-                    (EntityRelation.to_entity_id == parent_entity.id) &
-                    (EntityRelation.relation_type == "thread_reply")
+                    (EntityRelation.from_entity_id == self.id)
+                    & (EntityRelation.to_entity_id == parent_entity.id)
+                    & (EntityRelation.relation_type == "thread_reply")
                 )
             )
             if not existing_rel.scalar_one_or_none():
@@ -141,7 +161,7 @@ class Message(BaseMapping):
                     to_entity_id=parent_entity.id,
                     relation_type="thread_reply",
                     raw_data=None,
-                    job_id=getattr(self, 'job_id', None),
+                    job_id=getattr(self, "job_id", None),
                 )
                 session.add(relation)
-                await session.commit() 
+                await session.commit()

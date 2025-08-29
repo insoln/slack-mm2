@@ -10,15 +10,16 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '007_perf_indexes'
-down_revision = '006_add_job_id_scoping'
+revision = "007_perf_indexes"
+down_revision = "006_add_job_id_scoping"
 branch_labels = None
 depends_on = None
 
 
 def upgrade() -> None:
     # Use IF NOT EXISTS to be idempotent if indexes were created manually earlier
-    op.execute("""
+    op.execute(
+        """
     DO $$
     BEGIN
         IF NOT EXISTS (
@@ -56,14 +57,17 @@ def upgrade() -> None:
             CREATE INDEX ix_rel_type_to ON entity_relations (relation_type, to_entity_id);
         END IF;
     END$$;
-    """)
+    """
+    )
 
 
 def downgrade() -> None:
-    op.execute("""
+    op.execute(
+        """
     DROP INDEX IF EXISTS ix_rel_type_to;
     DROP INDEX IF EXISTS ix_rel_type_from;
     DROP INDEX IF EXISTS ix_entities_type_slack;
     DROP INDEX IF EXISTS ix_entities_job_slack;
     DROP INDEX IF EXISTS ix_entities_job_type_status;
-    """)
+    """
+    )

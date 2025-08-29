@@ -6,15 +6,16 @@ from app.models.entity import Entity
 from app.models.base import SessionLocal
 from sqlalchemy import select
 
+
 class Reaction(BaseMapping):
     entity_type = "reaction"
     # Можно добавить специфичные методы/валидацию, если нужно
 
     async def save_to_db(self):
         # Ensure raw_data.ts is a proper Slack ts (not the whole slack_id)
-        if self.raw_data is not None and 'ts' not in self.raw_data and self.slack_id:
+        if self.raw_data is not None and "ts" not in self.raw_data and self.slack_id:
             try:
-                self.raw_data['ts'] = str(self.slack_id).split('_')[0]
+                self.raw_data["ts"] = str(self.slack_id).split("_")[0]
             except Exception:
                 pass
         return await super().save_to_db()
@@ -120,7 +121,7 @@ class Reaction(BaseMapping):
             ts = raw.get("ts")
             if not ts and self.slack_id:
                 try:
-                    ts = str(self.slack_id).split('_')[0]
+                    ts = str(self.slack_id).split("_")[0]
                 except Exception:
                     ts = None
         if not ts:

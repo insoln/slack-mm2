@@ -1,4 +1,12 @@
-from sqlalchemy import Column, BigInteger, Text, JSON, DateTime, Enum as SAEnum, ForeignKey
+from sqlalchemy import (
+    Column,
+    BigInteger,
+    Text,
+    JSON,
+    DateTime,
+    Enum as SAEnum,
+    ForeignKey,
+)
 from sqlalchemy.sql import func
 from .base import Base
 from .status_enum import MappingStatus

@@ -9,7 +9,9 @@ router = APIRouter()
 
 
 @router.post("/upload")
-async def upload_backup(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+async def upload_backup(
+    background_tasks: BackgroundTasks, file: UploadFile = File(...)
+):
     backend_logger.info(f"UPLOAD: {file.filename}, content_type={file.content_type}")
     try:
         backend_logger.debug("Вызов save_temp_file...")

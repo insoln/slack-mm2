@@ -28,7 +28,9 @@ class ReactionExporter(ExporterBase, LoggingMixin, MMApiMixin):
 
         post_id, channel_id = await self._resolve_target_post_and_channel()
         if not post_id:
-            await self.set_status("failed", error="Target post_id not found for reaction")
+            await self.set_status(
+                "failed", error="Target post_id not found for reaction"
+            )
             return
 
         user_id = await self._resolve_mm_user_id_for_reaction()
@@ -55,7 +57,9 @@ class ReactionExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     {"channel_id": channel_id, "user_ids": [user_id]},
                 )
             except Exception as e:  # noqa: BLE001
-                backend_logger.debug(f"Ensure channel membership for reaction failed (non-fatal): {e}")
+                backend_logger.debug(
+                    f"Ensure channel membership for reaction failed (non-fatal): {e}"
+                )
 
         # Timestamp to ms if present
         create_at = self._parse_ts_ms(raw.get("ts")) or 0
@@ -69,7 +73,9 @@ class ReactionExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 "create_at": create_at,
             }
             try:
-                resp = await self.mm_api_post("/plugins/mm-importer/api/v1/reaction", payload)
+                resp = await self.mm_api_post(
+                    "/plugins/mm-importer/api/v1/reaction", payload
+                )
                 if resp.status_code in (200, 201):
                     await self.set_status("success")
                     return
@@ -83,17 +89,20 @@ class ReactionExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     await self.set_status("success")
                     return
                 if resp.status_code == 409 or (
-                    isinstance(err, str) and (
-                        "already exists" in err.lower() or
-                        "reaction exists" in err.lower() or
-                        "duplicate" in err.lower()
+                    isinstance(err, str)
+                    and (
+                        "already exists" in err.lower()
+                        or "reaction exists" in err.lower()
+                        or "duplicate" in err.lower()
                     )
                 ):
                     await self.set_status("success")
                     return
                 last_err = f"Plugin reaction failed: {resp.status_code} {err}"
                 # If it's the not found emoji error, try next candidate
-                if "We couldn’t find the emoji" in str(err) or "couldn't find the emoji" in str(err):
+                if "We couldn’t find the emoji" in str(
+                    err
+                ) or "couldn't find the emoji" in str(err):
                     continue
                 # Other errors: break
                 break
@@ -101,7 +110,10 @@ class ReactionExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 last_err = str(e)
                 break
         # If we tried all candidates and the error is unknown emoji, mark as skipped
-        if last_err and ("We couldn’t find the emoji" in last_err or "couldn't find the emoji" in last_err):
+        if last_err and (
+            "We couldn’t find the emoji" in last_err
+            or "couldn't find the emoji" in last_err
+        ):
             await self.set_status("skipped", error=last_err)
         else:
             await self.set_status("failed", error=last_err or "Unknown error")
@@ -111,13 +123,22 @@ class ReactionExporter(ExporterBase, LoggingMixin, MMApiMixin):
             return False
         async with SessionLocal() as session:
             row = await session.execute(
-                select(Entity).where((Entity.entity_type == "custom_emoji") & (Entity.slack_id == name))
+                select(Entity).where(
+                    (Entity.entity_type == "custom_emoji") & (Entity.slack_id == name)
+                )
             )
             return row.scalar_one_or_none() is not None
 
     def _normalize_standard_emoji(self, name: str) -> str:
         # Strip Slack skin tone suffix (MM expects base name or handles tones via client)
-        for suffix in ("::skin-tone-2", "::skin-tone-3", "::skin-tone-4", "::skin-tone-5", "::skin-tone-6", "::skin-tone-1"):
+        for suffix in (
+            "::skin-tone-2",
+            "::skin-tone-3",
+            "::skin-tone-4",
+            "::skin-tone-5",
+            "::skin-tone-6",
+            "::skin-tone-1",
+        ):
             if name.endswith(suffix):
                 name = name[: -len(suffix)]
                 break
@@ -140,7 +161,9 @@ class ReactionExporter(ExporterBase, LoggingMixin, MMApiMixin):
         # Default to single candidate
         return [base]
 
-    async def _resolve_target_post_and_channel(self) -> tuple[Optional[str], Optional[str]]:
+    async def _resolve_target_post_and_channel(
+        self,
+    ) -> tuple[Optional[str], Optional[str]]:
         """Find the MM post_id and channel_id for the message this reaction targets.
         Prefer the reacted_to relation to the message entity.
         """
@@ -175,7 +198,9 @@ class ReactionExporter(ExporterBase, LoggingMixin, MMApiMixin):
                         ts = None
                 if ts:
                     row2 = await session.execute(
-                        select(Entity).where((Entity.entity_type == "message") & (Entity.slack_id == ts))
+                        select(Entity).where(
+                            (Entity.entity_type == "message") & (Entity.slack_id == ts)
+                        )
                     )
                     msg_entity = row2.scalar_one_or_none()
             if not msg_entity:
@@ -196,8 +221,12 @@ class ReactionExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 )
             )
             ch_entity = ch_row.scalar_one_or_none()
-            channel_id = getattr(ch_entity, "mattermost_id", None) if ch_entity else None
-            return post_id, (channel_id if isinstance(channel_id, str) and channel_id else None)
+            channel_id = (
+                getattr(ch_entity, "mattermost_id", None) if ch_entity else None
+            )
+            return post_id, (
+                channel_id if isinstance(channel_id, str) and channel_id else None
+            )
 
     async def _resolve_mm_user_id_for_reaction(self) -> Optional[str]:
         """Find the MM user id who reacted. Prefer reacted_by relation, fallback by raw user in reaction."""
@@ -224,7 +253,9 @@ class ReactionExporter(ExporterBase, LoggingMixin, MMApiMixin):
         if slack_uid:
             async with SessionLocal() as session:
                 row2 = await session.execute(
-                    select(Entity).where((Entity.entity_type == "user") & (Entity.slack_id == slack_uid))
+                    select(Entity).where(
+                        (Entity.entity_type == "user") & (Entity.slack_id == slack_uid)
+                    )
                 )
                 u = row2.scalar_one_or_none()
                 if u:

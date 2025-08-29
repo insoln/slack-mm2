@@ -77,7 +77,11 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
 
         # Best-effort: ensure author is a channel member to prevent CreatePost failure
         try:
-            mset = self.caches.get("membership_seen") if isinstance(self.caches.get("membership_seen"), set) else None
+            mset = (
+                self.caches.get("membership_seen")
+                if isinstance(self.caches.get("membership_seen"), set)
+                else None
+            )
             key = (channel_id, user_id)
             if mset is None or key not in mset:
                 _ = await self.mm_api_post(
@@ -111,12 +115,16 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     err = data.get("error") or data
                 except Exception:
                     err = resp.text
-                await self.set_status("failed", error=f"Plugin import failed: {resp.status_code} {err}")
+                await self.set_status(
+                    "failed", error=f"Plugin import failed: {resp.status_code} {err}"
+                )
                 return
             data = resp.json()
             post_id = data.get("post_id")
             if not post_id:
-                await self.set_status("failed", error=f"No post_id in plugin response: {data}")
+                await self.set_status(
+                    "failed", error=f"No post_id in plugin response: {data}"
+                )
                 return
             self.entity.mattermost_id = post_id
             await self.set_status("success")
@@ -133,18 +141,19 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         props: dict = {}
         try:
             import re
+
             subteams: list[dict] = []
             seen_ids: set[str] = set()
             seen_handles: set[str] = set()
             # From raw text tokens like <!subteam^S123|@group>
-            txt = (raw.get("text") or "")
+            txt = raw.get("text") or ""
             for m in re.finditer(r"<!subteam\^([A-Z0-9]+)\|(@[\w.-]+)>", txt):
                 sid, handle = m.group(1), m.group(2)
                 if sid not in seen_ids:
                     subteams.append({"id": sid, "handle": handle})
                     seen_ids.add(sid)
             # From rich blocks usergroup elements
-            for b in (raw.get("blocks") or []):
+            for b in raw.get("blocks") or []:
                 if b.get("type") == "rich_text":
                     for el in b.get("elements", []) or []:
                         for e in el.get("elements", []) or []:
@@ -171,6 +180,7 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         """
         try:
             import re
+
             orig = raw.get("text") or ""
             id_to_handle: dict[str, str] = {}
             for m in re.finditer(r"<!subteam\^([A-Z0-9]+)\|(@[^>]+)>", orig):
@@ -179,11 +189,13 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     id_to_handle[sid] = handle
             if not id_to_handle:
                 return text
+
             def sub(m):
                 full = m.group(0)  # like @S02AMBN3W1K
                 sid = full[1:]
                 handle = id_to_handle.get(sid)
                 return handle if handle is not None else full
+
             # Replace occurrences of @SXXXX with mapped @handle
             return re.sub(r"@S[0-9A-Z]+", sub, text)
         except Exception:  # noqa: BLE001
@@ -202,9 +214,13 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 if md and md.strip():
                     return md
                 # If rich conversion produced nothing, fall back to plain text
-                backend_logger.debug("Rich blocks produced empty text, falling back to raw text conversion")
+                backend_logger.debug(
+                    "Rich blocks produced empty text, falling back to raw text conversion"
+                )
             except Exception as e:  # noqa: BLE001
-                backend_logger.debug(f"Rich blocks conversion failed, fallback to text: {e}")
+                backend_logger.debug(
+                    f"Rich blocks conversion failed, fallback to text: {e}"
+                )
         # Classic attachments (e.g., Alertmanager)
         atts = raw.get("attachments") or []
         if isinstance(atts, list) and atts:
@@ -213,7 +229,9 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 if md and md.strip():
                     return md
             except Exception as e:  # noqa: BLE001
-                backend_logger.debug(f"Attachments conversion failed, fallback to text: {e}")
+                backend_logger.debug(
+                    f"Attachments conversion failed, fallback to text: {e}"
+                )
         # Fallback to text conversion
         txt = raw.get("text") or ""
         return await self._slack_text_to_markdown(txt)
@@ -258,6 +276,7 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
 
     async def _slack_text_to_markdown(self, txt: str) -> str:
         import re
+
         if not txt:
             return ""
 
@@ -270,6 +289,7 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         def repl_subteam(m):
             handle = m.group(2)  # includes leading @ from Slack token
             return handle
+
         txt = re.sub(r"<!subteam\^([A-Z0-9]+)\|(@[^>]+)>", repl_subteam, txt)
 
         # Links with labels: <url|label>
@@ -277,6 +297,7 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
             url = m.group(1)
             label = m.group(2)
             return f"[{label}]({url})"
+
         txt = re.sub(r"<((?:https?|mailto):[^>|]+)\|([^>]+)>", repl_link, txt)
 
         # Naked angled links: <url>
@@ -406,10 +427,14 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                         out.append(f"{bullet}{line}")
             return "\n".join(out)
         if t == "rich_text_quote":
-            content = await self._rich_element_to_md({"type": "rich_text_section", "elements": el.get("elements", []) or []})
+            content = await self._rich_element_to_md(
+                {"type": "rich_text_section", "elements": el.get("elements", []) or []}
+            )
             return "\n".join([f"> {ln}" for ln in content.splitlines()])
         if t == "rich_text_preformatted":
-            content = await self._rich_element_to_md({"type": "rich_text_section", "elements": el.get("elements", []) or []})
+            content = await self._rich_element_to_md(
+                {"type": "rich_text_section", "elements": el.get("elements", []) or []}
+            )
             return f"```\n{content}\n```"
         if t == "rich_text_line_break":
             return "\n"
@@ -462,7 +487,9 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 parts.append(s)
         return "".join(parts)
 
-    async def _resolve_username_by_slack_id(self, slack_uid: Optional[str]) -> Optional[str]:
+    async def _resolve_username_by_slack_id(
+        self, slack_uid: Optional[str]
+    ) -> Optional[str]:
         if not slack_uid:
             return None
         # Cache first
@@ -486,7 +513,9 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 self.caches["username_by_slack_id"][slack_uid] = name
             return name
 
-    async def _resolve_channel_name_by_slack_id(self, slack_cid: Optional[str]) -> Optional[str]:
+    async def _resolve_channel_name_by_slack_id(
+        self, slack_cid: Optional[str]
+    ) -> Optional[str]:
         if not slack_cid:
             return None
         if isinstance(self.caches.get("channel_name_by_slack_id"), dict):
@@ -516,13 +545,16 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         # Cache by raw slack channel id if present
         raw = self.entity.raw_data or {}
         ch_slack_id = raw.get("channel_id")
-        if ch_slack_id and isinstance(self.caches.get("channel_mm_id_by_slack_id"), dict):
+        if ch_slack_id and isinstance(
+            self.caches.get("channel_mm_id_by_slack_id"), dict
+        ):
             mmid = self.caches["channel_mm_id_by_slack_id"].get(ch_slack_id)
             if mmid:
                 return mmid
 
         async with SessionLocal() as session:
             from app.models.entity_relation import EntityRelation
+
             # Preferred: relation posted_in
             q = await session.execute(
                 select(EntityRelation, Entity)
@@ -544,15 +576,20 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
             if ch_slack_id:
                 q2 = await session.execute(
                     select(Entity).where(
-                        (Entity.entity_type == "channel") & (Entity.slack_id == ch_slack_id)
+                        (Entity.entity_type == "channel")
+                        & (Entity.slack_id == ch_slack_id)
                     )
                 )
                 ch_entity2 = q2.scalar_one_or_none()
                 if ch_entity2:
                     mmid2 = getattr(ch_entity2, "mattermost_id", None)
                     if isinstance(mmid2, str) and mmid2:
-                        if isinstance(self.caches.get("channel_mm_id_by_slack_id"), dict):
-                            self.caches["channel_mm_id_by_slack_id"][ch_slack_id] = mmid2
+                        if isinstance(
+                            self.caches.get("channel_mm_id_by_slack_id"), dict
+                        ):
+                            self.caches["channel_mm_id_by_slack_id"][
+                                ch_slack_id
+                            ] = mmid2
                         return mmid2
         return None
 
@@ -573,6 +610,7 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         # 1) Via posted_by relation
         async with SessionLocal() as session:
             from app.models.entity_relation import EntityRelation
+
             q = await session.execute(
                 select(EntityRelation, Entity)
                 .join(Entity, Entity.id == EntityRelation.from_entity_id)
@@ -612,7 +650,9 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 data = resp.json()
                 return data.get("id")
         except Exception as e:  # noqa: BLE001
-            backend_logger.error(f"Не удалось получить /users/me для fallback автора: {e}")
+            backend_logger.error(
+                f"Не удалось получить /users/me для fallback автора: {e}"
+            )
         return None
 
     async def _collect_file_ids(self) -> List[str]:
@@ -620,6 +660,7 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         file_ids: List[str] = []
         async with SessionLocal() as session:
             from app.models.entity_relation import EntityRelation
+
             q = await session.execute(
                 select(EntityRelation, Entity)
                 .join(Entity, Entity.id == EntityRelation.from_entity_id)
@@ -645,7 +686,9 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         # Find parent message entity by slack thread_ts
         async with SessionLocal() as session:
             cond = (Entity.entity_type == "message") & (Entity.slack_id == thread_ts)
-            cond = job_scoped_condition(cond, "message", getattr(self.entity, "job_id", None))
+            cond = job_scoped_condition(
+                cond, "message", getattr(self.entity, "job_id", None)
+            )
             q = await session.execute(select(Entity).where(cond))
             parent = q.scalar_one_or_none()
             if parent:
@@ -665,7 +708,9 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         except Exception:  # noqa: BLE001
             return None
 
-    async def _resolve_usergroup_handle_by_id(self, gid: Optional[str]) -> Optional[str]:
+    async def _resolve_usergroup_handle_by_id(
+        self, gid: Optional[str]
+    ) -> Optional[str]:
         """Best-effort: find @handle for a Slack subteam id by scanning original text tokens
         like <!subteam^S123|@handle> in raw_data.text. This avoids needing Slack API usergroups.
         """
@@ -673,6 +718,7 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
             return None
         try:
             import re
+
             raw = self.entity.raw_data or {}
             txt = raw.get("text") or ""
             for m in re.finditer(r"<!subteam\^([A-Z0-9]+)\|(@[^>]+)>", txt):

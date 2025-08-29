@@ -40,9 +40,21 @@ async def list_jobs(limit: int = 50):
             meta = data.get("meta") or {}
             # Backfill file-based import progress if available and missing
             if (
-                (not meta.get("json_files_total") or not isinstance(meta.get("json_files_total"), int))
+                (
+                    not meta.get("json_files_total")
+                    or not isinstance(meta.get("json_files_total"), int)
+                )
                 and bool(meta.get("extract_dir"))
-                and data.get("current_stage") in {"extracting","users","channels","messages","emojis","reactions","attachments"}
+                and data.get("current_stage")
+                in {
+                    "extracting",
+                    "users",
+                    "channels",
+                    "messages",
+                    "emojis",
+                    "reactions",
+                    "attachments",
+                }
             ):
                 base_dir = str(meta.get("extract_dir") or "")
                 try:
@@ -50,7 +62,13 @@ async def list_jobs(limit: int = 50):
                     if not base_dir or not os.path.isdir(base_dir):
                         raise RuntimeError("extract_dir not available")
                     # top-level files
-                    for fname in ("users.json","channels.json","groups.json","dms.json","mpims.json"):
+                    for fname in (
+                        "users.json",
+                        "channels.json",
+                        "groups.json",
+                        "dms.json",
+                        "mpims.json",
+                    ):
                         if os.path.exists(os.path.join(base_dir, fname)):
                             total += 1
                     # daily message JSONs per channel
@@ -65,24 +83,48 @@ async def list_jobs(limit: int = 50):
                     pass
             # If still no total, try to derive it directly from the uploaded zip archive
             if (
-                (not meta.get("json_files_total") or not isinstance(meta.get("json_files_total"), int))
+                (
+                    not meta.get("json_files_total")
+                    or not isinstance(meta.get("json_files_total"), int)
+                )
                 and bool(meta.get("zip_path"))
-                and data.get("current_stage") in {"extracting","users","channels","messages","emojis","reactions","attachments"}
+                and data.get("current_stage")
+                in {
+                    "extracting",
+                    "users",
+                    "channels",
+                    "messages",
+                    "emojis",
+                    "reactions",
+                    "attachments",
+                }
             ):
                 zpath = str(meta.get("zip_path") or "")
                 try:
                     if zpath and os.path.exists(zpath):
                         total = 0
-                        top_present = {"users.json": False, "channels.json": False, "groups.json": False, "dms.json": False, "mpims.json": False}
-                        with zipfile.ZipFile(zpath, 'r') as zf:
+                        top_present = {
+                            "users.json": False,
+                            "channels.json": False,
+                            "groups.json": False,
+                            "dms.json": False,
+                            "mpims.json": False,
+                        }
+                        with zipfile.ZipFile(zpath, "r") as zf:
                             names = zf.namelist()
                             # Normalize separators and filter directories
-                            top_allowed = {"users.json", "channels.json", "groups.json", "dms.json", "mpims.json"}
+                            top_allowed = {
+                                "users.json",
+                                "channels.json",
+                                "groups.json",
+                                "dms.json",
+                                "mpims.json",
+                            }
                             for name in names:
-                                if name.endswith('/'):
+                                if name.endswith("/"):
                                     continue
                                 # Remove any leading prefix folders (Slack zips often wrap everything in one folder)
-                                parts = [p for p in name.split('/') if p]
+                                parts = [p for p in name.split("/") if p]
                                 if not parts:
                                     continue
                                 fname = parts[-1]
@@ -93,7 +135,7 @@ async def list_jobs(limit: int = 50):
                                         total += 1
                                 else:
                                     # per-channel daily JSON: any *.json placed under some folder (channel/chat)
-                                    if fname.lower().endswith('.json'):
+                                    if fname.lower().endswith(".json"):
                                         total += 1
                         if total > 0:
                             meta["json_files_total"] = int(total)
@@ -103,7 +145,10 @@ async def list_jobs(limit: int = 50):
                     # Non-fatal: silently ignore if zip cannot be read
                     pass
             totals = meta.get("totals") or {}
-            needs_totals = not totals or all((totals.get(k, 0) == 0) for k in ("messages", "reactions", "attachments"))
+            needs_totals = not totals or all(
+                (totals.get(k, 0) == 0)
+                for k in ("messages", "reactions", "attachments")
+            )
             if needs_totals and row.id is not None:
                 q = await session.execute(
                     select(Entity.entity_type, func.count())
@@ -116,7 +161,11 @@ async def list_jobs(limit: int = 50):
                     "reactions": int(derived.get("reaction", 0)),
                     "attachments": int(derived.get("attachment", 0)),
                     # emojis left as-is (global)
-                    **({"emojis": totals.get("emojis", 0)} if isinstance(totals, dict) else {}),
+                    **(
+                        {"emojis": totals.get("emojis", 0)}
+                        if isinstance(totals, dict)
+                        else {}
+                    ),
                 }
                 meta["totals"] = totals
                 data["meta"] = meta
@@ -126,15 +175,35 @@ async def list_jobs(limit: int = 50):
             if row.id is not None:
                 q2 = await session.execute(
                     select(Entity.entity_type, func.count())
-                    .where((Entity.job_id == row.id) & (Entity.status != MappingStatus.pending))
+                    .where(
+                        (Entity.job_id == row.id)
+                        & (Entity.status != MappingStatus.pending)
+                    )
                     .group_by(Entity.entity_type)
                 )
                 nonpend = {et: int(cnt) for et, cnt in q2.all()}
-                in_import_stage = data.get("current_stage") in {"extracting","users","channels","messages","emojis","reactions","attachments"}
+                in_import_stage = data.get("current_stage") in {
+                    "extracting",
+                    "users",
+                    "channels",
+                    "messages",
+                    "emojis",
+                    "reactions",
+                    "attachments",
+                }
                 if in_import_stage:
-                    meta["messages_processed"] = max(int(meta.get("messages_processed") or 0), nonpend.get("message", 0))
-                    meta["reactions_processed"] = max(int(meta.get("reactions_processed") or 0), nonpend.get("reaction", 0))
-                    meta["attachments_processed"] = max(int(meta.get("attachments_processed") or 0), nonpend.get("attachment", 0))
+                    meta["messages_processed"] = max(
+                        int(meta.get("messages_processed") or 0),
+                        nonpend.get("message", 0),
+                    )
+                    meta["reactions_processed"] = max(
+                        int(meta.get("reactions_processed") or 0),
+                        nonpend.get("reaction", 0),
+                    )
+                    meta["attachments_processed"] = max(
+                        int(meta.get("attachments_processed") or 0),
+                        nonpend.get("attachment", 0),
+                    )
                 else:
                     # Export/done: reflect actual exported items only
                     meta["messages_processed"] = int(nonpend.get("message", 0))

@@ -4,6 +4,7 @@ from typing import Optional
 from app.services.entities.user import User
 from app.logging_config import backend_logger
 
+
 async def parse_users(extract_dir, job_id: Optional[int] = None):
     users_path = os.path.join(extract_dir, "users.json")
     if not os.path.exists(users_path):

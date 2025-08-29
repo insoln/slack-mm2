@@ -36,13 +36,19 @@ async def lifespan(app: FastAPI):
         if db_url:
             # Apply migrations to the latest head (single linear target)
             # Allow overriding alembic.ini path for local runs/tests via ALEMBIC_INI
-            subprocess.run(["alembic", "-c", ALEMBIC_INI, "upgrade", "head"], check=True)
+            subprocess.run(
+                ["alembic", "-c", ALEMBIC_INI, "upgrade", "head"], check=True
+            )
     backend_logger.info(f"Backend available at: http://{BACKEND_HOST}:{BACKEND_PORT}")
     # Auto-ensure Mattermost importer plugin on startup (best-effort)
     if os.getenv("PYTEST_RUN", "0") not in ("1", "true", "TRUE"):
         try:
             status = await plugin_api._compute_status()
-            if (not status.get("installed")) or status.get("needs_update") or (not status.get("enabled")):
+            if (
+                (not status.get("installed"))
+                or status.get("needs_update")
+                or (not status.get("enabled"))
+            ):
                 backend_logger.info("Ensuring Mattermost importer plugin at startup…")
                 # Try deploy if missing/outdated
                 if (not status.get("installed")) or status.get("needs_update"):
@@ -67,16 +73,21 @@ async def lifespan(app: FastAPI):
             async with SessionLocal() as session:
                 q = await session.execute(
                     select(ImportJob).where(
-                        (ImportJob.status == JobStatus.running) & (ImportJob.current_stage == "exporting")
+                        (ImportJob.status == JobStatus.running)
+                        & (ImportJob.current_stage == "exporting")
                     )
                 )
                 jobs = q.scalars().all()
                 if jobs:
-                    backend_logger.info(f"Auto-resume: найдено задач для экспорта: {len(jobs)} — запускаю экспорт")
+                    backend_logger.info(
+                        f"Auto-resume: найдено задач для экспорта: {len(jobs)} — запускаю экспорт"
+                    )
                     # Run in background; orchestrator enforces global lock and FIFO
                     asyncio.create_task(orchestrate_mm_export())
                 else:
-                    backend_logger.debug("Auto-resume: незавершённых экспортов не найдено")
+                    backend_logger.debug(
+                        "Auto-resume: незавершённых экспортов не найдено"
+                    )
         except Exception as e:
             backend_logger.error(f"Auto-resume export init failed: {e}")
     yield

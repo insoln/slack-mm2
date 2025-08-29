@@ -26,7 +26,9 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
         self.log_export(f"Экспорт аттачмента {self.entity.slack_id}")
 
         raw = self.entity.raw_data or {}
-        filename = raw.get("name") or raw.get("title") or raw.get("filename") or "file.bin"
+        filename = (
+            raw.get("name") or raw.get("title") or raw.get("filename") or "file.bin"
+        )
 
         # Enforce size cap (skip huge files safely)
         try:
@@ -39,7 +41,7 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     if size_mb > max_mb:
                         await self.set_status(
                             "skipped",
-                            error=f"Attachment {filename} {size_mb:.1f}MB exceeds cap {max_mb:.1f}MB"
+                            error=f"Attachment {filename} {size_mb:.1f}MB exceeds cap {max_mb:.1f}MB",
                         )
                         backend_logger.warning(
                             f"Skip oversized attachment {self.entity.slack_id}: {size_mb:.1f}MB > {max_mb:.1f}MB"
@@ -56,7 +58,11 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
             return
 
         # Prefer streaming multipart upload to avoid base64 overhead
-        prefer_multipart = os.environ.get("ATTACHMENT_MULTIPART", "1") not in ("0", "false", "False")
+        prefer_multipart = os.environ.get("ATTACHMENT_MULTIPART", "1") not in (
+            "0",
+            "false",
+            "False",
+        )
 
         # Obtain content as base64, with retry/backoff for robustness
         async def _retry_download(url, headers, attempts=3, base_delay=1.0):
@@ -70,31 +76,41 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
                         last_exc = Exception(f"HTTP {getattr(resp, 'status_code', 0)}")
                 except Exception as e:  # noqa: BLE001
                     last_exc = e
-                await asyncio.sleep(base_delay * (2 ** i))
+                await asyncio.sleep(base_delay * (2**i))
             raise last_exc or Exception("download failed")
 
         content_b64: Optional[str] = raw.get("content_base64")
         if not content_b64:
             url = raw.get("url_private") or raw.get("url_private_download")
             if not url:
-                await self.set_status("failed", error="No content source: neither content_base64 nor url_private")
+                await self.set_status(
+                    "failed",
+                    error="No content source: neither content_base64 nor url_private",
+                )
                 return
-            slack_token = os.environ.get("SLACK_BOT_TOKEN") or os.environ.get("SLACK_TOKEN")
+            slack_token = os.environ.get("SLACK_BOT_TOKEN") or os.environ.get(
+                "SLACK_TOKEN"
+            )
             headers = {"Authorization": f"Bearer {slack_token}"} if slack_token else {}
             try:
                 resp = await _retry_download(url, headers=headers)
             except Exception as e:  # noqa: BLE001
-                await self.set_status("failed", error=f"Failed to download from Slack: {e}")
+                await self.set_status(
+                    "failed", error=f"Failed to download from Slack: {e}"
+                )
                 return
             if prefer_multipart:
                 # Write to a temp file and stream as multipart file
                 import tempfile
+
                 tmp_fd, tmp_path = tempfile.mkstemp(prefix="att-", suffix=".bin")
                 try:
                     with os.fdopen(tmp_fd, "wb") as f:
                         f.write(resp.content)
                 except Exception as e:  # noqa: BLE001
-                    await self.set_status("failed", error=f"Temp file write failed: {e}")
+                    await self.set_status(
+                        "failed", error=f"Temp file write failed: {e}"
+                    )
                     try:
                         os.remove(tmp_path)
                     except Exception:
@@ -104,13 +120,27 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 fields = {"channel_id": channel_id, "filename": filename}
                 files = None
                 try:
-                    files = {"file": (filename, open(tmp_path, "rb"), "application/octet-stream")}
-                    resp2 = await self.mm_api_post_files("/plugins/mm-importer/api/v1/attachment_multipart", fields, files)
+                    files = {
+                        "file": (
+                            filename,
+                            open(tmp_path, "rb"),
+                            "application/octet-stream",
+                        )
+                    }
+                    resp2 = await self.mm_api_post_files(
+                        "/plugins/mm-importer/api/v1/attachment_multipart",
+                        fields,
+                        files,
+                    )
                 finally:
                     try:
                         if files is not None:
                             fh = files.get("file")
-                            if isinstance(fh, (tuple, list)) and len(fh) >= 2 and hasattr(fh[1], "close"):
+                            if (
+                                isinstance(fh, (tuple, list))
+                                and len(fh) >= 2
+                                and hasattr(fh[1], "close")
+                            ):
                                 fh[1].close()
                     except Exception:
                         pass
@@ -124,12 +154,17 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
                         err = data.get("error") or data
                     except Exception:
                         err = resp2.text
-                    await self.set_status("failed", error=f"Plugin upload failed: {resp2.status_code} {err}")
+                    await self.set_status(
+                        "failed",
+                        error=f"Plugin upload failed: {resp2.status_code} {err}",
+                    )
                     return
                 data = resp2.json()
                 file_id = data.get("file_id")
                 if not file_id:
-                    await self.set_status("failed", error=f"No file_id in plugin response: {data}")
+                    await self.set_status(
+                        "failed", error=f"No file_id in plugin response: {data}"
+                    )
                     return
                 self.entity.mattermost_id = file_id
                 await self.set_status("success")
@@ -149,7 +184,9 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
             last_err = None
             for i in range(attempts):
                 try:
-                    resp = await self.mm_api_post("/plugins/mm-importer/api/v1/attachment", payload)
+                    resp = await self.mm_api_post(
+                        "/plugins/mm-importer/api/v1/attachment", payload
+                    )
                     # retry on 5xx/429; accept 2xx
                     if 200 <= resp.status_code < 300:
                         return resp
@@ -160,7 +197,7 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
                         return resp
                 except Exception as e:  # noqa: BLE001
                     last_err = str(e)
-                await asyncio.sleep(base_delay * (2 ** i))
+                await asyncio.sleep(base_delay * (2**i))
             raise Exception(last_err or "plugin post failed")
 
         try:
@@ -172,12 +209,16 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     err = data.get("error") or data
                 except Exception:
                     err = resp.text
-                await self.set_status("failed", error=f"Plugin upload failed: {resp.status_code} {err}")
+                await self.set_status(
+                    "failed", error=f"Plugin upload failed: {resp.status_code} {err}"
+                )
                 return
             data = resp.json()
             file_id = data.get("file_id")
             if not file_id:
-                await self.set_status("failed", error=f"No file_id in plugin response: {data}")
+                await self.set_status(
+                    "failed", error=f"No file_id in plugin response: {data}"
+                )
                 return
             self.entity.mattermost_id = file_id
             await self.set_status("success")
@@ -197,7 +238,10 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
         async with SessionLocal() as session:
             if ch_slack_id:
                 q = await session.execute(
-                    select(Entity).where((Entity.entity_type == "channel") & (Entity.slack_id == ch_slack_id))
+                    select(Entity).where(
+                        (Entity.entity_type == "channel")
+                        & (Entity.slack_id == ch_slack_id)
+                    )
                 )
                 ch_entity = q.scalar_one_or_none()
                 if ch_entity is not None:
@@ -207,7 +251,10 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
 
             # 2) Walk relations: this attachment is from_entity in entity_relations to message, then message posted_in channel
             # Find message entity via attached_to relation
-            from app.models.entity_relation import EntityRelation  # local import to avoid cycles
+            from app.models.entity_relation import (
+                EntityRelation,
+            )  # local import to avoid cycles
+
             q_att = await session.execute(
                 select(EntityRelation, Entity)
                 .join(Entity, Entity.id == EntityRelation.to_entity_id)

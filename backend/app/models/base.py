@@ -21,15 +21,19 @@ engine_kwargs: dict = {
 
 # SQLite (aiosqlite) requires special pooling and no size/overflow params
 if url.drivername.startswith("sqlite+"):
-    engine_kwargs.update({
-        "poolclass": StaticPool,
-    })
+    engine_kwargs.update(
+        {
+            "poolclass": StaticPool,
+        }
+    )
 else:
-    engine_kwargs.update({
-        "pool_size": POOL_SIZE,
-        "max_overflow": MAX_OVERFLOW,
-        "pool_timeout": POOL_TIMEOUT,
-    })
+    engine_kwargs.update(
+        {
+            "pool_size": POOL_SIZE,
+            "max_overflow": MAX_OVERFLOW,
+            "pool_timeout": POOL_TIMEOUT,
+        }
+    )
 
 engine = create_async_engine(DATABASE_URL, **engine_kwargs)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)

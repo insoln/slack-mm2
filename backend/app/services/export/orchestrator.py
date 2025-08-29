@@ -34,6 +34,7 @@ EXPORT_ORDER = [
 # Ensure only one export runs globally at a time
 EXPORT_LOCK = asyncio.Lock()
 
+
 async def get_mm_user_id():
     """Получить ID пользователя-владельца токена из Mattermost"""
     try:
@@ -41,7 +42,7 @@ async def get_mm_user_id():
             resp = await client.get(
                 f"{os.environ['MM_URL']}/api/v4/users/me",
                 headers={"Authorization": f"Bearer {os.environ['MM_TOKEN']}"},
-                timeout=10
+                timeout=10,
             )
             if resp.status_code == 200:
                 user_data = resp.json()
@@ -49,17 +50,21 @@ async def get_mm_user_id():
                 backend_logger.info(f"Получен ID пользователя Mattermost: {user_id}")
                 return user_id
             else:
-                backend_logger.error(f"Ошибка получения ID пользователя: {resp.status_code}")
+                backend_logger.error(
+                    f"Ошибка получения ID пользователя: {resp.status_code}"
+                )
                 return None
     except Exception as e:
         backend_logger.error(f"Ошибка при получении ID пользователя: {e}")
         return None
 
+
 async def get_entities_to_export(entity_type: str, job_id=None):
     async with SessionLocal() as session:
-        cond = (
-            (Entity.entity_type == entity_type)
-            & (Entity.status.in_([MappingStatus.pending, MappingStatus.skipped, MappingStatus.failed]))
+        cond = (Entity.entity_type == entity_type) & (
+            Entity.status.in_(
+                [MappingStatus.pending, MappingStatus.skipped, MappingStatus.failed]
+            )
         )
         cond = job_scoped_condition(cond, entity_type, job_id)
 
@@ -76,6 +81,7 @@ async def get_entities_to_export(entity_type: str, job_id=None):
             # Sort messages so that roots go before replies, and by timestamp ascending
             try:
                 from app.models.entity_relation import EntityRelation
+
                 ids = [e.id for e in entities]
                 reply_set = set()
                 if ids:
@@ -104,8 +110,10 @@ async def get_entities_to_export(entity_type: str, job_id=None):
             # Ensure reactions are processed after their target messages; simple ts sort as tie-breaker
             def ts_key(ent):
                 return parse_slack_ts(ent.slack_id)
+
             return sorted(entities, key=ts_key)
         return entities
+
 
 async def export_worker(queue, mm_user_id):
     while True:
@@ -124,7 +132,9 @@ async def export_worker(queue, mm_user_id):
                 exporter = exporter_cls(entity)
             await exporter.export_entity()
         except Exception as e:
-            backend_logger.error(f"Ошибка экспорта {entity.entity_type} {entity.slack_id}: {e}")
+            backend_logger.error(
+                f"Ошибка экспорта {entity.entity_type} {entity.slack_id}: {e}"
+            )
             try:
                 # Ensure status is not left pending on crash
                 if exporter is not None:
@@ -132,18 +142,28 @@ async def export_worker(queue, mm_user_id):
                 else:
                     # fallback: direct update
                     from sqlalchemy import update
+
                     async with SessionLocal() as session:
-                        where_cond = (Entity.entity_type == entity.entity_type) & (Entity.slack_id == entity.slack_id)
+                        where_cond = (Entity.entity_type == entity.entity_type) & (
+                            Entity.slack_id == entity.slack_id
+                        )
                         try:
                             if getattr(entity, "job_id", None) is not None:
-                                where_cond = where_cond & (Entity.job_id == getattr(entity, "job_id"))
+                                where_cond = where_cond & (
+                                    Entity.job_id == getattr(entity, "job_id")
+                                )
                         except Exception:
                             pass
-                        await session.execute(update(Entity).where(where_cond).values(status="failed", error_message=str(e)))
+                        await session.execute(
+                            update(Entity)
+                            .where(where_cond)
+                            .values(status="failed", error_message=str(e))
+                        )
                         await session.commit()
             except Exception:
                 pass
         queue.task_done()
+
 
 async def orchestrate_mm_export(job_id=None):
     # Ensure only one export runs at a time across the process
@@ -151,7 +171,9 @@ async def orchestrate_mm_export(job_id=None):
         # Получаем ID пользователя-владельца токена
         mm_user_id = await get_mm_user_id()
         if not mm_user_id:
-            backend_logger.error("Не удалось получить ID пользователя Mattermost, прерываю экспорт")
+            backend_logger.error(
+                "Не удалось получить ID пользователя Mattermost, прерываю экспорт"
+            )
             return
 
         workers_count = int(os.getenv("EXPORT_WORKERS", 5))
@@ -174,10 +196,15 @@ async def orchestrate_mm_export(job_id=None):
                 if anchor_cutoff is not None:
                     # created_at, id tuple ordering
                     base = base.where(
-                        (ImportJob.created_at < anchor_cutoff[0]) |
-                        ((ImportJob.created_at == anchor_cutoff[0]) & (ImportJob.id <= anchor_cutoff[1]))
+                        (ImportJob.created_at < anchor_cutoff[0])
+                        | (
+                            (ImportJob.created_at == anchor_cutoff[0])
+                            & (ImportJob.id <= anchor_cutoff[1])
+                        )
                     )
-                base = base.order_by(ImportJob.created_at.asc(), ImportJob.id.asc()).limit(1)
+                base = base.order_by(
+                    ImportJob.created_at.asc(), ImportJob.id.asc()
+                ).limit(1)
                 row = await session.execute(base)
                 current: ImportJob | None = row.scalars().first()
 
@@ -198,30 +225,47 @@ async def orchestrate_mm_export(job_id=None):
 
             # Process the earliest job now that it's exporting
             j = current
-            backend_logger.info(f"Начинаю экспорт для job_id={j.id} (загружено: {j.created_at})")
+            backend_logger.info(
+                f"Начинаю экспорт для job_id={j.id} (загружено: {j.created_at})"
+            )
             for entity_type, exporter_cls in EXPORT_ORDER:
-                backend_logger.info(f"Экспорт сущностей типа {entity_type} (job_id={j.id})")
+                backend_logger.info(
+                    f"Экспорт сущностей типа {entity_type} (job_id={j.id})"
+                )
                 # Special handling: messages exported in parallel per channel with in-channel ordering
                 if entity_type == "message":
                     t0 = asyncio.get_event_loop().time()
                     # Ensure we pass a plain int job_id (avoid SQLAlchemy Column type confusion)
                     job_id_val: int = cast(int, j.id)
-                    await _export_messages_per_channel(job_id=job_id_val, mm_user_id=mm_user_id)
+                    await _export_messages_per_channel(
+                        job_id=job_id_val, mm_user_id=mm_user_id
+                    )
                     dt = asyncio.get_event_loop().time() - t0
-                    backend_logger.info(f"Экспорт сообщений завершён за {dt:.2f}s (job_id={j.id})")
+                    backend_logger.info(
+                        f"Экспорт сообщений завершён за {dt:.2f}s (job_id={j.id})"
+                    )
                 else:
                     queue = asyncio.Queue()
                     entities = await get_entities_to_export(entity_type, job_id=j.id)
                     for entity in entities:
-                        backend_logger.debug(f"[EXPORT] enqueue {entity_type} {entity.slack_id}")
+                        backend_logger.debug(
+                            f"[EXPORT] enqueue {entity_type} {entity.slack_id}"
+                        )
                         await queue.put((entity, exporter_cls))
                     if entity_type == "attachment":
                         # Dedicated throttle for attachments if provided
-                        workers_for_type = int(os.getenv("ATTACHMENT_WORKERS", workers_count))
+                        workers_for_type = int(
+                            os.getenv("ATTACHMENT_WORKERS", workers_count)
+                        )
                     else:
                         workers_for_type = workers_count
-                    backend_logger.debug(f"[EXPORT] starting {workers_for_type} workers for {entity_type}")
-                    workers = [asyncio.create_task(export_worker(queue, mm_user_id)) for _ in range(workers_for_type)]
+                    backend_logger.debug(
+                        f"[EXPORT] starting {workers_for_type} workers for {entity_type}"
+                    )
+                    workers = [
+                        asyncio.create_task(export_worker(queue, mm_user_id))
+                        for _ in range(workers_for_type)
+                    ]
                     await queue.join()
                     for _ in workers:
                         await queue.put(None)
@@ -232,6 +276,7 @@ async def orchestrate_mm_export(job_id=None):
             # Mark job as completed to let the scheduler advance to the next one
             try:
                 from sqlalchemy import update
+
                 async with SessionLocal() as session:
                     await session.execute(
                         update(ImportJob)
@@ -240,7 +285,9 @@ async def orchestrate_mm_export(job_id=None):
                     )
                     await session.commit()
             except Exception as ex:  # noqa: BLE001
-                backend_logger.error(f"Не удалось обновить статус job_id={j.id} на done: {ex}")
+                backend_logger.error(
+                    f"Не удалось обновить статус job_id={j.id} на done: {ex}"
+                )
 
             # If called for a specific job, stop after finishing it (but only after all earlier jobs)
             if anchor_cutoff is not None and (j.created_at, j.id) >= anchor_cutoff:
@@ -255,13 +302,19 @@ async def _export_messages_per_channel(job_id: int, mm_user_id: str) -> None:
     from app.models.entity_relation import EntityRelation
 
     # Concurrency controls
-    max_channels = int(os.getenv("EXPORT_CHANNEL_CONCURRENCY", os.getenv("EXPORT_WORKERS", 4)))
+    max_channels = int(
+        os.getenv("EXPORT_CHANNEL_CONCURRENCY", os.getenv("EXPORT_WORKERS", 4))
+    )
 
     # Load pending/skipped/failed messages for this job and their channel relations
     async with SessionLocal() as session:
         cond = (
             (Entity.entity_type == "message")
-            & (Entity.status.in_([MappingStatus.pending, MappingStatus.skipped, MappingStatus.failed]))
+            & (
+                Entity.status.in_(
+                    [MappingStatus.pending, MappingStatus.skipped, MappingStatus.failed]
+                )
+            )
             & (Entity.job_id == job_id)
         )
         msg_rows = await session.execute(select(Entity).where(cond))
@@ -272,8 +325,7 @@ async def _export_messages_per_channel(job_id: int, mm_user_id: str) -> None:
         ids = [m.id for m in messages]
         # posted_in: message -> channel
         rel_rows = await session.execute(
-            select(EntityRelation.from_entity_id, EntityRelation.to_entity_id)
-            .where(
+            select(EntityRelation.from_entity_id, EntityRelation.to_entity_id).where(
                 (EntityRelation.relation_type == "posted_in")
                 & (EntityRelation.from_entity_id.in_(ids))
             )
@@ -323,13 +375,16 @@ async def _export_messages_per_channel(job_id: int, mm_user_id: str) -> None:
                 try:
                     await exporter.export_entity()
                 except Exception as ex:  # noqa: BLE001
-                    backend_logger.error(f"Ошибка экспорта сообщения {e.slack_id} в канале {ch_id}: {ex}")
+                    backend_logger.error(
+                        f"Ошибка экспорта сообщения {e.slack_id} в канале {ch_id}: {ex}"
+                    )
                     try:
                         await exporter.set_status("failed", error=str(ex))
                     except Exception:
                         pass
 
-    tasks = [asyncio.create_task(_run_channel(ch_id, ents)) for ch_id, ents in groups.items()]
+    tasks = [
+        asyncio.create_task(_run_channel(ch_id, ents)) for ch_id, ents in groups.items()
+    ]
     if tasks:
         await asyncio.gather(*tasks)
- 

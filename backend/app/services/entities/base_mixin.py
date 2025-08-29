@@ -55,7 +55,9 @@ class BaseMapping:
             existing = query.scalar_one_or_none()
             if existing:
                 self.id = existing.id
-                backend_logger.debug(f"{self.entity_type} already exists: slack_id={self.slack_id}")
+                backend_logger.debug(
+                    f"{self.entity_type} already exists: slack_id={self.slack_id}"
+                )
                 return existing
             entity = Entity(
                 entity_type=self.entity_type,
@@ -68,7 +70,9 @@ class BaseMapping:
             session.add(entity)
             try:
                 await session.commit()
-                backend_logger.debug(f"Сохранен маппинг: {self.entity_type}, slack_id={self.slack_id}, mattermost_id={self.mattermost_id}, status={self.status}")
+                backend_logger.debug(
+                    f"Сохранен маппинг: {self.entity_type}, slack_id={self.slack_id}, mattermost_id={self.mattermost_id}, status={self.status}"
+                )
                 self.id = entity.id
                 return entity
             except IntegrityError as e:
@@ -92,9 +96,13 @@ class BaseMapping:
                     )
                 existing = query.scalar_one_or_none()
                 if existing:
-                    backend_logger.error(f"IntegrityError: {self.entity_type} already exists after IntegrityError: slack_id={self.slack_id}, ошибка: {e}")
+                    backend_logger.error(
+                        f"IntegrityError: {self.entity_type} already exists after IntegrityError: slack_id={self.slack_id}, ошибка: {e}"
+                    )
                     return existing
-                backend_logger.error(f"Ошибка при сохранении маппинга: {self.entity_type}, slack_id={self.slack_id}, mattermost_id={self.mattermost_id}, status={self.status}, ошибка: {e}")
+                backend_logger.error(
+                    f"Ошибка при сохранении маппинга: {self.entity_type}, slack_id={self.slack_id}, mattermost_id={self.mattermost_id}, status={self.status}, ошибка: {e}"
+                )
                 return None
 
     def to_dict(self):
@@ -113,23 +121,36 @@ class BaseMapping:
         self.status = new_status
         if error:
             self.error_message = str(error)
-        
+
         async with SessionLocal() as session:
             # Обновляем существующую запись
             from sqlalchemy import update
+
             cond = (
                 (Entity.entity_type == self.entity_type)
                 & (Entity.slack_id == self.slack_id)
-                & (Entity.job_id.is_(None) if self.job_id is None else (Entity.job_id == self.job_id))
+                & (
+                    Entity.job_id.is_(None)
+                    if self.job_id is None
+                    else (Entity.job_id == self.job_id)
+                )
             )
-            stmt = update(Entity).where(cond).values(
-                status=MappingStatus(new_status),
-                error_message=str(error) if error else None
+            stmt = (
+                update(Entity)
+                .where(cond)
+                .values(
+                    status=MappingStatus(new_status),
+                    error_message=str(error) if error else None,
+                )
             )
             result = await session.execute(stmt)
             await session.commit()
-            
+
             if result.rowcount > 0:
-                backend_logger.debug(f"Обновлен статус {self.entity_type} {self.slack_id}: {new_status}")
+                backend_logger.debug(
+                    f"Обновлен статус {self.entity_type} {self.slack_id}: {new_status}"
+                )
             else:
-                backend_logger.error(f"Не найдена запись для обновления статуса: {self.entity_type} {self.slack_id}")
+                backend_logger.error(
+                    f"Не найдена запись для обновления статуса: {self.entity_type} {self.slack_id}"
+                )

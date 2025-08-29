@@ -39,8 +39,11 @@ async def progress_stream(interval: float = 2.0):
                 # Emit an error event but keep the stream alive
                 yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
             await asyncio.sleep(max(0.25, float(interval)))
+
     headers = {
         "Cache-Control": "no-cache, no-store, must-revalidate",
         "X-Accel-Buffering": "no",
     }
-    return StreamingResponse(event_generator(), media_type="text/event-stream", headers=headers)
+    return StreamingResponse(
+        event_generator(), media_type="text/event-stream", headers=headers
+    )
