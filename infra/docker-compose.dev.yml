@@ -145,9 +145,10 @@ services:
     image: golang:1.22-bookworm
     working_dir: /src
     # Устанавливаем инструменты и собираем плагин
-    command: ["bash", "-lc", "set -euo pipefail; apt-get update; apt-get install -y --no-install-recommends nodejs npm make git ca-certificates; npm config set fund false; npm config set audit false; make dist; chown -R 1000:1000 dist"]
+    command: ["bash", "-lc", "set -euo pipefail; export PATH=/usr/local/go/bin:$PATH; echo PWD: $(pwd); ls -la; echo 'which go:'; which go || true; go version || true; echo 'tree:'; ls -la build || true; ls -la server || true; ls -la webapp || true; apt-get update; apt-get install -y --no-install-recommends nodejs npm make git ca-certificates; npm config set fund false; npm config set audit false; make dist; chown -R 1000:1000 dist"]
     volumes:
       - ./plugin:/src
+      - ../.git:/src/.git:ro
     # Останавливается после сборки
     restart: "no"
 
