@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, TypedDict, Set, Tuple, cast
 import asyncio
 
 from .base_exporter import ExporterBase, LoggingMixin
@@ -13,8 +13,16 @@ from sqlalchemy import select
 from app.utils.filters import job_scoped_condition
 
 
+class MessageCaches(TypedDict, total=False):
+    channel_mm_id_by_slack_id: Dict[str, str]
+    channel_name_by_slack_id: Dict[str, str]
+    user_mm_id_by_slack_id: Dict[str, str]
+    username_by_slack_id: Dict[str, str]
+    membership_seen: Set[Tuple[str, str]]
+
+
 class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
-    def __init__(self, entity, caches: dict | None = None):
+    def __init__(self, entity, caches: MessageCaches | None = None):
         super().__init__(entity)
         # caches may contain:
         #  - channel_mm_id_by_slack_id: dict[str, str]
@@ -22,7 +30,7 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         #  - user_mm_id_by_slack_id: dict[str, str]
         #  - username_by_slack_id: dict[str, str]
         #  - membership_seen: set[tuple[str,str]] of (channel_id, user_id)
-        self.caches = caches or {}
+        self.caches: MessageCaches = caches or {}
 
     """
     Exports a Slack message to Mattermost via the plugin /import endpoint.
@@ -493,8 +501,10 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         if not slack_uid:
             return None
         # Cache first
-        if isinstance(self.caches.get("username_by_slack_id"), dict):
-            val = self.caches["username_by_slack_id"].get(slack_uid)
+        cache_usernames = self.caches.get("username_by_slack_id")
+        if isinstance(cache_usernames, dict):
+            d = cast(Dict[str, str], cache_usernames)
+            val = d.get(slack_uid)
             if val:
                 return val
         async with SessionLocal() as session:
@@ -509,8 +519,10 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
             # Prefer Mattermost username via API only if needed; use Slack name from raw_data as our UserExporter mirrors it
             raw = ent.raw_data or {}
             name = raw.get("name") or slack_uid
-            if isinstance(self.caches.get("username_by_slack_id"), dict):
-                self.caches["username_by_slack_id"][slack_uid] = name
+            cache_usernames2 = self.caches.get("username_by_slack_id")
+            if isinstance(cache_usernames2, dict):
+                d2 = cast(Dict[str, str], cache_usernames2)
+                d2[slack_uid] = name
             return name
 
     async def _resolve_channel_name_by_slack_id(
@@ -518,8 +530,10 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
     ) -> Optional[str]:
         if not slack_cid:
             return None
-        if isinstance(self.caches.get("channel_name_by_slack_id"), dict):
-            v = self.caches["channel_name_by_slack_id"].get(slack_cid)
+        cache_ch_names = self.caches.get("channel_name_by_slack_id")
+        if isinstance(cache_ch_names, dict):
+            d = cast(Dict[str, str], cache_ch_names)
+            v = d.get(slack_cid)
             if v:
                 return v
         async with SessionLocal() as session:
@@ -534,8 +548,9 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
             raw = ent.raw_data or {}
             # Slack channel names are usually compatible with MM; plugin also normalized names
             name = raw.get("name")
-            if name and isinstance(self.caches.get("channel_name_by_slack_id"), dict):
-                self.caches["channel_name_by_slack_id"][slack_cid] = name
+            if name and isinstance(cache_ch_names, dict):
+                d2 = cast(Dict[str, str], cache_ch_names)
+                d2[slack_cid] = name
             return name
 
     async def _resolve_mm_channel_id_for_message(self) -> Optional[str]:
@@ -545,10 +560,10 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         # Cache by raw slack channel id if present
         raw = self.entity.raw_data or {}
         ch_slack_id = raw.get("channel_id")
-        if ch_slack_id and isinstance(
-            self.caches.get("channel_mm_id_by_slack_id"), dict
-        ):
-            mmid = self.caches["channel_mm_id_by_slack_id"].get(ch_slack_id)
+        cache_ch_mm = self.caches.get("channel_mm_id_by_slack_id")
+        if ch_slack_id and isinstance(cache_ch_mm, dict):
+            d = cast(Dict[str, str], cache_ch_mm)
+            mmid = d.get(ch_slack_id)
             if mmid:
                 return mmid
 
@@ -584,12 +599,9 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 if ch_entity2:
                     mmid2 = getattr(ch_entity2, "mattermost_id", None)
                     if isinstance(mmid2, str) and mmid2:
-                        if isinstance(
-                            self.caches.get("channel_mm_id_by_slack_id"), dict
-                        ):
-                            self.caches["channel_mm_id_by_slack_id"][
-                                ch_slack_id
-                            ] = mmid2
+                        if isinstance(cache_ch_mm, dict):
+                            d3 = cast(Dict[str, str], cache_ch_mm)
+                            d3[ch_slack_id] = mmid2
                         return mmid2
         return None
 
@@ -602,8 +614,10 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         # Cache by slack user id if available
         raw = self.entity.raw_data or {}
         slack_uid = raw.get("user") or raw.get("bot_id")
-        if slack_uid and isinstance(self.caches.get("user_mm_id_by_slack_id"), dict):
-            mmid_cached = self.caches["user_mm_id_by_slack_id"].get(slack_uid)
+        cache_user_mm = self.caches.get("user_mm_id_by_slack_id")
+        if slack_uid and isinstance(cache_user_mm, dict):
+            d = cast(Dict[str, str], cache_user_mm)
+            mmid_cached = d.get(slack_uid)
             if mmid_cached:
                 return mmid_cached
 
@@ -639,8 +653,9 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 if user_entity:
                     mmid2 = getattr(user_entity, "mattermost_id", None)
                     if isinstance(mmid2, str) and mmid2:
-                        if isinstance(self.caches.get("user_mm_id_by_slack_id"), dict):
-                            self.caches["user_mm_id_by_slack_id"][slack_uid] = mmid2
+                        if isinstance(cache_user_mm, dict):
+                            d2 = cast(Dict[str, str], cache_user_mm)
+                            d2[slack_uid] = mmid2
                         return mmid2
 
         # 3) Fallback: current token user (admin)

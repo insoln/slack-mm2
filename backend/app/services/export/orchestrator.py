@@ -34,6 +34,9 @@ EXPORT_ORDER = [
 # Ensure only one export runs globally at a time
 EXPORT_LOCK = asyncio.Lock()
 
+# Default poll interval (seconds) when waiting for earliest job to enter 'exporting'
+EXPORT_QUEUE_POLL_DEFAULT: float = 2.0
+
 
 async def get_mm_user_id():
     """Получить ID пользователя-владельца токена из Mattermost"""
@@ -147,13 +150,10 @@ async def export_worker(queue, mm_user_id):
                         where_cond = (Entity.entity_type == entity.entity_type) & (
                             Entity.slack_id == entity.slack_id
                         )
-                        try:
-                            if getattr(entity, "job_id", None) is not None:
-                                where_cond = where_cond & (
-                                    Entity.job_id == getattr(entity, "job_id")
-                                )
-                        except Exception:
-                            pass
+                        # Scope by job only for job-scoped types (message/reaction/attachment)
+                        where_cond = job_scoped_condition(
+                            where_cond, entity.entity_type, getattr(entity, "job_id", None)
+                        )
                         await session.execute(
                             update(Entity)
                             .where(where_cond)
@@ -188,7 +188,9 @@ async def orchestrate_mm_export(job_id=None):
                 if anc is not None:
                     anchor_cutoff = (anc.created_at, anc.id)
 
-        sleep_s = float(os.getenv("EXPORT_QUEUE_POLL", "2.0"))
+        sleep_s = float(
+            os.getenv("EXPORT_QUEUE_POLL", str(EXPORT_QUEUE_POLL_DEFAULT))
+        )
         while True:
             # Pick the earliest job in 'running' state up to anchor (if any)
             async with SessionLocal() as session:

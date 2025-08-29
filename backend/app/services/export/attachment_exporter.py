@@ -100,54 +100,45 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 )
                 return
             if prefer_multipart:
-                # Write to a temp file and stream as multipart file
+                # Write to a temp file and stream as multipart file (auto-cleanup)
                 import tempfile
 
-                tmp_fd, tmp_path = tempfile.mkstemp(prefix="att-", suffix=".bin")
-                try:
-                    with os.fdopen(tmp_fd, "wb") as f:
-                        f.write(resp.content)
-                except Exception as e:  # noqa: BLE001
-                    await self.set_status(
-                        "failed", error=f"Temp file write failed: {e}"
-                    )
-                    try:
-                        os.remove(tmp_path)
-                    except Exception:
-                        pass
-                    return
-                # Build multipart form
                 fields = {"channel_id": channel_id, "filename": filename}
                 files = None
-                try:
-                    files = {
-                        "file": (
-                            filename,
-                            open(tmp_path, "rb"),
-                            "application/octet-stream",
+                with tempfile.NamedTemporaryFile(prefix="att-", suffix=".bin", delete=True) as tf:
+                    try:
+                        tf.write(resp.content)
+                        tf.flush()
+                    except Exception as e:  # noqa: BLE001
+                        await self.set_status(
+                            "failed", error=f"Temp file write failed: {e}"
                         )
-                    }
-                    resp2 = await self.mm_api_post_files(
-                        "/plugins/mm-importer/api/v1/attachment_multipart",
-                        fields,
-                        files,
-                    )
-                finally:
+                        return
                     try:
-                        if files is not None:
-                            fh = files.get("file")
-                            if (
-                                isinstance(fh, (tuple, list))
-                                and len(fh) >= 2
-                                and hasattr(fh[1], "close")
-                            ):
-                                fh[1].close()
-                    except Exception:
-                        pass
-                    try:
-                        os.remove(tmp_path)
-                    except Exception:
-                        pass
+                        files = {
+                            "file": (
+                                filename,
+                                open(tf.name, "rb"),
+                                "application/octet-stream",
+                            )
+                        }
+                        resp2 = await self.mm_api_post_files(
+                            "/plugins/mm-importer/api/v1/attachment_multipart",
+                            fields,
+                            files,
+                        )
+                    finally:
+                        try:
+                            if files is not None:
+                                fh = files.get("file")
+                                if (
+                                    isinstance(fh, (tuple, list))
+                                    and len(fh) >= 2
+                                    and hasattr(fh[1], "close")
+                                ):
+                                    fh[1].close()
+                        except Exception:
+                            pass
                 if resp2.status_code not in (200, 201):
                     try:
                         data = resp2.json()

@@ -263,8 +263,6 @@ async def orchestrate_slack_import(zip_path):
 
             # file-level progress for messages (increment by number of files completed)
             async def _progress_msg_files(delta_files: int):
-                if not delta_files:
-                    return
                 # Atomic merge to avoid lost updates from concurrent callbacks
                 from sqlalchemy import text
 
@@ -281,7 +279,7 @@ async def orchestrate_slack_import(zip_path):
                             WHERE id = :job_id
                             """
                         ),
-                        {"delta": int(delta_files), "job_id": job_id},
+                        {"delta": int(delta_files or 0), "job_id": job_id},
                     )
                     await s.commit()
 

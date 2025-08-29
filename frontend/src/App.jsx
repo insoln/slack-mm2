@@ -122,10 +122,10 @@ function App() {
     const load = async () => {
       try {
         setJobs((s) => ({ ...s, loading: true }));
-        const res = await fetch('http://localhost:8000/jobs');
+  const res = await fetch('http://localhost:8000/jobs');
         const data = await res.json();
         if (!mounted) return;
-  if (!res.ok) throw new Error(data.error || 'Failed to fetch job list');
+  if (!res.ok) throw new Error(data.error || 'Не удалось получить список задач');
         setJobs({ loading: false, data: data.jobs || [], error: null });
       } catch (e) {
         if (!mounted) return;
