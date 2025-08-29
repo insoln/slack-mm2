@@ -290,10 +290,13 @@ async def plugin_ensure():
                     ["make", "-C", str(get_plugin_repo_root()), "dist"], check=True
                 )
             except Exception as e:
+                # Return 200 with actionable hint instead of 409 to avoid UI blocking.
                 return JSONResponse(
-                    status_code=409,
+                    status_code=200,
                     content={
+                        "status": "needs_bundle",
                         "error": f"Bundle not found and build failed: {e}",
+                        "hint": "Run dev helper to build plugin: docker compose -f infra/docker-compose.dev.yml up --build mm-plugin-build",
                         **status,
                     },
                 )
@@ -304,14 +307,21 @@ async def plugin_ensure():
             uok, uerr = await _uninstall_plugin(plugin_id)
             if not uok:
                 return JSONResponse(
-                    status_code=502,
-                    content={"error": f"Uninstall failed: {uerr}", **status},
+                    status_code=200,
+                    content={
+                        "status": "retry_later",
+                        "error": f"Uninstall failed: {uerr}",
+                        "hint": "Try /plugin/reinstall or retry shortly.",
+                        **status,
+                    },
                 )
             if not await _wait_until_uninstalled(plugin_id):
                 return JSONResponse(
-                    status_code=504,
+                    status_code=200,
                     content={
+                        "status": "retry_later",
                         "error": "Timeout waiting for plugin to uninstall",
+                        "hint": "Retry in a few seconds or use /plugin/reinstall.",
                         **status,
                     },
                 )
@@ -328,14 +338,21 @@ async def plugin_ensure():
             uok, uerr = await _uninstall_plugin(plugin_id)
             if not uok:
                 return JSONResponse(
-                    status_code=502,
-                    content={"error": f"Uninstall failed: {uerr}", **status},
+                    status_code=200,
+                    content={
+                        "status": "retry_later",
+                        "error": f"Uninstall failed: {uerr}",
+                        "hint": "Try /plugin/reinstall or retry shortly.",
+                        **status,
+                    },
                 )
             if not await _wait_until_uninstalled(plugin_id):
                 return JSONResponse(
-                    status_code=504,
+                    status_code=200,
                     content={
+                        "status": "retry_later",
                         "error": "Timeout waiting for plugin to uninstall",
+                        "hint": "Retry in a few seconds or use /plugin/reinstall.",
                         **status,
                     },
                 )

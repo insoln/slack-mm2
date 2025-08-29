@@ -140,6 +140,17 @@ services:
       - ../infra/mattermost/mm_config.json:/seed/mm_config.json:ro
     restart: "no"
 
+  # Одноразовая сборка плагина (создаёт dist/<id>-<version>.tar.gz в infra/plugin)
+  mm-plugin-build:
+    image: golang:1.22-bookworm
+    working_dir: /src
+    # Устанавливаем инструменты и собираем плагин
+    command: ["bash", "-lc", "set -euo pipefail; apt-get update; apt-get install -y --no-install-recommends nodejs npm make git ca-certificates; npm config set fund false; npm config set audit false; make dist; chown -R 1000:1000 dist"]
+    volumes:
+      - ../infra/plugin:/src
+    # Останавливается после сборки
+    restart: "no"
+
 volumes:
   frontend_node_modules:
   mm_config:
