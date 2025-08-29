@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import math
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, TypedDict, Set, Tuple, cast
+import asyncio
 
 from .base_exporter import ExporterBase, LoggingMixin
 from .mm_api_mixin import MMApiMixin
@@ -9,9 +10,28 @@ from app.logging_config import backend_logger
 from app.models.base import SessionLocal
 from app.models.entity import Entity
 from sqlalchemy import select
+from app.utils.filters import job_scoped_condition
+
+
+class MessageCaches(TypedDict, total=False):
+    channel_mm_id_by_slack_id: Dict[str, str]
+    channel_name_by_slack_id: Dict[str, str]
+    user_mm_id_by_slack_id: Dict[str, str]
+    username_by_slack_id: Dict[str, str]
+    membership_seen: Set[Tuple[str, str]]
 
 
 class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
+    def __init__(self, entity, caches: MessageCaches | None = None):
+        super().__init__(entity)
+        # caches may contain:
+        #  - channel_mm_id_by_slack_id: dict[str, str]
+        #  - channel_name_by_slack_id: dict[str, str]
+        #  - user_mm_id_by_slack_id: dict[str, str]
+        #  - username_by_slack_id: dict[str, str]
+        #  - membership_seen: set[tuple[str,str]] of (channel_id, user_id)
+        self.caches: MessageCaches = caches or {}
+
     """
     Exports a Slack message to Mattermost via the plugin /import endpoint.
     - Resolves channel (posted_in relation) and author (posted_by relation or user lookup)
@@ -50,7 +70,14 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         create_at = self._parse_ts_ms(raw.get("ts"))
 
         # Root/thread
+        # Try to resolve thread root; if not present, briefly wait and retry to avoid detached replies
         root_id = await self._resolve_root_post_id()
+        if (self.entity.raw_data or {}).get("thread_ts") and not root_id:
+            for i in range(3):
+                await asyncio.sleep(0.3 * (i + 1))
+                root_id = await self._resolve_root_post_id()
+                if root_id:
+                    break
         if (self.entity.raw_data or {}).get("thread_ts") and not root_id:
             backend_logger.debug(
                 f"Message {self.entity.slack_id} is a reply but root post_id not found yet; posting as top-level for now"
@@ -58,10 +85,19 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
 
         # Best-effort: ensure author is a channel member to prevent CreatePost failure
         try:
-            _ = await self.mm_api_post(
-                "/plugins/mm-importer/api/v1/channel/members",
-                {"channel_id": channel_id, "user_ids": [user_id]},
+            mset = (
+                self.caches.get("membership_seen")
+                if isinstance(self.caches.get("membership_seen"), set)
+                else None
             )
+            key = (channel_id, user_id)
+            if mset is None or key not in mset:
+                _ = await self.mm_api_post(
+                    "/plugins/mm-importer/api/v1/channel/members",
+                    {"channel_id": channel_id, "user_ids": [user_id]},
+                )
+                if mset is not None:
+                    mset.add(key)
         except Exception as e:  # noqa: BLE001
             backend_logger.debug(f"Ensure channel membership failed (non-fatal): {e}")
 
@@ -87,12 +123,16 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     err = data.get("error") or data
                 except Exception:
                     err = resp.text
-                await self.set_status("failed", error=f"Plugin import failed: {resp.status_code} {err}")
+                await self.set_status(
+                    "failed", error=f"Plugin import failed: {resp.status_code} {err}"
+                )
                 return
             data = resp.json()
             post_id = data.get("post_id")
             if not post_id:
-                await self.set_status("failed", error=f"No post_id in plugin response: {data}")
+                await self.set_status(
+                    "failed", error=f"No post_id in plugin response: {data}"
+                )
                 return
             self.entity.mattermost_id = post_id
             await self.set_status("success")
@@ -109,18 +149,19 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         props: dict = {}
         try:
             import re
+
             subteams: list[dict] = []
             seen_ids: set[str] = set()
             seen_handles: set[str] = set()
             # From raw text tokens like <!subteam^S123|@group>
-            txt = (raw.get("text") or "")
+            txt = raw.get("text") or ""
             for m in re.finditer(r"<!subteam\^([A-Z0-9]+)\|(@[\w.-]+)>", txt):
                 sid, handle = m.group(1), m.group(2)
                 if sid not in seen_ids:
                     subteams.append({"id": sid, "handle": handle})
                     seen_ids.add(sid)
             # From rich blocks usergroup elements
-            for b in (raw.get("blocks") or []):
+            for b in raw.get("blocks") or []:
                 if b.get("type") == "rich_text":
                     for el in b.get("elements", []) or []:
                         for e in el.get("elements", []) or []:
@@ -147,6 +188,7 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         """
         try:
             import re
+
             orig = raw.get("text") or ""
             id_to_handle: dict[str, str] = {}
             for m in re.finditer(r"<!subteam\^([A-Z0-9]+)\|(@[^>]+)>", orig):
@@ -155,11 +197,13 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     id_to_handle[sid] = handle
             if not id_to_handle:
                 return text
+
             def sub(m):
                 full = m.group(0)  # like @S02AMBN3W1K
                 sid = full[1:]
                 handle = id_to_handle.get(sid)
                 return handle if handle is not None else full
+
             # Replace occurrences of @SXXXX with mapped @handle
             return re.sub(r"@S[0-9A-Z]+", sub, text)
         except Exception:  # noqa: BLE001
@@ -178,9 +222,13 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 if md and md.strip():
                     return md
                 # If rich conversion produced nothing, fall back to plain text
-                backend_logger.debug("Rich blocks produced empty text, falling back to raw text conversion")
+                backend_logger.debug(
+                    "Rich blocks produced empty text, falling back to raw text conversion"
+                )
             except Exception as e:  # noqa: BLE001
-                backend_logger.debug(f"Rich blocks conversion failed, fallback to text: {e}")
+                backend_logger.debug(
+                    f"Rich blocks conversion failed, fallback to text: {e}"
+                )
         # Classic attachments (e.g., Alertmanager)
         atts = raw.get("attachments") or []
         if isinstance(atts, list) and atts:
@@ -189,7 +237,9 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 if md and md.strip():
                     return md
             except Exception as e:  # noqa: BLE001
-                backend_logger.debug(f"Attachments conversion failed, fallback to text: {e}")
+                backend_logger.debug(
+                    f"Attachments conversion failed, fallback to text: {e}"
+                )
         # Fallback to text conversion
         txt = raw.get("text") or ""
         return await self._slack_text_to_markdown(txt)
@@ -234,6 +284,7 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
 
     async def _slack_text_to_markdown(self, txt: str) -> str:
         import re
+
         if not txt:
             return ""
 
@@ -246,6 +297,7 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         def repl_subteam(m):
             handle = m.group(2)  # includes leading @ from Slack token
             return handle
+
         txt = re.sub(r"<!subteam\^([A-Z0-9]+)\|(@[^>]+)>", repl_subteam, txt)
 
         # Links with labels: <url|label>
@@ -253,6 +305,7 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
             url = m.group(1)
             label = m.group(2)
             return f"[{label}]({url})"
+
         txt = re.sub(r"<((?:https?|mailto):[^>|]+)\|([^>]+)>", repl_link, txt)
 
         # Naked angled links: <url>
@@ -382,10 +435,14 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                         out.append(f"{bullet}{line}")
             return "\n".join(out)
         if t == "rich_text_quote":
-            content = await self._rich_element_to_md({"type": "rich_text_section", "elements": el.get("elements", []) or []})
+            content = await self._rich_element_to_md(
+                {"type": "rich_text_section", "elements": el.get("elements", []) or []}
+            )
             return "\n".join([f"> {ln}" for ln in content.splitlines()])
         if t == "rich_text_preformatted":
-            content = await self._rich_element_to_md({"type": "rich_text_section", "elements": el.get("elements", []) or []})
+            content = await self._rich_element_to_md(
+                {"type": "rich_text_section", "elements": el.get("elements", []) or []}
+            )
             return f"```\n{content}\n```"
         if t == "rich_text_line_break":
             return "\n"
@@ -438,9 +495,18 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 parts.append(s)
         return "".join(parts)
 
-    async def _resolve_username_by_slack_id(self, slack_uid: Optional[str]) -> Optional[str]:
+    async def _resolve_username_by_slack_id(
+        self, slack_uid: Optional[str]
+    ) -> Optional[str]:
         if not slack_uid:
             return None
+        # Cache first
+        cache_usernames = self.caches.get("username_by_slack_id")
+        if isinstance(cache_usernames, dict):
+            d = cast(Dict[str, str], cache_usernames)
+            val = d.get(slack_uid)
+            if val:
+                return val
         async with SessionLocal() as session:
             q = await session.execute(
                 select(Entity).where(
@@ -452,11 +518,24 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 return None
             # Prefer Mattermost username via API only if needed; use Slack name from raw_data as our UserExporter mirrors it
             raw = ent.raw_data or {}
-            return raw.get("name") or slack_uid
+            name = raw.get("name") or slack_uid
+            cache_usernames2 = self.caches.get("username_by_slack_id")
+            if isinstance(cache_usernames2, dict):
+                d2 = cast(Dict[str, str], cache_usernames2)
+                d2[slack_uid] = name
+            return name
 
-    async def _resolve_channel_name_by_slack_id(self, slack_cid: Optional[str]) -> Optional[str]:
+    async def _resolve_channel_name_by_slack_id(
+        self, slack_cid: Optional[str]
+    ) -> Optional[str]:
         if not slack_cid:
             return None
+        cache_ch_names = self.caches.get("channel_name_by_slack_id")
+        if isinstance(cache_ch_names, dict):
+            d = cast(Dict[str, str], cache_ch_names)
+            v = d.get(slack_cid)
+            if v:
+                return v
         async with SessionLocal() as session:
             q = await session.execute(
                 select(Entity).where(
@@ -468,14 +547,29 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 return None
             raw = ent.raw_data or {}
             # Slack channel names are usually compatible with MM; plugin also normalized names
-            return raw.get("name")
+            name = raw.get("name")
+            if name and isinstance(cache_ch_names, dict):
+                d2 = cast(Dict[str, str], cache_ch_names)
+                d2[slack_cid] = name
+            return name
 
     async def _resolve_mm_channel_id_for_message(self) -> Optional[str]:
         """Find the Mattermost channel id where this message belongs (posted_in),
         fallback to raw_data.channel_id mapping.
         """
+        # Cache by raw slack channel id if present
+        raw = self.entity.raw_data or {}
+        ch_slack_id = raw.get("channel_id")
+        cache_ch_mm = self.caches.get("channel_mm_id_by_slack_id")
+        if ch_slack_id and isinstance(cache_ch_mm, dict):
+            d = cast(Dict[str, str], cache_ch_mm)
+            mmid = d.get(ch_slack_id)
+            if mmid:
+                return mmid
+
         async with SessionLocal() as session:
             from app.models.entity_relation import EntityRelation
+
             # Preferred: relation posted_in
             q = await session.execute(
                 select(EntityRelation, Entity)
@@ -493,18 +587,21 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     return mmid
 
             # Fallback: raw_data.channel_id -> channel entity -> mattermost_id
-            raw = self.entity.raw_data or {}
-            ch_slack_id = raw.get("channel_id")
+            # raw already defined above
             if ch_slack_id:
                 q2 = await session.execute(
                     select(Entity).where(
-                        (Entity.entity_type == "channel") & (Entity.slack_id == ch_slack_id)
+                        (Entity.entity_type == "channel")
+                        & (Entity.slack_id == ch_slack_id)
                     )
                 )
                 ch_entity2 = q2.scalar_one_or_none()
                 if ch_entity2:
                     mmid2 = getattr(ch_entity2, "mattermost_id", None)
                     if isinstance(mmid2, str) and mmid2:
+                        if isinstance(cache_ch_mm, dict):
+                            d3 = cast(Dict[str, str], cache_ch_mm)
+                            d3[ch_slack_id] = mmid2
                         return mmid2
         return None
 
@@ -514,8 +611,20 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         and finally fallback to the current token's user (admin) via /users/me.
         """
         # 1) Via posted_by relation
+        # Cache by slack user id if available
+        raw = self.entity.raw_data or {}
+        slack_uid = raw.get("user") or raw.get("bot_id")
+        cache_user_mm = self.caches.get("user_mm_id_by_slack_id")
+        if slack_uid and isinstance(cache_user_mm, dict):
+            d = cast(Dict[str, str], cache_user_mm)
+            mmid_cached = d.get(slack_uid)
+            if mmid_cached:
+                return mmid_cached
+
+        # 1) Via posted_by relation
         async with SessionLocal() as session:
             from app.models.entity_relation import EntityRelation
+
             q = await session.execute(
                 select(EntityRelation, Entity)
                 .join(Entity, Entity.id == EntityRelation.from_entity_id)
@@ -532,8 +641,7 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     return mmid
 
         # 2) Lookup by slack user id in raw_data
-        raw = self.entity.raw_data or {}
-        slack_uid = raw.get("user") or raw.get("bot_id")
+        # raw/slack_uid already computed above
         if slack_uid:
             async with SessionLocal() as session:
                 q2 = await session.execute(
@@ -545,6 +653,9 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 if user_entity:
                     mmid2 = getattr(user_entity, "mattermost_id", None)
                     if isinstance(mmid2, str) and mmid2:
+                        if isinstance(cache_user_mm, dict):
+                            d2 = cast(Dict[str, str], cache_user_mm)
+                            d2[slack_uid] = mmid2
                         return mmid2
 
         # 3) Fallback: current token user (admin)
@@ -554,7 +665,9 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 data = resp.json()
                 return data.get("id")
         except Exception as e:  # noqa: BLE001
-            backend_logger.error(f"Не удалось получить /users/me для fallback автора: {e}")
+            backend_logger.error(
+                f"Не удалось получить /users/me для fallback автора: {e}"
+            )
         return None
 
     async def _collect_file_ids(self) -> List[str]:
@@ -562,6 +675,7 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         file_ids: List[str] = []
         async with SessionLocal() as session:
             from app.models.entity_relation import EntityRelation
+
             q = await session.execute(
                 select(EntityRelation, Entity)
                 .join(Entity, Entity.id == EntityRelation.from_entity_id)
@@ -586,11 +700,11 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
 
         # Find parent message entity by slack thread_ts
         async with SessionLocal() as session:
-            q = await session.execute(
-                select(Entity).where(
-                    (Entity.entity_type == "message") & (Entity.slack_id == thread_ts)
-                )
+            cond = (Entity.entity_type == "message") & (Entity.slack_id == thread_ts)
+            cond = job_scoped_condition(
+                cond, "message", getattr(self.entity, "job_id", None)
             )
+            q = await session.execute(select(Entity).where(cond))
             parent = q.scalar_one_or_none()
             if parent:
                 mmid = getattr(parent, "mattermost_id", None)
@@ -609,7 +723,9 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         except Exception:  # noqa: BLE001
             return None
 
-    async def _resolve_usergroup_handle_by_id(self, gid: Optional[str]) -> Optional[str]:
+    async def _resolve_usergroup_handle_by_id(
+        self, gid: Optional[str]
+    ) -> Optional[str]:
         """Best-effort: find @handle for a Slack subteam id by scanning original text tokens
         like <!subteam^S123|@handle> in raw_data.text. This avoids needing Slack API usergroups.
         """
@@ -617,6 +733,7 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
             return None
         try:
             import re
+
             raw = self.entity.raw_data or {}
             txt = raw.get("text") or ""
             for m in re.finditer(r"<!subteam\^([A-Z0-9]+)\|(@[^>]+)>", txt):

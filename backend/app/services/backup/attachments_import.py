@@ -3,6 +3,8 @@ from app.logging_config import backend_logger
 import os
 import glob
 import ijson
+from typing import Callable, Awaitable, Optional
+
 
 async def parse_attachments_from_messages(export_dir, message_entities):
     attachments = []
@@ -22,7 +24,8 @@ async def parse_attachments_from_messages(export_dir, message_entities):
                 mattermost_id=None,
                 raw_data=file_obj,
                 status="pending",
-                auto_save=False
+                auto_save=False,
+                job_id=getattr(msg, "job_id", None),
             )
             attachments.append((attachment, message_ts))
     # Сохраняем все Attachment
@@ -31,10 +34,15 @@ async def parse_attachments_from_messages(export_dir, message_entities):
     # Создаём связи attached_to
     for attachment, message_ts in attachments:
         await attachment.create_attached_to_relation(message_ts)
-    backend_logger.info(f"Импортировано аттачментов: {len(attachments)}") 
+    backend_logger.info(f"Импортировано аттачментов: {len(attachments)}")
 
 
-async def parse_attachments_from_export(export_dir: str, folder_channel_map: dict) -> int:
+async def parse_attachments_from_export(
+    export_dir: str,
+    folder_channel_map: dict,
+    progress: Optional[Callable[[int], Awaitable[None]]] = None,
+    job_id=None,
+) -> int:
     """Stream files in export and create attachment entities/relations incrementally."""
     total = 0
     for folder, _ in folder_channel_map.items():
@@ -43,22 +51,36 @@ async def parse_attachments_from_export(export_dir: str, folder_channel_map: dic
             continue
         for msg_file in glob.glob(os.path.join(folder_path, "*.json")):
             try:
-                with open(msg_file, 'r', encoding='utf-8') as f:
-                    for msg in ijson.items(f, 'item'):
+                with open(msg_file, "r", encoding="utf-8") as f:
+                    for msg in ijson.items(f, "item"):
                         raw = msg or {}
                         message_ts = raw.get("ts")
                         for file_obj in raw.get("files") or []:
                             slack_id = file_obj.get("id")
                             url_private = file_obj.get("url_private")
-                            if not slack_id or not (url_private and url_private.startswith("https://files.slack.com")):
+                            if not slack_id or not (
+                                url_private
+                                and url_private.startswith("https://files.slack.com")
+                            ):
                                 continue
-                            attachment = Attachment(slack_id=slack_id, mattermost_id=None, raw_data=file_obj, status="pending", auto_save=False)
+                            attachment = Attachment(
+                                slack_id=slack_id,
+                                mattermost_id=None,
+                                raw_data=file_obj,
+                                status="pending",
+                                auto_save=False,
+                                job_id=job_id,
+                            )
                             ent = await attachment.save_to_db()
                             if ent is not None:
                                 await attachment.create_attached_to_relation(message_ts)
                                 total += 1
+                                if progress:
+                                    await progress(1)
             except Exception as e:
-                backend_logger.error(f"Ошибка чтения {msg_file} при сборе аттачментов: {e}")
+                backend_logger.error(
+                    f"Ошибка чтения {msg_file} при сборе аттачментов: {e}"
+                )
                 continue
     backend_logger.info(f"Импортировано аттачментов из экспорта: {total}")
     return total

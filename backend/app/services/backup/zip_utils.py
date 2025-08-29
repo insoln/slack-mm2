@@ -16,11 +16,13 @@ async def extract_zip(path_to_zip, extract_to):
                 f"Начинаю распаковку архива через unzip: {path_to_zip} -> {extract_to} (без указания кодировки)"
             )
             os.makedirs(extract_to, exist_ok=True)
-            result = subprocess.run([
-                "unzip", path_to_zip, "-d", extract_to
-            ], capture_output=True, text=True)
+            result = subprocess.run(
+                ["unzip", path_to_zip, "-d", extract_to], capture_output=True, text=True
+            )
             if result.returncode != 0:
-                backend_logger.error(f"Ошибка при распаковке {path_to_zip}: {result.stderr}")
+                backend_logger.error(
+                    f"Ошибка при распаковке {path_to_zip}: {result.stderr}"
+                )
                 raise RuntimeError(f"unzip failed: {result.stderr}")
             backend_logger.debug(f"PARSE: архив успешно распакован: {extract_to}")
         except Exception as e:

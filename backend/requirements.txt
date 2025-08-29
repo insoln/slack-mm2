@@ -5,7 +5,8 @@ psycopg2-binary
 black
 pytest
 pytest-cov
-httpx
+pytest-asyncio
+httpx[http2]
 python-multipart
 aiofiles
 requests
@@ -13,3 +14,4 @@ requests-toolbelt
 sqlalchemy
 asyncpg
 ijson
+aiosqlite

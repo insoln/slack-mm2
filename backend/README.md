@@ -90,6 +90,12 @@ Backend реализует REST API для загрузки данных Slack (
 - MM_TOKEN — токен администратора Mattermost
 - EXPORT_WORKERS — количество параллельных воркеров экспорта (по умолчанию 5)
 
+#### Производительность / Тюнинг
+- ATTACHMENT_WORKERS — воркеры загрузки файлов (по умолчанию = EXPORT_WORKERS)
+- EXPORT_CHANNEL_CONCURRENCY — параллельных каналов для экспорта сообщений (по умолчанию = EXPORT_WORKERS)
+- MM_MAX_KEEPALIVE, MM_MAX_CONNECTIONS, MM_HTTP2 — настройки HTTP пула клиентов
+- DB_POOL_SIZE, DB_MAX_OVERFLOW, DB_POOL_TIMEOUT — настройки пула подключений к БД
+
 ### Логирование
 - Все логи экспорта и ошибок централизованы через backend_logger.
 - Вся информация об ошибках экспорта пишется в поле error_message таблицы entities.

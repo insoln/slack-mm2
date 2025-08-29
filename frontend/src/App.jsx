@@ -18,6 +18,8 @@ function App() {
   const [reloadCountdown, setReloadCountdown] = useState(5);
   const [installSession, setInstallSession] = useState(false);
   const [stats, setStats] = useState({loading: false, data: null, error: null});
+  const [liveStats, setLiveStats] = useState(null);
+  const [jobs, setJobs] = useState({ loading: false, data: [], error: null });
 
   useEffect(() => {
     fetch('http://localhost:8000/healthcheck')
@@ -113,6 +115,37 @@ function App() {
   };
 
   useEffect(() => { refreshStats(); }, []);
+
+  // Poll jobs list periodically
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      try {
+        setJobs((s) => ({ ...s, loading: true }));
+  const res = await fetch('http://localhost:8000/jobs');
+        const data = await res.json();
+        if (!mounted) return;
+  if (!res.ok) throw new Error(data.error || 'Не удалось получить список задач');
+        setJobs({ loading: false, data: data.jobs || [], error: null });
+      } catch (e) {
+        if (!mounted) return;
+        setJobs({ loading: false, data: [], error: e.message });
+      }
+    };
+    load();
+    const t = setInterval(load, 3000);
+    return () => { mounted = false; clearInterval(t); };
+  }, []);
+
+  // Subscribe to live progress via SSE
+  useEffect(() => {
+    const es = new EventSource('http://localhost:8000/progress/stream');
+    es.addEventListener('stats', (e) => {
+      try { setLiveStats(JSON.parse(e.data)); } catch { /* ignore parse error */ }
+    });
+    es.onerror = () => { /* ignore; browser will retry due to retry header */ };
+    return () => es.close();
+  }, []);
 
   const handleFileChange = (e) => {
     setUploadResult(null);
@@ -235,6 +268,90 @@ function App() {
             </div>
             <div id="stats" className="col" style={{gridColumn: 'span 12'}}>
               <Card title="Статистика маппингов" actions={<Button onClick={refreshStats} variant="secondary">Обновить</Button>}>
+                {/* Jobs list (all running/finished) */}
+                <div style={{marginBottom: 12}}>
+                  <div className="small" style={{marginBottom: 6, color:'#9ca3af'}}>Активные и последние задачи</div>
+                  {jobs.error && <div style={{color:'#f87171'}}>Ошибка: {jobs.error}</div>}
+                  {(!jobs.data || jobs.data.length === 0) && !jobs.loading && (
+                    <div className="small" style={{color:'#9ca3af'}}>Задач нет</div>
+                  )}
+                  {jobs.data && jobs.data.length > 0 && (
+                    <div style={{display:'grid', gap:8}}>
+                      {jobs.data.map((j) => {
+                        const meta = j.meta || {};
+                        // Fallback totals: if API did not provide, derive from SSE by_type snapshot
+                        const fallbackTotals = liveStats?.by_type ? {
+                          messages: liveStats.by_type.message || 0,
+                          reactions: liveStats.by_type.reaction || 0,
+                          attachments: liveStats.by_type.attachment || 0,
+                          emojis: liveStats.by_type.custom_emoji || 0,
+                        } : {};
+                        const totals = meta.totals || fallbackTotals;
+                        const processed = {
+                          messages: meta.messages_processed || 0,
+                          emojis: meta.emojis_processed || 0,
+                          reactions: meta.reactions_processed || 0,
+                          attachments: meta.attachments_processed || 0,
+                        };
+                        // Import-stage file-based progress
+                        const jsonTotal = Number(meta.json_files_total) || 0;
+                        const jsonDone = Number(meta.json_files_processed) || 0;
+                        const importStages = ['extracting','users','channels','messages','emojis','reactions','attachments'];
+                        const inImport = importStages.includes(j.current_stage);
+
+                        // Per-element weighting across all mapping items for exporting/done
+                        const keys = ['attachments','messages','reactions','emojis'];
+                        const totalsSum = keys.reduce((acc, k) => acc + (Number(totals[k]) || 0), 0);
+                        const processedSum = keys.reduce((acc, k) => {
+                          const t = Number(totals[k]) || 0;
+                          const p = Number(processed[k]) || 0;
+                          return acc + Math.min(p, t);
+                        }, 0);
+
+                        let pct = 0;
+                        if (inImport) {
+                          if (jsonTotal > 0) {
+                            pct = Math.max(1, Math.min(100, Math.round((jsonDone / jsonTotal) * 100)));
+                          } else if ((totals.messages || 0) > 0) {
+                            // Fallback: approximate import progress by messages parsed
+                            pct = Math.max(1, Math.min(100, Math.round(((processed.messages || 0) / (totals.messages || 1)) * 100)));
+                          } else {
+                            // Unknown totals yet: show a minimal indeterminate stub
+                            pct = 1;
+                          }
+                        } else {
+                          pct = totalsSum > 0 ? Math.round((processedSum / totalsSum) * 100) : 0;
+                          if (totalsSum === 0 && j.current_stage === 'exporting') pct = 1;
+                        }
+                        // Choose bar color: green for import stages, themed primary for export/done
+                        const barBg = inImport
+                          ? 'linear-gradient(90deg, #22c55e, #16a34a)'
+                          : 'linear-gradient(90deg, var(--primary), var(--primary-600))';
+                        return (
+                          <div key={j.id} style={{border:'1px solid var(--border)', borderRadius:8, padding:8}}>
+                            <div className="small" style={{display:'flex', justifyContent:'space-between', marginBottom:6}}>
+                              <span>Задача #{j.id} — {j.current_stage || '—'} • {j.status}</span>
+                              <span>{new Date(j.created_at || Date.now()).toLocaleString()}</span>
+                            </div>
+                            <div style={{height: 8, background: '#0b1223', border: '1px solid var(--border)', borderRadius: 9999, overflow: 'hidden'}}>
+                              <div style={{width: `${pct}%`, height: '100%', background: barBg, transition: 'width 0.3s'}} />
+                            </div>
+                            <div className="small" style={{marginTop: 4, color:'#9ca3af'}}>
+                              {inImport
+                                ? (jsonTotal > 0
+                                  ? (<span>import files {jsonDone}/{jsonTotal}</span>)
+                                  : ((totals.messages || 0) > 0
+                                      ? (<span>import msgs {processed.messages}/{totals.messages || 0}</span>)
+                                      : (<span>import scanning…</span>)))
+                                : (<span>files {processed.attachments}/{totals.attachments || 0}, msgs {processed.messages}/{totals.messages || 0}, reactions {processed.reactions}/{totals.reactions || 0}</span>)}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+                {/* Live SSE summary hidden to reduce confusion; SSE kept for fallback totals */}
                 {stats.loading && <div>Загрузка…</div>}
                 {stats.error && <div style={{color:'#f87171'}}>Ошибка: {stats.error}</div>}
                 {stats.data && (

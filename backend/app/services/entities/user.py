@@ -18,7 +18,7 @@ class User(BaseMapping):
             mattermost_id=entity.mattermost_id,
             raw_data=entity.raw_data,
             status=entity.status,
-            auto_save=False
+            auto_save=False,
         )
         obj.id = entity.id
         return obj

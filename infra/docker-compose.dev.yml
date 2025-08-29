@@ -47,6 +47,16 @@ services:
       MM_TOKEN: 5x7rr788c7gwdnkdr9imb49ffo
       MM_TEAM: test
       EXPORT_WORKERS: 5
+      # HTTP client pooling
+      MM_MAX_KEEPALIVE: 50
+      MM_MAX_CONNECTIONS: 200
+      MM_HTTP2: "1"
+      # DB pool tuning for high concurrency
+      DB_POOL_SIZE: 20
+      DB_MAX_OVERFLOW: 40
+      DB_POOL_TIMEOUT: 60
+      # Attachment concurrency and limits
+      ATTACHMENT_WORKERS: 2
       SLACK_VERIFICATION_TOKEN: ${SLACK_VERIFICATION_TOKEN}
       SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
       SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET}
@@ -58,7 +68,7 @@ services:
     volumes:
       - ../alembic.ini:/alembic.ini
       - ../backend/app:/app/app
-      - ../backend/alembic:/app/alembic
+      - ../backend/alembic:/app/backend/alembic
       - ../infra/plugin:/app/infra/plugin:ro
     restart: unless-stopped
 

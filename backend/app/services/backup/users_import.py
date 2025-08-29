@@ -1,9 +1,11 @@
 import os
 import json
+from typing import Optional
 from app.services.entities.user import User
 from app.logging_config import backend_logger
 
-async def parse_users(extract_dir):
+
+async def parse_users(extract_dir, job_id: Optional[int] = None):
     users_path = os.path.join(extract_dir, "users.json")
     if not os.path.exists(users_path):
         backend_logger.error(f"users.json не найден в {extract_dir}")
@@ -15,8 +17,14 @@ async def parse_users(extract_dir):
     for user_json in users_data:
         slack_id = user_json.get("id")
         mattermost_id = None
-        user = User(slack_id=slack_id, mattermost_id=mattermost_id, raw_data=user_json, auto_save=False)
+        user = User(
+            slack_id=slack_id,
+            mattermost_id=mattermost_id,
+            raw_data=user_json,
+            auto_save=False,
+            job_id=job_id,
+        )
         user_objs.append(user)
-    for user in user_objs:
-        await user.save_to_db()
-    return user_objs 
+    for u in user_objs:
+        await u.save_to_db()
+    return user_objs

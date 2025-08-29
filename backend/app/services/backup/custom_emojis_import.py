@@ -1,5 +1,5 @@
 import re
-from typing import Dict, Set, Optional
+from typing import Dict, Set, Optional, Callable, Awaitable
 import os
 import glob
 import ijson
@@ -13,7 +13,12 @@ from sqlalchemy import select
 EMOJI_PATTERN = re.compile(r":([a-z0-9_+\-]+):")
 
 
-def _resolve_emoji_url(name: str, emoji_list: Dict[str, str], depth: int = 0, visited: Optional[Set[str]] = None) -> Optional[str]:
+def _resolve_emoji_url(
+    name: str,
+    emoji_list: Dict[str, str],
+    depth: int = 0,
+    visited: Optional[Set[str]] = None,
+) -> Optional[str]:
     """Resolve Slack emoji URL, handling alias:foo chains safely."""
     if not name or name not in emoji_list:
         return None
@@ -80,7 +85,9 @@ async def parse_custom_emojis_from_messages(message_entities, emoji_list=None):
     create custom_emoji entities for those found in Slack emoji list.
     """
     if not emoji_list:
-        backend_logger.info("Список эмодзи Slack пуст или не задан; пропускаю создание custom_emoji из сообщений")
+        backend_logger.info(
+            "Список эмодзи Slack пуст или не задан; пропускаю создание custom_emoji из сообщений"
+        )
         return []
 
     wanted: Set[str] = set()
@@ -103,7 +110,9 @@ async def parse_custom_emojis_from_messages(message_entities, emoji_list=None):
     resolved = {k: v for k, v in resolved.items() if v}
 
     if not resolved:
-        backend_logger.info("В сообщениях не найдено кастомных эмодзи со ссылками в Slack API")
+        backend_logger.info(
+            "В сообщениях не найдено кастомных эмодзи со ссылками в Slack API"
+        )
         return []
 
     # Exclude already present custom_emoji entities
@@ -135,12 +144,19 @@ async def parse_custom_emojis_from_messages(message_entities, emoji_list=None):
     return created
 
 
-async def parse_custom_emojis_from_export(export_dir: str, folder_channel_map: Dict[str, dict], emoji_list: Optional[Dict[str, str]] = None) -> int:
+async def parse_custom_emojis_from_export(
+    export_dir: str,
+    folder_channel_map: Dict[str, dict],
+    emoji_list: Optional[Dict[str, str]] = None,
+    progress: Optional[Callable[[int], Awaitable[None]]] = None,
+) -> int:
     """Stream files in export to collect custom emoji usages and create entities.
     Returns number of created emojis.
     """
     if not emoji_list:
-        backend_logger.info("Список эмодзи Slack пуст или не задан; пропускаю создание custom_emoji из экспорта")
+        backend_logger.info(
+            "Список эмодзи Slack пуст или не задан; пропускаю создание custom_emoji из экспорта"
+        )
         return 0
 
     wanted: Set[str] = set()
@@ -150,12 +166,16 @@ async def parse_custom_emojis_from_export(export_dir: str, folder_channel_map: D
             continue
         for msg_file in glob.glob(os.path.join(folder_path, "*.json")):
             try:
-                with open(msg_file, 'r', encoding='utf-8') as f:
-                    for msg in ijson.items(f, 'item'):
+                with open(msg_file, "r", encoding="utf-8") as f:
+                    for msg in ijson.items(f, "item"):
                         # From plain text
-                        wanted |= set(EMOJI_PATTERN.findall((msg or {}).get("text") or ""))
+                        wanted |= set(
+                            EMOJI_PATTERN.findall((msg or {}).get("text") or "")
+                        )
                         # From blocks
-                        wanted |= _collect_emoji_from_blocks((msg or {}).get("blocks") or [])
+                        wanted |= _collect_emoji_from_blocks(
+                            (msg or {}).get("blocks") or []
+                        )
                         # From classic attachments
                         for a in (msg or {}).get("attachments", []) or []:
                             for key in ("pretext", "title", "text", "fallback"):
@@ -163,27 +183,40 @@ async def parse_custom_emojis_from_export(export_dir: str, folder_channel_map: D
                                 if isinstance(val, str):
                                     wanted |= set(EMOJI_PATTERN.findall(val))
             except Exception as e:
-                backend_logger.error(f"Ошибка чтения {msg_file} при сборе custom emojis: {e}")
+                backend_logger.error(
+                    f"Ошибка чтения {msg_file} при сборе custom emojis: {e}"
+                )
                 continue
 
     resolved = {name: _resolve_emoji_url(name, emoji_list) for name in wanted}
     resolved = {k: v for k, v in resolved.items() if v}
     if not resolved:
-        backend_logger.info("В экспорте не найдено кастомных эмодзи со ссылками в Slack API")
+        backend_logger.info(
+            "В экспорте не найдено кастомных эмодзи со ссылками в Slack API"
+        )
         return 0
 
     # Exclude already present
     existing: Set[str] = set()
     async with SessionLocal() as session:
-        q = await session.execute(select(Entity.slack_id).where(Entity.entity_type == "custom_emoji"))
+        q = await session.execute(
+            select(Entity.slack_id).where(Entity.entity_type == "custom_emoji")
+        )
         existing = {row[0] for row in q.all()}
 
     to_create = [name for name in resolved.keys() if name not in existing]
     created = 0
     for name in to_create:
-        emoji_entity = CustomEmoji(slack_id=name, raw_data={"name": name, "url": resolved[name]}, status="pending", auto_save=False)
+        emoji_entity = CustomEmoji(
+            slack_id=name,
+            raw_data={"name": name, "url": resolved[name]},
+            status="pending",
+            auto_save=False,
+        )
         ent = await emoji_entity.save_to_db()
         if ent is not None:
             created += 1
+            if progress:
+                await progress(1)
     backend_logger.info(f"Импортировано кастомных эмодзи из экспорта: {created}")
     return created

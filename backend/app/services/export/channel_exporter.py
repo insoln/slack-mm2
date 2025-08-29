@@ -4,6 +4,7 @@ from app.logging_config import backend_logger
 from .base_exporter import ExporterBase, LoggingMixin
 from .mm_api_mixin import MMApiMixin
 
+
 class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
     def __init__(self, entity):
         super().__init__(entity)
@@ -18,15 +19,17 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
         name = self._get_channel_name(raw_data)
         if not name:
             return None
-        
+
         # Для DM каналов (начинаются с D) используем специальную логику
-        if name.startswith('D'):
+        if name.startswith("D"):
             return f"DM-{name}"
-        
+
         # Для обычных каналов используем оригинальное название
         return name
 
-    def _sanitize_display_name(self, display_name: str | None, fallback_name: str) -> str:
+    def _sanitize_display_name(
+        self, display_name: str | None, fallback_name: str
+    ) -> str:
         """Ограничить DisplayName до допустимых значений MM (<=64 символа, без переводов строк).
         Если не задано — используем fallback_name. Триммим пробелы, \n/\r заменяем на пробел.
         """
@@ -55,7 +58,7 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
 
     def _is_dm_channel(self, raw_data):
         """Проверить, является ли канал DM"""
-        return raw_data.get("id", "").startswith('D') if raw_data else False
+        return raw_data.get("id", "").startswith("D") if raw_data else False
 
     def _is_group_dm_channel(self, raw_data):
         """Проверить, является ли канал групповым DM (mpim в Slack)."""
@@ -71,7 +74,7 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
     def _is_private_channel(self, raw_data):
         """Проверить, является ли канал приватным"""
         # В Slack приватные каналы имеют ID начинающийся с G
-        return raw_data.get("id", "").startswith('G') if raw_data else False
+        return raw_data.get("id", "").startswith("G") if raw_data else False
 
     async def export_entity(self):
         # Сначала определяем тип канала и обрабатываем DM/GDM, где 'name' может отсутствовать
@@ -96,19 +99,30 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                         try:
                             dm_data = dm_resp.json()
                         except Exception:
-                            backend_logger.error(f"Плагин вернул не-JSON для DM: status={dm_resp.status_code} body={dm_resp.text[:200]}")
-                            await self.set_status("failed", error=f"Plugin invalid JSON for DM: {dm_resp.status_code}")
+                            backend_logger.error(
+                                f"Плагин вернул не-JSON для DM: status={dm_resp.status_code} body={dm_resp.text[:200]}"
+                            )
+                            await self.set_status(
+                                "failed",
+                                error=f"Plugin invalid JSON for DM: {dm_resp.status_code}",
+                            )
                             return
                         self.entity.mattermost_id = dm_data.get("channel_id")
                         await self.set_status("success")
-                        backend_logger.debug(f"DM канал создан/получен, ID: {self.entity.mattermost_id}")
+                        backend_logger.debug(
+                            f"DM канал создан/получен, ID: {self.entity.mattermost_id}"
+                        )
                         return
                     else:
-                        backend_logger.error(f"Ошибка создания DM через плагин: {dm_resp.status_code} {dm_resp.text}")
+                        backend_logger.error(
+                            f"Ошибка создания DM через плагин: {dm_resp.status_code} {dm_resp.text}"
+                        )
                         await self.set_status("failed", error=dm_resp.text)
                         return
                 else:
-                    backend_logger.warn(f"Ожидалось 2 участника DM, найдено {len(mm_user_ids)}; пропускаю")
+                    backend_logger.warn(
+                        f"Ожидалось 2 участника DM, найдено {len(mm_user_ids)}; пропускаю"
+                    )
                     await self.set_status("skipped", error="Invalid DM members count")
                     return
 
@@ -126,19 +140,30 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                         try:
                             gdm_data = gdm_resp.json()
                         except Exception:
-                            backend_logger.error(f"Плагин вернул не-JSON для GDM: status={gdm_resp.status_code} body={gdm_resp.text[:200]}")
-                            await self.set_status("failed", error=f"Plugin invalid JSON for GDM: {gdm_resp.status_code}")
+                            backend_logger.error(
+                                f"Плагин вернул не-JSON для GDM: status={gdm_resp.status_code} body={gdm_resp.text[:200]}"
+                            )
+                            await self.set_status(
+                                "failed",
+                                error=f"Plugin invalid JSON for GDM: {gdm_resp.status_code}",
+                            )
                             return
                         self.entity.mattermost_id = gdm_data.get("channel_id")
                         await self.set_status("success")
-                        backend_logger.debug(f"GDM канал создан/получен, ID: {self.entity.mattermost_id}")
+                        backend_logger.debug(
+                            f"GDM канал создан/получен, ID: {self.entity.mattermost_id}"
+                        )
                         return
                     else:
-                        backend_logger.error(f"Ошибка создания GDM через плагин: {gdm_resp.status_code} {gdm_resp.text}")
+                        backend_logger.error(
+                            f"Ошибка создания GDM через плагин: {gdm_resp.status_code} {gdm_resp.text}"
+                        )
                         await self.set_status("failed", error=gdm_resp.text)
                         return
                 else:
-                    backend_logger.warn(f"Слишком мало участников для GDM: {len(mm_user_ids)}; пропускаю")
+                    backend_logger.warn(
+                        f"Слишком мало участников для GDM: {len(mm_user_ids)}; пропускаю"
+                    )
                     await self.set_status("skipped", error="Insufficient GDM members")
                     return
 
@@ -146,7 +171,10 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
             channel_name = self._get_channel_name(self.entity.raw_data)
             if not channel_name:
                 backend_logger.error(f"Нет названия для канала {self.entity.slack_id}")
-                await self.set_status("failed", error="No channel name found in raw_data for non-DM channel")
+                await self.set_status(
+                    "failed",
+                    error="No channel name found in raw_data for non-DM channel",
+                )
                 return
 
             self.log_export(f"Экспорт канала {channel_name}")
@@ -158,7 +186,7 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
             # Подготовим безопасный display_name
             safe_display = self._sanitize_display_name(
                 self._get_channel_display_name(self.entity.raw_data),
-                channel_name.replace('-', ' ')
+                channel_name.replace("-", " "),
             )
 
             payload = {
@@ -178,17 +206,26 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 payload["header"] = header
 
             # Создаем/получаем канал через плагин (включает нормализацию имени)
-            response = await self.mm_api_post("/plugins/mm-importer/api/v1/channel", payload)
+            response = await self.mm_api_post(
+                "/plugins/mm-importer/api/v1/channel", payload
+            )
 
             if response.status_code in [200, 201]:
                 try:
                     channel_data = response.json()
                 except Exception:
-                    backend_logger.error(f"Плагин вернул не-JSON для channel: status={response.status_code} body={response.text[:200]}")
-                    await self.set_status("failed", error=f"Plugin invalid JSON for channel: {response.status_code}")
+                    backend_logger.error(
+                        f"Плагин вернул не-JSON для channel: status={response.status_code} body={response.text[:200]}"
+                    )
+                    await self.set_status(
+                        "failed",
+                        error=f"Plugin invalid JSON for channel: {response.status_code}",
+                    )
                     return
                 # Плагин возвращает { channel_id }
-                self.entity.mattermost_id = channel_data.get("channel_id") or channel_data.get("id")
+                self.entity.mattermost_id = channel_data.get(
+                    "channel_id"
+                ) or channel_data.get("id")
 
                 # Добавляем участников, если они есть в raw_data
                 members = (self.entity.raw_data or {}).get("members") or []
@@ -200,10 +237,15 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                         await self._ensure_team_membership(mm_user_ids)
                         add_resp = await self.mm_api_post(
                             "/plugins/mm-importer/api/v1/channel/members",
-                            {"channel_id": self.entity.mattermost_id, "user_ids": mm_user_ids},
+                            {
+                                "channel_id": self.entity.mattermost_id,
+                                "user_ids": mm_user_ids,
+                            },
                         )
                         if add_resp.status_code not in [200, 201]:
-                            backend_logger.error(f"Не удалось добавить участников: {add_resp.status_code} {add_resp.text}")
+                            backend_logger.error(
+                                f"Не удалось добавить участников: {add_resp.status_code} {add_resp.text}"
+                            )
 
                 # Архивируем, если канал в Slack был архивирован
                 if (self.entity.raw_data or {}).get("is_archived"):
@@ -212,16 +254,24 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                         {"channel_id": self.entity.mattermost_id},
                     )
                     if arch_resp.status_code not in [200, 201]:
-                        backend_logger.error(f"Не удалось архивировать канал: {arch_resp.status_code} {arch_resp.text}")
+                        backend_logger.error(
+                            f"Не удалось архивировать канал: {arch_resp.status_code} {arch_resp.text}"
+                        )
 
                 await self.set_status("success")
-                backend_logger.debug(f"Канал {channel_name} экспортирован в Mattermost, ID: {self.entity.mattermost_id}")
+                backend_logger.debug(
+                    f"Канал {channel_name} экспортирован в Mattermost, ID: {self.entity.mattermost_id}"
+                )
                 return
 
             # Проверяем ошибки дублирования
             data = response.json()
-            backend_logger.error(f"Ошибка создания канала через плагин: {response.status_code}, {data}")
-            await self.set_status("failed", error=data.get("error") or data.get("message") or str(data))
+            backend_logger.error(
+                f"Ошибка создания канала через плагин: {response.status_code}, {data}"
+            )
+            await self.set_status(
+                "failed", error=data.get("error") or data.get("message") or str(data)
+            )
 
         except Exception as e:
             backend_logger.error(f"Ошибка при создании канала: {e}")
@@ -232,6 +282,7 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
         from app.models.base import SessionLocal
         from sqlalchemy import select
         from app.models.entity import Entity
+
         mm_ids = []
         async with SessionLocal() as session:
             for sid in slack_user_ids:
@@ -270,7 +321,9 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 if tid:
                     self._cached_team_id = tid
                     return tid
-            backend_logger.error(f"Не удалось получить team id по имени '{team_name}': {resp.status_code} {resp.text}")
+            backend_logger.error(
+                f"Не удалось получить team id по имени '{team_name}': {resp.status_code} {resp.text}"
+            )
         except Exception as e:
             backend_logger.error(f"Ошибка при получении team id: {e}")
         # Fallback на ранее используемый тестовый ID
@@ -281,13 +334,22 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
         team_id = await self._get_mm_team_id()
         for uid in mm_user_ids:
             try:
-                resp = await self.mm_api_post(f"/api/v4/teams/{team_id}/members", {"team_id": team_id, "user_id": uid})
+                resp = await self.mm_api_post(
+                    f"/api/v4/teams/{team_id}/members",
+                    {"team_id": team_id, "user_id": uid},
+                )
                 if resp.status_code not in (200, 201):
                     # Server may respond with an error if already a member; log for trace and continue
                     try:
                         data = resp.json()
-                        backend_logger.debug(f"ensure team member resp for user {uid}: {resp.status_code} {data}")
+                        backend_logger.debug(
+                            f"ensure team member resp for user {uid}: {resp.status_code} {data}"
+                        )
                     except Exception:
-                        backend_logger.debug(f"ensure team member resp for user {uid}: {resp.status_code} {resp.text}")
+                        backend_logger.debug(
+                            f"ensure team member resp for user {uid}: {resp.status_code} {resp.text}"
+                        )
             except Exception as e:
-                backend_logger.error(f"Ошибка добавления пользователя {uid} в команду {team_id}: {e}")
+                backend_logger.error(
+                    f"Ошибка добавления пользователя {uid} в команду {team_id}: {e}"
+                )
