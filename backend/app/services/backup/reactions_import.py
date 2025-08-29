@@ -3,6 +3,7 @@ from app.services.entities.reaction import Reaction
 import os
 import glob
 import ijson
+from typing import Callable, Awaitable, Optional
 from app.services.entities.custom_emoji import CustomEmoji
 from app.logging_config import backend_logger
 from app.models.base import SessionLocal
@@ -32,7 +33,8 @@ def _extract_reactions_from_message(message):
                 mattermost_id=None,
                 raw_data=reaction_data,
                 status="pending",
-                auto_save=False
+                auto_save=False,
+                job_id=getattr(message, 'job_id', None),
             )
             reactions.append((reaction_entity, name))
     
@@ -54,7 +56,7 @@ def _create_custom_emoji_entities(custom_emoji_names, emoji_list):
             slack_id=name, 
             raw_data=emoji_data, 
             status="pending", 
-            auto_save=False
+            auto_save=False,
         )
         entities.append(emoji_entity)
     
@@ -107,7 +109,13 @@ async def parse_reactions_from_messages(message_entities, emoji_list=None):
                 await reaction_entity.create_custom_emoji_relation(emoji_name) 
 
 
-async def parse_reactions_from_export(export_dir: str, folder_channel_map: dict, emoji_list=None) -> int:
+async def parse_reactions_from_export(
+    export_dir: str,
+    folder_channel_map: dict,
+    emoji_list=None,
+    progress: Optional[Callable[[int], Awaitable[None]]] = None,
+    job_id=None,
+) -> int:
     """Stream files in export and create reactions incrementally."""
     total = 0
     custom_emoji_names = set()
@@ -137,20 +145,28 @@ async def parse_reactions_from_export(export_dir: str, folder_channel_map: dict,
                                     raw_data=reaction_data,
                                     status="pending",
                                     auto_save=False,
+                                    job_id=job_id,
                                 )
                                 ent = await reaction_entity.save_to_db()
                                 if ent is not None:
                                     await reaction_entity.create_reacted_by_relation()
                                     await reaction_entity.create_reacted_to_relation()
                                     total += 1
-                                    if emoji_list and name in emoji_list and emoji_list[name]:
-                                        custom_emoji_names.add(name)
+                                    if progress:
+                                        await progress(1)
+                                if emoji_list and name in emoji_list and emoji_list[name]:
+                                    custom_emoji_names.add(name)
             except Exception as e:
                 backend_logger.error(f"Ошибка чтения {msg_file} при сборе реакций: {e}")
                 continue
     # Create custom emojis seen in reactions
     for name in sorted(custom_emoji_names):
-        emoji_entity = CustomEmoji(slack_id=name, raw_data={"name": name, "url": emoji_list.get(name) if emoji_list else None}, status="pending", auto_save=False)
+        emoji_entity = CustomEmoji(
+            slack_id=name,
+            raw_data={"name": name, "url": emoji_list.get(name) if emoji_list else None},
+            status="pending",
+            auto_save=False,
+        )
         await emoji_entity.save_to_db()
     backend_logger.info(f"Импортировано реакций из экспорта: {total}")
     return total

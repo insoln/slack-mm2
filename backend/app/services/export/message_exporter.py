@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from typing import List, Optional
+import asyncio
 
 from .base_exporter import ExporterBase, LoggingMixin
 from .mm_api_mixin import MMApiMixin
@@ -12,6 +13,16 @@ from sqlalchemy import select
 
 
 class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
+    def __init__(self, entity, caches: dict | None = None):
+        super().__init__(entity)
+        # caches may contain:
+        #  - channel_mm_id_by_slack_id: dict[str, str]
+        #  - channel_name_by_slack_id: dict[str, str]
+        #  - user_mm_id_by_slack_id: dict[str, str]
+        #  - username_by_slack_id: dict[str, str]
+        #  - membership_seen: set[tuple[str,str]] of (channel_id, user_id)
+        self.caches = caches or {}
+
     """
     Exports a Slack message to Mattermost via the plugin /import endpoint.
     - Resolves channel (posted_in relation) and author (posted_by relation or user lookup)
@@ -50,7 +61,14 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         create_at = self._parse_ts_ms(raw.get("ts"))
 
         # Root/thread
+        # Try to resolve thread root; if not present, briefly wait and retry to avoid detached replies
         root_id = await self._resolve_root_post_id()
+        if (self.entity.raw_data or {}).get("thread_ts") and not root_id:
+            for i in range(3):
+                await asyncio.sleep(0.3 * (i + 1))
+                root_id = await self._resolve_root_post_id()
+                if root_id:
+                    break
         if (self.entity.raw_data or {}).get("thread_ts") and not root_id:
             backend_logger.debug(
                 f"Message {self.entity.slack_id} is a reply but root post_id not found yet; posting as top-level for now"
@@ -58,10 +76,15 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
 
         # Best-effort: ensure author is a channel member to prevent CreatePost failure
         try:
-            _ = await self.mm_api_post(
-                "/plugins/mm-importer/api/v1/channel/members",
-                {"channel_id": channel_id, "user_ids": [user_id]},
-            )
+            mset = self.caches.get("membership_seen") if isinstance(self.caches.get("membership_seen"), set) else None
+            key = (channel_id, user_id)
+            if mset is None or key not in mset:
+                _ = await self.mm_api_post(
+                    "/plugins/mm-importer/api/v1/channel/members",
+                    {"channel_id": channel_id, "user_ids": [user_id]},
+                )
+                if mset is not None:
+                    mset.add(key)
         except Exception as e:  # noqa: BLE001
             backend_logger.debug(f"Ensure channel membership failed (non-fatal): {e}")
 
@@ -441,6 +464,11 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
     async def _resolve_username_by_slack_id(self, slack_uid: Optional[str]) -> Optional[str]:
         if not slack_uid:
             return None
+        # Cache first
+        if isinstance(self.caches.get("username_by_slack_id"), dict):
+            val = self.caches["username_by_slack_id"].get(slack_uid)
+            if val:
+                return val
         async with SessionLocal() as session:
             q = await session.execute(
                 select(Entity).where(
@@ -452,11 +480,18 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 return None
             # Prefer Mattermost username via API only if needed; use Slack name from raw_data as our UserExporter mirrors it
             raw = ent.raw_data or {}
-            return raw.get("name") or slack_uid
+            name = raw.get("name") or slack_uid
+            if isinstance(self.caches.get("username_by_slack_id"), dict):
+                self.caches["username_by_slack_id"][slack_uid] = name
+            return name
 
     async def _resolve_channel_name_by_slack_id(self, slack_cid: Optional[str]) -> Optional[str]:
         if not slack_cid:
             return None
+        if isinstance(self.caches.get("channel_name_by_slack_id"), dict):
+            v = self.caches["channel_name_by_slack_id"].get(slack_cid)
+            if v:
+                return v
         async with SessionLocal() as session:
             q = await session.execute(
                 select(Entity).where(
@@ -468,12 +503,23 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 return None
             raw = ent.raw_data or {}
             # Slack channel names are usually compatible with MM; plugin also normalized names
-            return raw.get("name")
+            name = raw.get("name")
+            if name and isinstance(self.caches.get("channel_name_by_slack_id"), dict):
+                self.caches["channel_name_by_slack_id"][slack_cid] = name
+            return name
 
     async def _resolve_mm_channel_id_for_message(self) -> Optional[str]:
         """Find the Mattermost channel id where this message belongs (posted_in),
         fallback to raw_data.channel_id mapping.
         """
+        # Cache by raw slack channel id if present
+        raw = self.entity.raw_data or {}
+        ch_slack_id = raw.get("channel_id")
+        if ch_slack_id and isinstance(self.caches.get("channel_mm_id_by_slack_id"), dict):
+            mmid = self.caches["channel_mm_id_by_slack_id"].get(ch_slack_id)
+            if mmid:
+                return mmid
+
         async with SessionLocal() as session:
             from app.models.entity_relation import EntityRelation
             # Preferred: relation posted_in
@@ -493,8 +539,7 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     return mmid
 
             # Fallback: raw_data.channel_id -> channel entity -> mattermost_id
-            raw = self.entity.raw_data or {}
-            ch_slack_id = raw.get("channel_id")
+            # raw already defined above
             if ch_slack_id:
                 q2 = await session.execute(
                     select(Entity).where(
@@ -505,6 +550,8 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 if ch_entity2:
                     mmid2 = getattr(ch_entity2, "mattermost_id", None)
                     if isinstance(mmid2, str) and mmid2:
+                        if isinstance(self.caches.get("channel_mm_id_by_slack_id"), dict):
+                            self.caches["channel_mm_id_by_slack_id"][ch_slack_id] = mmid2
                         return mmid2
         return None
 
@@ -513,6 +560,15 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         Prefer relation posted_by -> user.mattermost_id, fallback to user lookup by slack_id,
         and finally fallback to the current token's user (admin) via /users/me.
         """
+        # 1) Via posted_by relation
+        # Cache by slack user id if available
+        raw = self.entity.raw_data or {}
+        slack_uid = raw.get("user") or raw.get("bot_id")
+        if slack_uid and isinstance(self.caches.get("user_mm_id_by_slack_id"), dict):
+            mmid_cached = self.caches["user_mm_id_by_slack_id"].get(slack_uid)
+            if mmid_cached:
+                return mmid_cached
+
         # 1) Via posted_by relation
         async with SessionLocal() as session:
             from app.models.entity_relation import EntityRelation
@@ -532,8 +588,7 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     return mmid
 
         # 2) Lookup by slack user id in raw_data
-        raw = self.entity.raw_data or {}
-        slack_uid = raw.get("user") or raw.get("bot_id")
+        # raw/slack_uid already computed above
         if slack_uid:
             async with SessionLocal() as session:
                 q2 = await session.execute(
@@ -545,6 +600,8 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 if user_entity:
                     mmid2 = getattr(user_entity, "mattermost_id", None)
                     if isinstance(mmid2, str) and mmid2:
+                        if isinstance(self.caches.get("user_mm_id_by_slack_id"), dict):
+                            self.caches["user_mm_id_by_slack_id"][slack_uid] = mmid2
                         return mmid2
 
         # 3) Fallback: current token user (admin)
@@ -588,7 +645,12 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         async with SessionLocal() as session:
             q = await session.execute(
                 select(Entity).where(
-                    (Entity.entity_type == "message") & (Entity.slack_id == thread_ts)
+                    (Entity.entity_type == "message")
+                    & (Entity.slack_id == thread_ts)
+                    & (
+                        (Entity.job_id == getattr(self.entity, "job_id", None))
+                        | (Entity.job_id.is_(None))
+                    )
                 )
             )
             parent = q.scalar_one_or_none()

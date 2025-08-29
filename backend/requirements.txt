@@ -5,7 +5,7 @@ psycopg2-binary
 black
 pytest
 pytest-cov
-httpx
+httpx[http2]
 python-multipart
 aiofiles
 requests

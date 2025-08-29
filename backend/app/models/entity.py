@@ -1,4 +1,4 @@
-from sqlalchemy import Column, BigInteger, Text, JSON, DateTime, Enum as SAEnum
+from sqlalchemy import Column, BigInteger, Text, JSON, DateTime, Enum as SAEnum, ForeignKey
 from sqlalchemy.sql import func
 from .base import Base
 from .status_enum import MappingStatus
@@ -20,6 +20,7 @@ class Entity(Base):
     slack_id = Column(Text, nullable=False)
     mattermost_id = Column(Text)
     raw_data = Column(JSON)
+    job_id = Column(BigInteger, ForeignKey("import_jobs.id", ondelete="CASCADE"))
     status = Column(
         SAEnum(MappingStatus, name="mapping_status"),
         nullable=False,

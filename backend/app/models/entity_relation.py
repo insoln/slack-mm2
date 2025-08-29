@@ -9,5 +9,6 @@ class EntityRelation(Base):
     from_entity_id = Column(BigInteger, ForeignKey("entities.id", ondelete="CASCADE"))
     to_entity_id = Column(BigInteger, ForeignKey("entities.id", ondelete="CASCADE"))
     relation_type = Column(Text, nullable=False)
+    job_id = Column(BigInteger, ForeignKey("import_jobs.id", ondelete="CASCADE"))
     raw_data = Column(JSON)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

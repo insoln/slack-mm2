@@ -20,11 +20,13 @@ class BaseMapping:
         raw_data=None,
         status="pending",
         auto_save=True,
+        job_id=None,
     ):
         self.slack_id = str(slack_id)  # Приведение к строке для совместимости с БД
         self.mattermost_id = mattermost_id
         self.raw_data = raw_data
         self.status = status
+        self.job_id = job_id
         backend_logger.debug(
             f"Инициализация маппинга: {self.entity_type}, slack_id={self.slack_id}, mattermost_id={self.mattermost_id}, status={self.status}"
         )
@@ -34,12 +36,22 @@ class BaseMapping:
     async def save_to_db(self):
         async with SessionLocal() as session:
             # Проверка на существование
-            query = await session.execute(
-                select(Entity).where(
-                    (Entity.entity_type == self.entity_type) &
-                    (Entity.slack_id == self.slack_id)
+            if self.job_id is None:
+                query = await session.execute(
+                    select(Entity).where(
+                        (Entity.entity_type == self.entity_type)
+                        & (Entity.slack_id == self.slack_id)
+                        & (Entity.job_id.is_(None))
+                    )
                 )
-            )
+            else:
+                query = await session.execute(
+                    select(Entity).where(
+                        (Entity.entity_type == self.entity_type)
+                        & (Entity.slack_id == self.slack_id)
+                        & (Entity.job_id == self.job_id)
+                    )
+                )
             existing = query.scalar_one_or_none()
             if existing:
                 self.id = existing.id
@@ -50,6 +62,7 @@ class BaseMapping:
                 slack_id=self.slack_id,
                 mattermost_id=self.mattermost_id,
                 raw_data=self.raw_data,
+                job_id=self.job_id,
                 status=self.status,
             )
             session.add(entity)
@@ -61,12 +74,22 @@ class BaseMapping:
             except IntegrityError as e:
                 await session.rollback()
                 # Повторно ищем запись: возможно, она уже появилась из другого потока
-                query = await session.execute(
-                    select(Entity).where(
-                        (Entity.entity_type == self.entity_type) &
-                        (Entity.slack_id == self.slack_id)
+                if self.job_id is None:
+                    query = await session.execute(
+                        select(Entity).where(
+                            (Entity.entity_type == self.entity_type)
+                            & (Entity.slack_id == self.slack_id)
+                            & (Entity.job_id.is_(None))
+                        )
                     )
-                )
+                else:
+                    query = await session.execute(
+                        select(Entity).where(
+                            (Entity.entity_type == self.entity_type)
+                            & (Entity.slack_id == self.slack_id)
+                            & (Entity.job_id == self.job_id)
+                        )
+                    )
                 existing = query.scalar_one_or_none()
                 if existing:
                     backend_logger.error(f"IntegrityError: {self.entity_type} already exists after IntegrityError: slack_id={self.slack_id}, ошибка: {e}")
@@ -94,10 +117,12 @@ class BaseMapping:
         async with SessionLocal() as session:
             # Обновляем существующую запись
             from sqlalchemy import update
-            stmt = update(Entity).where(
-                (Entity.entity_type == self.entity_type) &
-                (Entity.slack_id == self.slack_id)
-            ).values(
+            cond = (
+                (Entity.entity_type == self.entity_type)
+                & (Entity.slack_id == self.slack_id)
+                & (Entity.job_id.is_(None) if self.job_id is None else (Entity.job_id == self.job_id))
+            )
+            stmt = update(Entity).where(cond).values(
                 status=MappingStatus(new_status),
                 error_message=str(error) if error else None
             )

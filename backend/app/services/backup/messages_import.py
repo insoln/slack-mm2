@@ -3,8 +3,16 @@ import glob
 import ijson
 from app.services.entities.message import Message
 from app.logging_config import backend_logger
+from typing import Awaitable, Callable, Optional
 
-async def parse_channel_messages(export_dir, folder_channel_map, batch_size: int = 1000):
+async def parse_channel_messages(
+    export_dir,
+    folder_channel_map,
+    batch_size: int = 1000,
+    progress: Optional[Callable[[int], Awaitable[None]]] = None,
+    file_progress: Optional[Callable[[int], Awaitable[None]]] = None,
+    job_id=None,
+):
     """Stream-parse messages by JSON file and persist incrementally.
     Returns count, not a big list, to keep memory low.
     """
@@ -34,7 +42,8 @@ async def parse_channel_messages(export_dir, folder_channel_map, batch_size: int
                                 mattermost_id=None,
                                 raw_data=msg,
                                 status="pending",
-                                auto_save=False
+                                auto_save=False,
+                                job_id=job_id,
                             )
                             # Save and link immediately to avoid memory growth
                             await message_entity.save_to_db(channel_id)
@@ -45,10 +54,21 @@ async def parse_channel_messages(export_dir, folder_channel_map, batch_size: int
                             saved_count += 1
                             if saved_count % batch_size == 0:
                                 backend_logger.debug(f"Сохранено сообщений: {saved_count}…")
+                                if progress:
+                                    await progress(batch_size)
                         except Exception as e:
                             backend_logger.error(f"Ошибка при сохранении сообщения из {msg_file}: {e}")
+                # file processed successfully
+                if file_progress:
+                    try:
+                        await file_progress(1)
+                    except Exception:
+                        pass
             except Exception as e:
                 backend_logger.error(f"Ошибка чтения {msg_file}: {e}")
                 continue
     backend_logger.info(f"Импортировано сообщений: {saved_count}")
+    if progress and saved_count % batch_size:
+        # flush remaining
+        await progress(saved_count % batch_size)
     return saved_count

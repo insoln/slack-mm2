@@ -26,8 +26,12 @@ class Reaction(BaseMapping):
             # Найти Entity.id кастомного эмодзи по slack_id (emoji_name)
             query_emoji = await session.execute(
                 select(Entity).where(
-                    (Entity.entity_type == "custom_emoji") &
-                    (Entity.slack_id == emoji_name)
+                    (Entity.entity_type == "custom_emoji")
+                    & (Entity.slack_id == emoji_name)
+                    & (
+                        (Entity.job_id == getattr(self, "job_id", None))
+                        | (Entity.job_id.is_(None))
+                    )
                 )
             )
             emoji_entity = query_emoji.scalar_one_or_none()
@@ -36,8 +40,12 @@ class Reaction(BaseMapping):
             # Найти Entity.id реакции по slack_id
             query_reaction = await session.execute(
                 select(Entity).where(
-                    (Entity.entity_type == "reaction") &
-                    (Entity.slack_id == self.slack_id)
+                    (Entity.entity_type == "reaction")
+                    & (Entity.slack_id == self.slack_id)
+                    & (
+                        (Entity.job_id == getattr(self, "job_id", None))
+                        | (Entity.job_id.is_(None))
+                    )
                 )
             )
             reaction_entity = query_reaction.scalar_one_or_none()
@@ -46,9 +54,9 @@ class Reaction(BaseMapping):
             # Check if relation already exists
             existing_rel = await session.execute(
                 select(EntityRelation).where(
-                    (EntityRelation.from_entity_id == reaction_entity.id) &
-                    (EntityRelation.to_entity_id == emoji_entity.id) &
-                    (EntityRelation.relation_type == "custom_emoji_used")
+                    (EntityRelation.from_entity_id == reaction_entity.id)
+                    & (EntityRelation.to_entity_id == emoji_entity.id)
+                    & (EntityRelation.relation_type == "custom_emoji_used")
                 )
             )
             if existing_rel.scalar_one_or_none():
@@ -57,7 +65,8 @@ class Reaction(BaseMapping):
                 from_entity_id=reaction_entity.id,
                 to_entity_id=emoji_entity.id,
                 relation_type="custom_emoji_used",
-                raw_data=None
+                raw_data=None,
+                job_id=getattr(self, "job_id", None),
             )
             session.add(relation)
             await session.commit()
@@ -69,8 +78,12 @@ class Reaction(BaseMapping):
         async with SessionLocal() as session:
             query_user = await session.execute(
                 select(Entity).where(
-                    (Entity.entity_type == "user") &
-                    (Entity.slack_id == user_id)
+                    (Entity.entity_type == "user")
+                    & (Entity.slack_id == user_id)
+                    & (
+                        (Entity.job_id == getattr(self, "job_id", None))
+                        | (Entity.job_id.is_(None))
+                    )
                 )
             )
             user_entity = query_user.scalar_one_or_none()
@@ -79,9 +92,9 @@ class Reaction(BaseMapping):
             # Check if relation already exists
             existing_rel = await session.execute(
                 select(EntityRelation).where(
-                    (EntityRelation.from_entity_id == user_entity.id) &
-                    (EntityRelation.to_entity_id == self.id) &
-                    (EntityRelation.relation_type == "reacted_by")
+                    (EntityRelation.from_entity_id == user_entity.id)
+                    & (EntityRelation.to_entity_id == self.id)
+                    & (EntityRelation.relation_type == "reacted_by")
                 )
             )
             if existing_rel.scalar_one_or_none():
@@ -90,7 +103,8 @@ class Reaction(BaseMapping):
                 from_entity_id=user_entity.id,
                 to_entity_id=self.id,
                 relation_type="reacted_by",
-                raw_data=None
+                raw_data=None,
+                job_id=getattr(self, "job_id", None),
             )
             session.add(relation)
             await session.commit()
@@ -114,8 +128,12 @@ class Reaction(BaseMapping):
         async with SessionLocal() as session:
             query_msg = await session.execute(
                 select(Entity).where(
-                    (Entity.entity_type == "message") &
-                    (Entity.slack_id == ts)
+                    (Entity.entity_type == "message")
+                    & (Entity.slack_id == ts)
+                    & (
+                        (Entity.job_id == getattr(self, "job_id", None))
+                        | (Entity.job_id.is_(None))
+                    )
                 )
             )
             msg_entity = query_msg.scalar_one_or_none()
@@ -124,9 +142,9 @@ class Reaction(BaseMapping):
             # Check if relation already exists
             existing_rel = await session.execute(
                 select(EntityRelation).where(
-                    (EntityRelation.from_entity_id == self.id) &
-                    (EntityRelation.to_entity_id == msg_entity.id) &
-                    (EntityRelation.relation_type == "reacted_to")
+                    (EntityRelation.from_entity_id == self.id)
+                    & (EntityRelation.to_entity_id == msg_entity.id)
+                    & (EntityRelation.relation_type == "reacted_to")
                 )
             )
             if existing_rel.scalar_one_or_none():
@@ -135,7 +153,8 @@ class Reaction(BaseMapping):
                 from_entity_id=self.id,
                 to_entity_id=msg_entity.id,
                 relation_type="reacted_to",
-                raw_data=None
+                raw_data=None,
+                job_id=getattr(self, "job_id", None),
             )
             session.add(relation)
-            await session.commit() 
+            await session.commit()

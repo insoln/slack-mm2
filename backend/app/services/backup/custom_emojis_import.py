@@ -1,5 +1,5 @@
 import re
-from typing import Dict, Set, Optional
+from typing import Dict, Set, Optional, Callable, Awaitable
 import os
 import glob
 import ijson
@@ -135,7 +135,12 @@ async def parse_custom_emojis_from_messages(message_entities, emoji_list=None):
     return created
 
 
-async def parse_custom_emojis_from_export(export_dir: str, folder_channel_map: Dict[str, dict], emoji_list: Optional[Dict[str, str]] = None) -> int:
+async def parse_custom_emojis_from_export(
+    export_dir: str,
+    folder_channel_map: Dict[str, dict],
+    emoji_list: Optional[Dict[str, str]] = None,
+    progress: Optional[Callable[[int], Awaitable[None]]] = None,
+) -> int:
     """Stream files in export to collect custom emoji usages and create entities.
     Returns number of created emojis.
     """
@@ -185,5 +190,7 @@ async def parse_custom_emojis_from_export(export_dir: str, folder_channel_map: D
         ent = await emoji_entity.save_to_db()
         if ent is not None:
             created += 1
+            if progress:
+                await progress(1)
     backend_logger.info(f"Импортировано кастомных эмодзи из экспорта: {created}")
     return created

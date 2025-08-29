@@ -32,10 +32,18 @@ class ExporterBase(ABC):
             if hasattr(self.entity, 'mattermost_id') and self.entity.mattermost_id:
                 update_values["mattermost_id"] = self.entity.mattermost_id
             
-            stmt = update(Entity).where(
-                (Entity.entity_type == self.entity.entity_type) &
-                (Entity.slack_id == self.entity.slack_id)
-            ).values(**update_values)
+            where_cond = (
+                (Entity.entity_type == self.entity.entity_type)
+                & (Entity.slack_id == self.entity.slack_id)
+            )
+            # If this entity has job_id, include it to avoid cross-job collisions
+            job_id = getattr(self.entity, "job_id", None)
+            if job_id is not None:
+                try:
+                    where_cond = where_cond & (Entity.job_id == job_id)
+                except Exception:
+                    pass
+            stmt = update(Entity).where(where_cond).values(**update_values)
             
             result = await session.execute(stmt)
             await session.commit()

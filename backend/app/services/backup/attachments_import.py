@@ -3,6 +3,7 @@ from app.logging_config import backend_logger
 import os
 import glob
 import ijson
+from typing import Callable, Awaitable, Optional
 
 async def parse_attachments_from_messages(export_dir, message_entities):
     attachments = []
@@ -22,7 +23,8 @@ async def parse_attachments_from_messages(export_dir, message_entities):
                 mattermost_id=None,
                 raw_data=file_obj,
                 status="pending",
-                auto_save=False
+                auto_save=False,
+                job_id=getattr(msg, 'job_id', None),
             )
             attachments.append((attachment, message_ts))
     # Сохраняем все Attachment
@@ -34,7 +36,12 @@ async def parse_attachments_from_messages(export_dir, message_entities):
     backend_logger.info(f"Импортировано аттачментов: {len(attachments)}") 
 
 
-async def parse_attachments_from_export(export_dir: str, folder_channel_map: dict) -> int:
+async def parse_attachments_from_export(
+    export_dir: str,
+    folder_channel_map: dict,
+    progress: Optional[Callable[[int], Awaitable[None]]] = None,
+    job_id=None,
+) -> int:
     """Stream files in export and create attachment entities/relations incrementally."""
     total = 0
     for folder, _ in folder_channel_map.items():
@@ -52,11 +59,13 @@ async def parse_attachments_from_export(export_dir: str, folder_channel_map: dic
                             url_private = file_obj.get("url_private")
                             if not slack_id or not (url_private and url_private.startswith("https://files.slack.com")):
                                 continue
-                            attachment = Attachment(slack_id=slack_id, mattermost_id=None, raw_data=file_obj, status="pending", auto_save=False)
+                            attachment = Attachment(slack_id=slack_id, mattermost_id=None, raw_data=file_obj, status="pending", auto_save=False, job_id=job_id)
                             ent = await attachment.save_to_db()
                             if ent is not None:
                                 await attachment.create_attached_to_relation(message_ts)
                                 total += 1
+                                if progress:
+                                    await progress(1)
             except Exception as e:
                 backend_logger.error(f"Ошибка чтения {msg_file} при сборе аттачментов: {e}")
                 continue

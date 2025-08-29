@@ -18,7 +18,11 @@ class Attachment(BaseMapping):
             query_msg = await session.execute(
                 select(Entity).where(
                     (Entity.entity_type == "message") &
-                    (Entity.slack_id == message_ts)
+                    (Entity.slack_id == message_ts) &
+                    (
+                        (Entity.job_id == getattr(self, 'job_id', None))
+                        | (Entity.job_id.is_(None))
+                    )
                 )
             )
             msg_entity = query_msg.scalar_one_or_none()
@@ -37,7 +41,8 @@ class Attachment(BaseMapping):
                     from_entity_id=self.id,
                     to_entity_id=msg_entity.id,
                     relation_type="attached_to",
-                    raw_data=None
+                    raw_data=None,
+                    job_id=getattr(self, 'job_id', None),
                 )
                 session.add(relation)
                 await session.commit() 
