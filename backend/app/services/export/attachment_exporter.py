@@ -22,7 +22,7 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
     - On success sets entity.mattermost_id and marks status=success
     """
 
-    async def export_entity(self):
+    async def export_entity(self) -> None:
         self.log_export(f"Экспорт аттачмента {self.entity.slack_id}")
 
         raw = self.entity.raw_data or {}
