@@ -19,7 +19,8 @@ async def test_parse_channel_messages_creates_entities(monkeypatch):
     # Мокаем open и json.load
     m = mock_open(read_data='[]')
     with patch('builtins.open', m):
-        with patch('app.services.backup.messages_import.json.load', return_value=fake_messages):
+        # Patch ijson.items to yield our fake messages one by one
+        with patch('app.services.backup.messages_import.ijson.items', return_value=iter(fake_messages)):
             # Мокаем Message и его методы
             with patch('app.services.backup.messages_import.Message') as MockMessage:
                 mock_msg = MagicMock()
@@ -31,9 +32,9 @@ async def test_parse_channel_messages_creates_entities(monkeypatch):
                 # Запуск
                 result = await messages_import.parse_channel_messages(export_dir, folder_channel_map)
                 # Проверки
-                assert len(result) == 2
+                assert result == 2
                 assert MockMessage.call_count == 2
-                mock_msg.save_to_db.assert_any_call()
+                mock_msg.save_to_db.assert_any_call('C123')
                 mock_msg.create_posted_in_relation.assert_any_call('C123')
                 mock_msg.create_posted_by_relation.assert_any_call()
                 mock_msg.create_thread_relation.assert_any_call() 

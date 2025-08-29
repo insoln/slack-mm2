@@ -5,6 +5,7 @@ psycopg2-binary
 black
 pytest
 pytest-cov
+pytest-asyncio
 httpx[http2]
 python-multipart
 aiofiles
