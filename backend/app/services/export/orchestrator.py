@@ -152,7 +152,9 @@ async def export_worker(queue, mm_user_id):
                         )
                         # Scope by job only for job-scoped types (message/reaction/attachment)
                         where_cond = job_scoped_condition(
-                            where_cond, entity.entity_type, getattr(entity, "job_id", None)
+                            where_cond,
+                            entity.entity_type,
+                            getattr(entity, "job_id", None),
                         )
                         await session.execute(
                             update(Entity)
@@ -188,9 +190,7 @@ async def orchestrate_mm_export(job_id=None):
                 if anc is not None:
                     anchor_cutoff = (anc.created_at, anc.id)
 
-        sleep_s = float(
-            os.getenv("EXPORT_QUEUE_POLL", str(EXPORT_QUEUE_POLL_DEFAULT))
-        )
+        sleep_s = float(os.getenv("EXPORT_QUEUE_POLL", str(EXPORT_QUEUE_POLL_DEFAULT)))
         while True:
             # Pick the earliest job in 'running' state up to anchor (if any)
             async with SessionLocal() as session:

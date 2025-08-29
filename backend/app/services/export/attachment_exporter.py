@@ -105,7 +105,9 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
 
                 fields = {"channel_id": channel_id, "filename": filename}
                 files = None
-                with tempfile.NamedTemporaryFile(prefix="att-", suffix=".bin", delete=True) as tf:
+                with tempfile.NamedTemporaryFile(
+                    prefix="att-", suffix=".bin", delete=True
+                ) as tf:
                     try:
                         tf.write(resp.content)
                         tf.flush()
