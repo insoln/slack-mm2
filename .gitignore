@@ -31,5 +31,15 @@ infra/plugin/webapp/.eslintignore
 *.bak
 *.orig
 
+# Secrets / env files
+.env
+*.env
+**/.env
+.env.local
+.env.*.local
+infra/.env
+backend/.env
+frontend/.env
+
 # GitHub Actions (если не нужны в репо)
 # .github/
