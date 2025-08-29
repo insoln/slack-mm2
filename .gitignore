@@ -33,3 +33,4 @@ infra/plugin/webapp/.eslintignore
 
 # GitHub Actions (если не нужны в репо)
 # .github/
+.env
