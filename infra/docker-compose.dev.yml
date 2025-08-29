@@ -9,7 +9,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - ../infra/db/init-mattermost.sql:/docker-entrypoint-initdb.d/init-mattermost.sql:ro
+      - ./db/init-mattermost.sql:/docker-entrypoint-initdb.d/init-mattermost.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U slack-mm"]
       interval: 5s
@@ -69,7 +69,7 @@ services:
       - ../alembic.ini:/alembic.ini
       - ../backend/app:/app/app
       - ../backend/alembic:/app/backend/alembic
-      - ../infra/plugin:/app/infra/plugin:ro
+      - ./plugin:/app/infra/plugin:ro
     restart: unless-stopped
 
   frontend:
@@ -137,7 +137,7 @@ services:
     command: ["/bin/sh", "-lc", "set -e; mkdir -p /config; if [ ! -f /config/mm_config.json ]; then cp /seed/mm_config.json /config/mm_config.json; fi; chown -R 2000:2000 /config"]
     volumes:
       - mm_config:/config
-      - ../infra/mattermost/mm_config.json:/seed/mm_config.json:ro
+      - ./mattermost/mm_config.json:/seed/mm_config.json:ro
     restart: "no"
 
   # Одноразовая сборка плагина (создаёт dist/<id>-<version>.tar.gz в infra/plugin)
@@ -147,7 +147,7 @@ services:
     # Устанавливаем инструменты и собираем плагин
     command: ["bash", "-lc", "set -euo pipefail; apt-get update; apt-get install -y --no-install-recommends nodejs npm make git ca-certificates; npm config set fund false; npm config set audit false; make dist; chown -R 1000:1000 dist"]
     volumes:
-      - ../infra/plugin:/src
+      - ./plugin:/src
     # Останавливается после сборки
     restart: "no"
 
