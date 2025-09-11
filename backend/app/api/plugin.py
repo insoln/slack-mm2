@@ -5,7 +5,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 import httpx
 from app.logging_config import backend_logger
-import subprocess
+import subprocess  # legacy (kept if future external helpers need it; no direct build calls now)
 
 router = APIRouter()
 
@@ -198,54 +198,46 @@ async def plugin_status():
 
 @router.post("/plugin/deploy")
 async def plugin_deploy(path: str | None = None):
+    """Upload an already-built plugin bundle.
+
+    Unlike the previous implementation this endpoint NEVER builds the bundle itself.
+    If the bundle is absent it returns status "needs_bundle" with a hint how to build
+    (via the dedicated build service / script) instead of attempting an internal build.
+    """
     manifest = read_plugin_manifest()
     plugin_id = manifest.get("id", PLUGIN_DEFAULT_ID)
     version = manifest.get("version")
     bundle_path = Path(path) if path else get_local_bundle_path(plugin_id, version)
 
     if not MM_URL or not MM_TOKEN:
-        return JSONResponse(
-            status_code=400, content={"error": "MM_URL or MM_TOKEN not set"}
-        )
-    if not bundle_path or not bundle_path.exists():
-        # Try to build the plugin bundle if missing
-        plugin_root = get_plugin_repo_root()
-        try:
-            backend_logger.info(
-                "Bundle not found. Attempting to build plugin via make dist…"
-            )
-            subprocess.run(["make", "-C", str(plugin_root), "dist"], check=True)
-        except Exception as e:
-            return JSONResponse(
-                status_code=404,
-                content={"error": f"Bundle not found and build failed: {e}"},
-            )
-        # Recompute path after build
-        bundle_path = get_local_bundle_path(plugin_id, version)
-        if not bundle_path or not bundle_path.exists():
-            return JSONResponse(
-                status_code=404,
-                content={"error": f"Bundle still not found after build: {bundle_path}"},
-            )
+        return JSONResponse(status_code=400, content={"error": "MM_URL or MM_TOKEN not set"})
 
-    # If already installed, try disable first (allows replacement), then fallback to uninstall
+    if not bundle_path or not bundle_path.exists():
+        status = await _compute_status()
+        expected = get_local_bundle_path(plugin_id, version)
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "needs_bundle",
+                "error": "Plugin bundle not found",
+                "expected_path": str(expected) if expected else None,
+                "hint": "Run: docker compose -f infra/docker-compose.dev.yml up --build mm-plugin-build",
+                **status,
+            },
+        )
+
+    # If already installed, disable to allow replacement (Mattermost permits force=true but disable is safer)
     st0 = await _compute_status()
     if st0.get("installed"):
         backend_logger.info("plugin_deploy: disabling existing plugin before upload…")
         await _disable_plugin(plugin_id)
+
     ok, err = await _upload_bundle(bundle_path)
     if not ok:
         return JSONResponse(status_code=502, content={"error": err})
-    # Refresh status after upload
+
     final = await _compute_status()
-    return JSONResponse(
-        content={
-            "status": "uploaded",
-            "version": version,
-            "plugin_id": plugin_id,
-            **final,
-        }
-    )
+    return JSONResponse(content={"status": "uploaded", **final})
 
 
 @router.post("/plugin/enable")
@@ -260,174 +252,109 @@ async def plugin_enable():
 
 @router.post("/plugin/ensure")
 async def plugin_ensure():
-    """Ensure plugin is installed (at expected version) and enabled.
+    """Ensure plugin is installed at expected version and enabled.
 
-    - If not installed or needs update and bundle exists -> upload
-    - Ensure enabled afterwards
-    - Return final status
+    Policy after refactor:
+    * Never builds the bundle. External builder (mm-plugin-build service or build-dev.sh) is the single source of truth.
+    * If plugin missing or outdated and bundle absent -> return status "needs_bundle" (HTTP 200) with hint.
+    * If bundle present but update required -> uninstall (with wait) then upload new bundle.
+    * Always (re)enable at the end.
     """
     status = await _compute_status()
     plugin_id = status.get("plugin_id") or PLUGIN_DEFAULT_ID
 
     if not MM_URL or not MM_TOKEN:
-        return JSONResponse(
-            status_code=400, content={"error": "MM_URL or MM_TOKEN not set", **status}
-        )
+        return JSONResponse(status_code=400, content={"error": "MM_URL or MM_TOKEN not set", **status})
 
-    # Deploy if missing or outdated
-    if not status.get("installed") or status.get("needs_update"):
-        bundle_path = status.get("bundle_path")
-        if not status.get("bundle_exists") or not bundle_path:
-            # Attempt to build
-            manifest = read_plugin_manifest()
-            plugin_id = manifest.get("id", PLUGIN_DEFAULT_ID)
-            version = manifest.get("version")
-            try:
-                backend_logger.info(
-                    "Ensuring plugin: bundle missing, building via make dist…"
-                )
-                subprocess.run(
-                    ["make", "-C", str(get_plugin_repo_root()), "dist"], check=True
-                )
-            except Exception as e:
-                # Return 200 with actionable hint instead of 409 to avoid UI blocking.
-                return JSONResponse(
-                    status_code=200,
-                    content={
-                        "status": "needs_bundle",
-                        "error": f"Bundle not found and build failed: {e}",
-                        "hint": "Run dev helper to build plugin: docker compose -f infra/docker-compose.dev.yml up --build mm-plugin-build",
-                        **status,
-                    },
-                )
-            bundle_path = str(get_local_bundle_path(plugin_id, version))
-        # Always uninstall first when updating
-        if status.get("installed"):
-            backend_logger.info("Ensure: uninstalling existing plugin before upload…")
-            uok, uerr = await _uninstall_plugin(plugin_id)
-            if not uok:
-                return JSONResponse(
-                    status_code=200,
-                    content={
-                        "status": "retry_later",
-                        "error": f"Uninstall failed: {uerr}",
-                        "hint": "Try /plugin/reinstall or retry shortly.",
-                        **status,
-                    },
-                )
-            if not await _wait_until_uninstalled(plugin_id):
-                return JSONResponse(
-                    status_code=200,
-                    content={
-                        "status": "retry_later",
-                        "error": "Timeout waiting for plugin to uninstall",
-                        "hint": "Retry in a few seconds or use /plugin/reinstall.",
-                        **status,
-                    },
-                )
-        # Always disable before upload to allow replacement; uninstall if still needed
-        if status.get("installed"):
-            backend_logger.info("Ensure: disabling existing plugin before upload…")
-            await _disable_plugin(plugin_id)
-        ok, err = await _upload_bundle(Path(bundle_path))
-        if not ok:
-            # As a last resort, uninstall and retry once
-            backend_logger.info(
-                "Ensure: uninstalling existing plugin as upload failed…"
-            )
-            uok, uerr = await _uninstall_plugin(plugin_id)
-            if not uok:
-                return JSONResponse(
-                    status_code=200,
-                    content={
-                        "status": "retry_later",
-                        "error": f"Uninstall failed: {uerr}",
-                        "hint": "Try /plugin/reinstall or retry shortly.",
-                        **status,
-                    },
-                )
-            if not await _wait_until_uninstalled(plugin_id):
-                return JSONResponse(
-                    status_code=200,
-                    content={
-                        "status": "retry_later",
-                        "error": "Timeout waiting for plugin to uninstall",
-                        "hint": "Retry in a few seconds or use /plugin/reinstall.",
-                        **status,
-                    },
-                )
-            ok2, err2 = await _upload_bundle(Path(bundle_path))
-            if not ok2:
-                return JSONResponse(status_code=502, content={"error": err2, **status})
-
-    # Enable if disabled
-    if not status.get("enabled"):
-        ok, err = await _enable_plugin(plugin_id)
-        if not ok:
-            return JSONResponse(status_code=502, content={"error": err})
-
-    final_status = await _compute_status()
-    return JSONResponse(content={"status": "ensured", **final_status})
-
-
-@router.post("/plugin/reinstall")
-async def plugin_reinstall():
-    """Hard reinstall flow: disable -> uninstall -> build (if needed) -> upload -> enable -> status."""
-    status = await _compute_status()
-    plugin_id = status.get("plugin_id") or PLUGIN_DEFAULT_ID
-
-    if not MM_URL or not MM_TOKEN:
-        return JSONResponse(
-            status_code=400, content={"error": "MM_URL or MM_TOKEN not set", **status}
-        )
-
-    # Disable and uninstall if present
-    if status.get("installed"):
-        await _disable_plugin(plugin_id)
-        uok, uerr = await _uninstall_plugin(plugin_id)
-        if not uok:
+    need_deploy = (not status.get("installed")) or status.get("needs_update")
+    if need_deploy:
+        if not status.get("bundle_exists"):
+            expected_path = status.get("bundle_path") or str(get_local_bundle_path(plugin_id, status.get("expected_version")))
             return JSONResponse(
-                status_code=502,
-                content={"error": f"Uninstall failed: {uerr}", **status},
-            )
-        if not await _wait_until_uninstalled(plugin_id):
-            return JSONResponse(
-                status_code=504,
-                content={"error": "Timeout waiting for plugin to uninstall", **status},
-            )
-
-    # Ensure bundle exists (build if missing)
-    manifest = read_plugin_manifest()
-    version = manifest.get("version")
-    bundle_path = get_local_bundle_path(plugin_id, version)
-    if not bundle_path or not bundle_path.exists():
-        try:
-            backend_logger.info("Reinstall: bundle missing, building via make dist…")
-            subprocess.run(
-                ["make", "-C", str(get_plugin_repo_root()), "dist"], check=True
-            )
-        except Exception as e:
-            return JSONResponse(
-                status_code=409,
-                content={"error": f"Bundle not found and build failed: {e}", **status},
-            )
-        bundle_path = get_local_bundle_path(plugin_id, version)
-        if not bundle_path or not bundle_path.exists():
-            return JSONResponse(
-                status_code=404,
+                status_code=200,
                 content={
-                    "error": f"Bundle still not found after build: {bundle_path}",
+                    "status": "needs_bundle",
+                    "error": "Plugin bundle not found for deploy/upgrade",
+                    "expected_path": expected_path,
+                    "hint": "Run: docker compose -f infra/docker-compose.dev.yml up --build mm-plugin-build",
                     **status,
                 },
             )
 
-    # Upload and enable
-    ok, err = await _upload_bundle(bundle_path)
+        # Uninstall existing if updating (cleaner than disable+force)
+        if status.get("installed"):
+            backend_logger.info("Ensure: uninstalling existing plugin before update…")
+            uok, uerr = await _uninstall_plugin(plugin_id)
+            if not uok:
+                return JSONResponse(status_code=200, content={"status": "retry_later", "error": f"Uninstall failed: {uerr}", **status})
+            if not await _wait_until_uninstalled(plugin_id):
+                return JSONResponse(status_code=200, content={"status": "retry_later", "error": "Timeout waiting for uninstall", **status})
+
+        # Upload new bundle
+        bundle_path_str = status.get("bundle_path")
+        if not bundle_path_str:
+            return JSONResponse(status_code=200, content={"status": "needs_bundle", **status})
+        bundle_path = Path(bundle_path_str)
+        ok, err = await _upload_bundle(bundle_path)
+        if not ok:
+            return JSONResponse(status_code=502, content={"error": err, **status})
+
+    # Enable if disabled (or after fresh upload)
+    post = await _compute_status()
+    if not post.get("enabled"):
+        ok, err = await _enable_plugin(plugin_id)
+        if not ok:
+            return JSONResponse(status_code=502, content={"error": err, **post})
+        post = await _compute_status()
+
+    return JSONResponse(content={"status": "ensured", **post})
+
+
+@router.post("/plugin/reinstall")
+async def plugin_reinstall():
+    """Hard reinstall without building.
+
+    Steps:
+      * Disable & uninstall if installed
+      * Require existing bundle (do NOT build). If missing -> needs_bundle
+      * Upload & enable
+    """
+    status = await _compute_status()
+    plugin_id = status.get("plugin_id") or PLUGIN_DEFAULT_ID
+
+    if not MM_URL or not MM_TOKEN:
+        return JSONResponse(status_code=400, content={"error": "MM_URL or MM_TOKEN not set", **status})
+
+    if status.get("installed"):
+        await _disable_plugin(plugin_id)
+        uok, uerr = await _uninstall_plugin(plugin_id)
+        if not uok:
+            return JSONResponse(status_code=502, content={"error": f"Uninstall failed: {uerr}", **status})
+        if not await _wait_until_uninstalled(plugin_id):
+            return JSONResponse(status_code=504, content={"error": "Timeout waiting for uninstall", **status})
+
+    # Need bundle
+    fresh = await _compute_status()
+    if not fresh.get("bundle_exists"):
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "needs_bundle",
+                "error": "Plugin bundle not found for reinstall",
+                "expected_path": fresh.get("bundle_path"),
+                "hint": "Run: docker compose -f infra/docker-compose.dev.yml up --build mm-plugin-build",
+                **fresh,
+            },
+        )
+
+    bundle_path_str = fresh.get("bundle_path")
+    if not bundle_path_str:
+        return JSONResponse(status_code=200, content={"status": "needs_bundle", **fresh})
+    ok, err = await _upload_bundle(Path(bundle_path_str))
     if not ok:
-        return JSONResponse(status_code=502, content={"error": err, **status})
+        return JSONResponse(status_code=502, content={"error": err, **fresh})
     ok2, err2 = await _enable_plugin(plugin_id)
     if not ok2:
-        return JSONResponse(status_code=502, content={"error": err2, **status})
-
-    final_status = await _compute_status()
-    return JSONResponse(content={"status": "reinstalled", **final_status})
+        return JSONResponse(status_code=502, content={"error": err2, **fresh})
+    final = await _compute_status()
+    return JSONResponse(content={"status": "reinstalled", **final})

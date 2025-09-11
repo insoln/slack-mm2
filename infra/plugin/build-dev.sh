@@ -49,6 +49,8 @@ if [[ -z "$PLUGIN_ID" || -z "$VERSION" ]]; then
 fi
 
 echo "Building plugin ${PLUGIN_ID} version ${VERSION}"
+export GOFLAGS="-buildvcs=false"
+echo "GOFLAGS=$GOFLAGS"
 
 # Build server (linux/amd64)
 if [[ -d server ]]; then
