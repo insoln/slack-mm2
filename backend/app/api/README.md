@@ -11,10 +11,32 @@
 ## Эндпоинты
 
 - POST /export — запуск фонового экспорта
-- GET  /plugin/status — состояние плагина (установлен/включен/версия/наличие бандла)
-- POST /plugin/deploy — загрузить локальный бандл плагина в Mattermost (с попыткой сборки при отсутствии)
+- GET  /plugin/status — состояние плагина: установлен/включен/версии/наличие бандла + метаданные (`bundle_sha256`, `bundle_mtime`, `bundle_size`)
+- GET  /plugin/bundle/info — только метаданные бандла (404 если отсутствует)
+- POST /plugin/deploy — загрузить уже собранный локальный бандл (не строит)
 - POST /plugin/enable — включить плагин
-- POST /plugin/ensure — обеспечить: установлен актуальный бандл и включен
+- POST /plugin/ensure — обеспечить: при наличии бандла установлен актуальный и включен (без сборки)
+
+### Ответ /plugin/status
+
+```jsonc
+{
+	"plugin_id": "mm-importer",
+	"expected_version": "0.1.0",
+	"installed": true,
+	"enabled": true,
+	"installed_version": "0.1.0",
+	"needs_update": false,
+	"bundle_exists": true,
+	"bundle_path": "/app/infra/plugin/dist/mm-importer-0.1.0.tar.gz",
+	"bundle_sha256": "1f8c0d...",
+	"bundle_mtime": 1726123456,
+	"bundle_size": 48321,
+	"bundle_hash_computed_at": 1726123460
+}
+```
+
+`bundle_hash_computed_at` — epoch (секунды) когда вычислен hash (кэш обновляется при смене mtime/size).
 
 ## Пример подключения роутера
 

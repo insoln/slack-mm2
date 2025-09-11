@@ -1,5 +1,7 @@
 import os
 import json
+import hashlib
+import time
 from pathlib import Path
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -13,6 +15,42 @@ MM_URL = os.environ.get("MM_URL")
 MM_TOKEN = os.environ.get("MM_TOKEN")
 
 PLUGIN_DEFAULT_ID = "mm-importer"
+
+# In-memory cache for bundle hash/mtime/size to avoid recalculating on every status request
+_bundle_cache: dict[str, dict] = {}
+_BUNDLE_CACHE_TTL = 30  # seconds
+
+def _get_cached_bundle_info(path: Path | None) -> tuple[str | None, int | None, int | None, int | None]:
+    """Return (sha256, mtime_epoch, size_bytes, computed_at_epoch).
+
+    Cache key includes file mtime ns + size so new build invalidates automatically.
+    """
+    if not path or not path.exists():
+        return None, None, None, None
+    try:
+        stat = path.stat()
+        key = f"{path}:{stat.st_mtime_ns}:{stat.st_size}"
+        now = time.time()
+        cached = _bundle_cache.get(key)
+        if cached and (now - cached["computed_at"]) < _BUNDLE_CACHE_TTL:
+            return (
+                cached.get("sha256"),
+                int(stat.st_mtime),
+                stat.st_size,
+                int(cached.get("computed_at", now)),
+            )
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                h.update(chunk)
+        sha = h.hexdigest()
+        # Keep only the latest entry (one active bundle expected)
+        _bundle_cache.clear()
+        _bundle_cache[key] = {"sha256": sha, "computed_at": now}
+        return sha, int(stat.st_mtime), stat.st_size, int(now)
+    except Exception as e:  # pragma: no cover
+        backend_logger.warning(f"Bundle cache compute failed: {e}")
+        return None, None, None, None
 
 
 def get_plugin_repo_root() -> Path:
@@ -153,6 +191,12 @@ async def _compute_status() -> dict:
 
     bundle_path = get_local_bundle_path(expected_id, expected_version)
     bundle_exists = bool(bundle_path and bundle_path.exists())
+    bundle_sha256 = None
+    bundle_mtime = None
+    bundle_size = None
+    bundle_hash_computed_at = None
+    if bundle_exists and bundle_path is not None:
+        bundle_sha256, bundle_mtime, bundle_size, bundle_hash_computed_at = _get_cached_bundle_info(bundle_path)
 
     return {
         "plugin_id": expected_id,
@@ -163,6 +207,10 @@ async def _compute_status() -> dict:
         "needs_update": needs_update,
         "bundle_exists": bundle_exists,
         "bundle_path": str(bundle_path) if bundle_path else None,
+        "bundle_sha256": bundle_sha256,
+        "bundle_mtime": bundle_mtime,
+        "bundle_size": bundle_size,
+        "bundle_hash_computed_at": bundle_hash_computed_at,
     }
 
 
@@ -194,6 +242,24 @@ async def _enable_plugin(plugin_id: str) -> tuple[bool, str | None]:
 async def plugin_status():
     status = await _compute_status()
     return JSONResponse(content=status)
+
+
+@router.get("/plugin/bundle/info")
+async def plugin_bundle_info():
+    st = await _compute_status()
+    if not st.get("bundle_exists"):
+        return JSONResponse(status_code=404, content={"error": "Bundle not found"})
+    return JSONResponse(
+        content={
+            "plugin_id": st.get("plugin_id"),
+            "expected_version": st.get("expected_version"),
+            "bundle_path": st.get("bundle_path"),
+            "bundle_sha256": st.get("bundle_sha256"),
+            "bundle_mtime": st.get("bundle_mtime"),
+            "bundle_size": st.get("bundle_size"),
+            "bundle_hash_computed_at": st.get("bundle_hash_computed_at"),
+        }
+    )
 
 
 @router.post("/plugin/deploy")

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import './App.css';
-import { Header, Sidebar, Main, Card, Button, StatusBadge, Modal, FileButton } from './components/UI';
+import { Header, Sidebar, Main, Card, Button, StatusBadge, Modal, FileButton, Toasts } from './components/UI';
 import './components/ui.css';
 
 function App() {
@@ -14,12 +14,29 @@ function App() {
   const [exportError, setExportError] = useState(null);
   const [plugin, setPlugin] = useState({loading: false, data: null, error: null});
   const [fixingPlugin, setFixingPlugin] = useState(false);
-  const [installingPlugin, setInstallingPlugin] = useState(false);
-  const [reloadCountdown, setReloadCountdown] = useState(5);
-  const [installSession, setInstallSession] = useState(false);
   const [stats, setStats] = useState({loading: false, data: null, error: null});
   const [liveStats, setLiveStats] = useState(null);
   const [jobs, setJobs] = useState({ loading: false, data: [], error: null });
+  const [toasts, setToasts] = useState([]);
+  const [lastEnsureSuccessTs, setLastEnsureSuccessTs] = useState(null);
+
+  // Deduplicating toast push (tone+title+message within last 5s)
+  const pushToast = (t) => {
+    const now = Date.now();
+    setToasts((arr) => {
+      const exists = arr.some(x => x.tone === (t.tone||'info') && x.title===t.title && x.message===t.message && (now - x._ts) < 5000);
+      if (exists) return arr;
+      const id = now + Math.random();
+      const toast = { id, tone: 'info', timeout: 4000, _ts: now, ...t };
+      if (toast.timeout) {
+        setTimeout(() => {
+          setToasts((cur) => cur.filter((x) => x.id !== id));
+        }, toast.timeout);
+      }
+      return [...arr, toast];
+    });
+  };
+  const closeToast = (id) => setToasts((arr) => arr.filter((t) => t.id !== id));
 
   useEffect(() => {
     fetch('/api/healthcheck')
@@ -46,61 +63,7 @@ function App() {
   useEffect(() => { refreshPluginStatus(); }, []);
 
   const needsPluginFix = !!(plugin?.data && (!plugin.data.installed || plugin.data.needs_update || !plugin.data.enabled));
-  const pluginNotInstalled = !!(plugin?.data && !plugin.data.installed);
-  // Auto-ensure flow: if page opens while plugin is not installed, start ensure in background and show blocking modal
-  useEffect(() => {
-    const run = async () => {
-      if (!pluginNotInstalled || installingPlugin) return;
-      setInstallingPlugin(true);
-      setInstallSession(true);
-      try {
-  await fetch('/api/plugin/ensure', { method: 'POST' });
-  } catch {
-        // swallow; UI will fall back to actionable modal
-      } finally {
-        // poll status a few times while installing (fetch fresh each attempt)
-        let attempts = 0;
-        const maxAttempts = 6; // ~30s with 5s interval
-        while (attempts < maxAttempts) {
-          // wait 5s
-          await new Promise(r => setTimeout(r, 5000));
-          try {
-            const res = await fetch('/api/plugin/status');
-            const data = await res.json();
-            setPlugin({ loading: false, data, error: null });
-            if (data && data.installed && data.enabled && !data.needs_update) {
-              break;
-            }
-          } catch {
-            // ignore
-          }
-          attempts += 1;
-        }
-        setInstallingPlugin(false);
-      }
-    };
-    run();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pluginNotInstalled]);
-
-  // When install completed, schedule auto-reload after a short countdown to close the modal and refresh state
-  useEffect(() => {
-    if (!installSession || installingPlugin) return;
-    const ok = plugin?.data && plugin.data.installed && plugin.data.enabled && !plugin.data.needs_update;
-    if (!ok) return;
-    setReloadCountdown(5);
-    const timer = setInterval(() => {
-      setReloadCountdown((n) => {
-        if (n <= 1) {
-          clearInterval(timer);
-          window.location.reload();
-          return 0;
-        }
-        return n - 1;
-      });
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [installSession, installingPlugin, plugin]);
+  // Removed auto-install & auto-reload logic for clarity and predictability
 
   const refreshStats = async () => {
     setStats((s) => ({...s, loading: true, error: null}));
@@ -177,11 +140,21 @@ function App() {
   xhr.open('POST', '/api/upload');
       xhr.upload.onprogress = (event) => { if (event.lengthComputable) setUploadProgress(Math.round((event.loaded / event.total) * 100)); };
       xhr.onload = () => {
-        try {
-          const data = JSON.parse(xhr.responseText);
-          if (data.error) { setUploadError(data.error); setUploadResult(null); }
-          else { setUploadResult(data); }
-        } catch { setUploadError('Ошибка парсинга ответа'); }
+        const status = xhr.status;
+        const text = xhr.responseText || '';
+        let parsed = null;
+        try { parsed = text ? JSON.parse(text) : null; } catch {/* swallow */}
+        if (parsed) {
+          if (parsed.error) { setUploadError(parsed.error); setUploadResult(null); }
+          else { setUploadResult(parsed); }
+        } else {
+          if (status >= 200 && status < 300) {
+            // Unexpected non-JSON success
+            setUploadResult({ filename: file.name, size: file.size, raw: text || null, note: 'Non-JSON response' });
+          } else {
+            setUploadError(`Сервер вернул ${status}${text ? ': ' + text.slice(0,200) : ''}`);
+          }
+        }
         setUploadProgress(null);
       };
       xhr.onerror = () => { setUploadError('Ошибка сети'); setUploadProgress(null); };
@@ -202,12 +175,21 @@ function App() {
     } catch (err) { setExportError(err?.message || 'Ошибка сети'); }
   };
 
-  const handleFixPlugin = async () => {
+  const handleEnsurePlugin = async () => {
     setFixingPlugin(true);
     try {
-  const res = await fetch('/api/plugin/ensure', { method: 'POST' });
+      const res = await fetch('/api/plugin/ensure', { method: 'POST' });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Ensure failed');
+      if (!res.ok || data.status === 'needs_bundle') {
+        let msg = data.error || 'Ensure failed';
+        if (data.status === 'needs_bundle') {
+          msg = `Нужен bundle. ${data.hint || ''} ${data.expected_path ? 'Ожидаемый путь: ' + data.expected_path : ''}`;
+        }
+        pushToast({ tone: 'error', title: 'Ensure', message: msg.trim() });
+        throw new Error(msg.trim());
+      }
+      pushToast({ tone: 'success', title: 'Ensure', message: 'Плагин установлен и включен' });
+      setLastEnsureSuccessTs(Date.now());
     } catch (e) {
       setPlugin((s) => ({ ...s, error: e.message }));
     } finally {
@@ -215,6 +197,16 @@ function App() {
       await refreshPluginStatus();
     }
   };
+
+  // Compute whether modal should be open (close shortly after a success if now healthy)
+  const healthy = !!(plugin?.data && plugin.data.installed && plugin.data.enabled && !plugin.data.needs_update);
+  const modalShouldBeOpen = (() => {
+    if (!plugin.data) return false;
+    if (!healthy) return needsPluginFix; // still needs fix
+    if (lastEnsureSuccessTs && Date.now() - lastEnsureSuccessTs < 1200) return false; // auto-close after ~1.2s
+    return needsPluginFix;
+  })();
+
 
   return (
     <div className="app-shell">
@@ -224,7 +216,18 @@ function App() {
           <nav>
             <a href="#upload">Загрузка бэкапа</a>
             <a href="#stats">Статистика</a>
-            <a href="#plugin">Плагин MM-Importer</a>
+            <a href="#plugin" style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+              <span>Плагин MM-Importer</span>
+              {plugin.data && (
+                (() => {
+                  const bad = !plugin.data.installed || !plugin.data.enabled;
+                  const warn = plugin.data.installed && plugin.data.enabled && (plugin.data.needs_update || !plugin.data.bundle_exists);
+                  const txt = bad ? '✖' : warn ? '⚠' : 'OK';
+                  const color = bad ? '#f87171' : warn ? '#f59e0b' : '#34d399';
+                  return <span style={{fontSize:11, fontWeight:600, color, border:'1px solid var(--border)', padding:'2px 6px', borderRadius:6, background:'rgba(255,255,255,.04)'}}>{txt}</span>;
+                })()
+              )}
+            </a>
             <a href="#export">Экспорт</a>
           </nav>
         </Sidebar>
@@ -262,6 +265,12 @@ function App() {
                     <div>Текущая версия: <b>{plugin.data.installed_version || 'n/a'}</b></div>
                     <div>Нужен апдейт: <b style={{color: plugin.data.needs_update ? '#f59e0b' : undefined}}>{plugin.data.needs_update ? 'да' : 'нет'}</b></div>
                     <div>Локальный bundle: <b style={{color: plugin.data.bundle_exists ? '#34d399' : '#f87171'}}>{plugin.data.bundle_exists ? 'есть' : 'нет'}</b></div>
+                    {plugin.data.bundle_exists && (
+                      <div>
+                        Hash: <span title={plugin.data.bundle_sha256 || ''}>{(plugin.data.bundle_sha256 || '').slice(0,12) || '—'}</span>
+                        {' '}• возраст: {plugin.data.bundle_mtime ? Math.max(0, Math.round((Date.now()/1000 - plugin.data.bundle_mtime)/60)) : '—'} мин
+                      </div>
+                    )}
                   </div>
                 )}
               </Card>
@@ -388,44 +397,55 @@ function App() {
           </div>
         </Main>
       </div>
-      {/* Blocking modal during auto-install (no actions) */}
+      {/* Modal for plugin maintenance (manual actions only) */}
       <Modal
-        open={!!plugin.data && installingPlugin}
-        title="Устанавливается плагин MM-Importer"
-        width={560}
-        actions={null}
-      >
-        <div className="small" style={{lineHeight: 1.8}}>
-          <p>Подождите, плагин устанавливается… Это может занять до 30 секунд.</p>
-          <p>После завершения страница перезагрузится автоматически{reloadCountdown > 0 ? ` через ${reloadCountdown} с` : ''}.</p>
-        </div>
-      </Modal>
-
-      {/* Blocking modal for plugin issues with action button */}
-      <Modal
-        open={!!plugin.data && needsPluginFix && !installingPlugin}
-        title="Требуется действие: плагин MM-Importer"
+        open={modalShouldBeOpen}
+        title="Плагин MM-Importer"
         width={640}
         actions={
-          <>
-            <Button onClick={handleFixPlugin} disabled={fixingPlugin}>
-              {fixingPlugin ? 'Исправляю…' : 'Сделать хорошо'}
+          !healthy && (
+            <Button onClick={handleEnsurePlugin} disabled={fixingPlugin}>
+              {fixingPlugin ? <><span className="spinner" style={{marginRight:6}} />Ensure…</> : 'Ensure'}
             </Button>
-          </>
+          )
         }
       >
         <div className="small" style={{lineHeight: 1.8}}>
-          <p>
-            Для работы импорта необходим плагин MM-Importer.
-            Сейчас состояние: установлен — <b>{plugin?.data?.installed ? 'да' : 'нет'}</b>,
-            включен — <b>{plugin?.data?.enabled ? 'да' : 'нет'}</b>,
-            нуждается в обновлении — <b>{plugin?.data?.needs_update ? 'да' : 'нет'}</b>.
-          </p>
-          <p>
-            Нажмите «Сделать хорошо», чтобы выполнить автоустановку/обновление и включение плагина.
-          </p>
+          <p>Плагин необходим для экспорта. Текущее состояние:</p>
+          <ul style={{margin:'6px 0 12px 16px'}}>
+            <li>Установлен: <b style={{color: plugin?.data?.installed ? '#34d399' : '#f87171'}}>{plugin?.data?.installed ? 'да' : 'нет'}</b></li>
+            <li>Включен: <b style={{color: plugin?.data?.enabled ? '#34d399' : '#f59e0b'}}>{plugin?.data?.enabled ? 'да' : 'нет'}</b></li>
+            <li>Нужен апдейт: <b style={{color: plugin?.data?.needs_update ? '#f59e0b' : '#9ca3af'}}>{plugin?.data?.needs_update ? 'да' : 'нет'}</b></li>
+            <li>Bundle локально: <b style={{color: plugin?.data?.bundle_exists ? '#34d399' : '#f87171'}}>{plugin?.data?.bundle_exists ? 'есть' : 'нет'}</b></li>
+            {plugin?.data?.bundle_exists && (
+              <li>Hash: <span title={plugin.data.bundle_sha256 || ''}>{(plugin.data.bundle_sha256 || '').slice(0,12) || '—'}</span> • размер: {plugin.data.bundle_size ? (Math.round(plugin.data.bundle_size/1024)) + ' KB' : '—'}</li>
+            )}
+          </ul>
+          {!plugin?.data?.bundle_exists && (
+            <div style={{color:'#f87171'}}>
+              <p style={{margin:'0 0 6px'}}>Bundle отсутствует. Соберите и повторите:</p>
+              <code style={{fontSize:12, userSelect:'all', display:'block', background:'#0e1a33', padding:'6px 8px', borderRadius:6, border:'1px solid var(--border)'}}>docker compose -f infra/docker-compose.dev.yml up --build mm-plugin-build</code>
+              <div style={{marginTop:8}}>
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    const cmd = 'docker compose -f infra/docker-compose.dev.yml up --build mm-plugin-build';
+                    navigator.clipboard.writeText(cmd).then(() => {
+                      pushToast({ tone: 'info', title: 'Команда скопирована', message: 'Вставьте её в терминал для сборки bundle.' });
+                    }).catch(() => {
+                      pushToast({ tone: 'error', title: 'Не удалось скопировать', message: 'Скопируйте вручную.' });
+                    });
+                  }}
+                  style={{fontSize:12}}
+                >Скопировать команду</Button>
+              </div>
+            </div>
+          )}
+          <p style={{marginTop:8}}>Кнопка Ensure выполнит установку / обновление / включение при наличии bundle, иначе покажет подсказку.</p>
+          {plugin.error && <p style={{color:'#f87171'}}>Ошибка: {plugin.error}</p>}
         </div>
       </Modal>
+      <Toasts items={toasts} onClose={closeToast} />
     </div>
   );
 }

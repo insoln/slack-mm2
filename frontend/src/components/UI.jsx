@@ -63,6 +63,24 @@ export const Modal = ({ open, title, children, actions, width = 520 }) => {
   );
 };
 
+// Simple toast stack; consumers render <Toasts items={array} onClose={(id)=>...} />
+export const Toasts = ({ items, onClose }) => {
+  if (!items || !items.length) return null;
+  return (
+    <div className="toasts" role="status" aria-live="polite">
+      {items.map(t => (
+        <div key={t.id} className={`toast toast--${t.tone || 'info'}`}> 
+          <div className="toast__body">
+            {t.title && <div className="toast__title">{t.title}</div>}
+            {t.message && <div className="toast__msg">{t.message}</div>}
+          </div>
+          <button className="toast__close" aria-label="Закрыть" onClick={() => onClose(t.id)}>×</button>
+        </div>
+      ))}
+    </div>
+  );
+};
+
 export const FileButton = ({ children = 'Выбрать файл', accept, onChange, disabled, variant = 'primary', ariaLabel }) => (
   <div className={`btn btn--${variant} filebtn ${disabled ? 'filebtn--disabled' : ''}`} aria-disabled={disabled ? 'true' : undefined}>
     <span className="filebtn__icon" aria-hidden>
