@@ -145,7 +145,7 @@ services:
     image: golang:1.22-bookworm
     working_dir: /src
     # Используем единый скрипт сборки
-    command: ["bash", "-lc", "set -e; apt-get update; apt-get install -y --no-install-recommends nodejs npm ca-certificates; npm config set fund false; npm config set audit false; export GOFLAGS='-buildvcs=false'; ./build-dev.sh"]
+    command: ["bash", "-lc", "set -e; apt-get update; apt-get install -y --no-install-recommends nodejs npm ca-certificates; npm config set fund false; npm config set audit false; export GOFLAGS='-buildvcs=false'; bash build-dev.sh"]
     volumes:
       - ./plugin:/src
     # Останавливается после сборки
