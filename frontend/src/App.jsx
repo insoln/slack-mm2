@@ -293,6 +293,9 @@ function App() {
                           reactions: meta.reactions_processed || 0,
                           attachments: meta.attachments_processed || 0,
                         };
+                        // New: parsed vs processed for reactions (backend may provide reactions_parsed)
+                        const reactionsParsed = meta.reactions_parsed || processed.reactions;
+                        const reactionsDiverged = reactionsParsed > processed.reactions;
                         // Import-stage file-based progress
                         const jsonTotal = Number(meta.json_files_total) || 0;
                         const jsonDone = Number(meta.json_files_processed) || 0;
@@ -343,7 +346,18 @@ function App() {
                                   : ((totals.messages || 0) > 0
                                       ? (<span>import msgs {processed.messages}/{totals.messages || 0}</span>)
                                       : (<span>import scanning…</span>)))
-                                : (<span>files {processed.attachments}/{totals.attachments || 0}, msgs {processed.messages}/{totals.messages || 0}, reactions {processed.reactions}/{totals.reactions || 0}</span>)}
+                                : (
+                                  <span>
+                                    files {processed.attachments}/{totals.attachments || 0},
+                                    {' '}msgs {processed.messages}/{totals.messages || 0},
+                                    {' '}reactions {processed.reactions}/{totals.reactions || 0}
+                                    {reactionsDiverged && (
+                                      <>
+                                        {' '}(<span style={{color:'#f59e0b'}} title="Парсер уже обнаружил больше реакций, чем успели вставиться в БД">parsed {reactionsParsed}</span>)
+                                      </>
+                                    )}
+                                  </span>
+                                )}
                             </div>
                           </div>
                         );
