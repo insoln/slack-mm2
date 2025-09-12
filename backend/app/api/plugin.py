@@ -210,7 +210,9 @@ async def plugin_deploy(path: str | None = None):
     bundle_path = Path(path) if path else get_local_bundle_path(plugin_id, version)
 
     if not MM_URL or not MM_TOKEN:
-        return JSONResponse(status_code=400, content={"error": "MM_URL or MM_TOKEN not set"})
+        return JSONResponse(
+            status_code=400, content={"error": "MM_URL or MM_TOKEN not set"}
+        )
 
     if not bundle_path or not bundle_path.exists():
         status = await _compute_status()
@@ -264,12 +266,16 @@ async def plugin_ensure():
     plugin_id = status.get("plugin_id") or PLUGIN_DEFAULT_ID
 
     if not MM_URL or not MM_TOKEN:
-        return JSONResponse(status_code=400, content={"error": "MM_URL or MM_TOKEN not set", **status})
+        return JSONResponse(
+            status_code=400, content={"error": "MM_URL or MM_TOKEN not set", **status}
+        )
 
     need_deploy = (not status.get("installed")) or status.get("needs_update")
     if need_deploy:
         if not status.get("bundle_exists"):
-            expected_path = status.get("bundle_path") or str(get_local_bundle_path(plugin_id, status.get("expected_version")))
+            expected_path = status.get("bundle_path") or str(
+                get_local_bundle_path(plugin_id, status.get("expected_version"))
+            )
             return JSONResponse(
                 status_code=200,
                 content={
@@ -286,14 +292,30 @@ async def plugin_ensure():
             backend_logger.info("Ensure: uninstalling existing plugin before update…")
             uok, uerr = await _uninstall_plugin(plugin_id)
             if not uok:
-                return JSONResponse(status_code=200, content={"status": "retry_later", "error": f"Uninstall failed: {uerr}", **status})
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "status": "retry_later",
+                        "error": f"Uninstall failed: {uerr}",
+                        **status,
+                    },
+                )
             if not await _wait_until_uninstalled(plugin_id):
-                return JSONResponse(status_code=200, content={"status": "retry_later", "error": "Timeout waiting for uninstall", **status})
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "status": "retry_later",
+                        "error": "Timeout waiting for uninstall",
+                        **status,
+                    },
+                )
 
         # Upload new bundle
         bundle_path_str = status.get("bundle_path")
         if not bundle_path_str:
-            return JSONResponse(status_code=200, content={"status": "needs_bundle", **status})
+            return JSONResponse(
+                status_code=200, content={"status": "needs_bundle", **status}
+            )
         bundle_path = Path(bundle_path_str)
         ok, err = await _upload_bundle(bundle_path)
         if not ok:
@@ -323,15 +345,23 @@ async def plugin_reinstall():
     plugin_id = status.get("plugin_id") or PLUGIN_DEFAULT_ID
 
     if not MM_URL or not MM_TOKEN:
-        return JSONResponse(status_code=400, content={"error": "MM_URL or MM_TOKEN not set", **status})
+        return JSONResponse(
+            status_code=400, content={"error": "MM_URL or MM_TOKEN not set", **status}
+        )
 
     if status.get("installed"):
         await _disable_plugin(plugin_id)
         uok, uerr = await _uninstall_plugin(plugin_id)
         if not uok:
-            return JSONResponse(status_code=502, content={"error": f"Uninstall failed: {uerr}", **status})
+            return JSONResponse(
+                status_code=502,
+                content={"error": f"Uninstall failed: {uerr}", **status},
+            )
         if not await _wait_until_uninstalled(plugin_id):
-            return JSONResponse(status_code=504, content={"error": "Timeout waiting for uninstall", **status})
+            return JSONResponse(
+                status_code=504,
+                content={"error": "Timeout waiting for uninstall", **status},
+            )
 
     # Need bundle
     fresh = await _compute_status()
@@ -349,7 +379,9 @@ async def plugin_reinstall():
 
     bundle_path_str = fresh.get("bundle_path")
     if not bundle_path_str:
-        return JSONResponse(status_code=200, content={"status": "needs_bundle", **fresh})
+        return JSONResponse(
+            status_code=200, content={"status": "needs_bundle", **fresh}
+        )
     ok, err = await _upload_bundle(Path(bundle_path_str))
     if not ok:
         return JSONResponse(status_code=502, content={"error": err, **fresh})
