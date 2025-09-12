@@ -3,10 +3,17 @@ from app.services.entities.reaction import Reaction
 import os
 import glob
 import ijson
-from typing import Callable, Awaitable, Optional
+# Streaming parser for large files; see messages_import for overall rationale.
+try:
+    import orjson  # type: ignore  # optional small-file fast path
+except Exception:  # pragma: no cover
+    orjson = None  # type: ignore
+from typing import Callable, Awaitable, Optional, List
 from app.services.entities.custom_emoji import CustomEmoji
 from app.logging_config import backend_logger
 from app.models.base import SessionLocal
+from app.models.entity import Entity
+from sqlalchemy import select
 
 
 def _extract_reactions_from_message(message):
@@ -122,18 +129,122 @@ async def parse_reactions_from_export(
     emoji_list=None,
     progress: Optional[Callable[[int], Awaitable[None]]] = None,
     job_id=None,
+    batch_size: int | None = None,
 ) -> int:
-    """Stream files in export and create reactions incrementally."""
+    """Stream files in export and create reactions incrementally with optional batching.
+    Batching reduces commit round-trips. Relations are created post-commit per batch.
+    """
+    # Determine batch size (reuse messages batch env var if present)
+    if batch_size in (None, 0):
+        try:
+            env_batch = int(os.environ.get("IMPORT_BATCH_SIZE", "0") or 0)
+            batch_size = env_batch if env_batch > 0 else 0
+        except Exception:
+            batch_size = 0
+    batch_mode = batch_size and batch_size > 1
     total = 0
     custom_emoji_names = set()
+    batch_reactions: List[Reaction] = []
+
+    async def flush_reactions(force: bool = False):
+        nonlocal batch_reactions, total
+        if not batch_mode:
+            return
+        if not force and len(batch_reactions) < batch_size:
+            return
+        if not batch_reactions:
+            return
+        # Bulk insert with ON CONFLICT; fallback to per-row if bulk fails
+        bulk_ok = True
+        async with SessionLocal() as session:
+            try:
+                # Prepare rows
+                values_sql_parts = []
+                params = {}
+                for idx, r in enumerate(batch_reactions):
+                    rd = getattr(r, 'raw_data', None)
+                    if isinstance(rd, dict) and 'ts' not in rd and getattr(r, 'slack_id', None):
+                        try:
+                            rd['ts'] = str(getattr(r, 'slack_id')).split('_')[0]
+                        except Exception:
+                            pass
+                    values_sql_parts.append(
+                        f"(:entity_type{idx}, :slack_id{idx}, :mattermost_id{idx}, :raw_data{idx}::jsonb, :job_id{idx}, :status{idx}, :error_message{idx})"
+                    )
+                    params[f"entity_type{idx}"] = getattr(r, 'entity_type', 'reaction')
+                    params[f"slack_id{idx}"] = getattr(r, 'slack_id', None)
+                    params[f"mattermost_id{idx}"] = getattr(r, 'mattermost_id', None)
+                    params[f"raw_data{idx}"] = rd
+                    params[f"job_id{idx}"] = getattr(r, 'job_id', None)
+                    params[f"status{idx}"] = getattr(r, 'status', 'pending')
+                    params[f"error_message{idx}"] = None
+                if values_sql_parts:
+                    from sqlalchemy import text as _text
+                    sql = f"""
+                        INSERT INTO entities (entity_type, slack_id, mattermost_id, raw_data, job_id, status, error_message)
+                        VALUES {', '.join(values_sql_parts)}
+                        ON CONFLICT (entity_type, slack_id, job_id) DO NOTHING
+                    """
+                    await session.execute(_text(sql), params)
+                await session.commit()
+            except Exception as e:
+                backend_logger.error(f"Bulk insert reactions failed, fallback to row mode: {e}")
+                bulk_ok = False
+        if not bulk_ok:
+            # Row-by-row fallback preserving prior behavior
+            for r in batch_reactions:
+                try:
+                    await r.save_to_db()
+                except Exception as e:  # pragma: no cover
+                    backend_logger.error(f"Fallback save reaction error {getattr(r,'slack_id',None)}: {e}")
+        # Relations after persistence
+        for r in batch_reactions:
+            try:
+                await r.create_reacted_by_relation()
+                await r.create_reacted_to_relation()
+            except Exception as e:
+                backend_logger.error(f"Relation creation error for reaction {getattr(r,'slack_id',None)}: {e}")
+        if progress:
+            try:
+                await progress(len(batch_reactions))
+            except Exception:
+                pass
+        batch_reactions = []
+    try:
+        orjson_threshold_kb = int(os.environ.get("IMPORT_ORJSON_THRESHOLD_KB", "0") or 0)
+    except Exception:
+        orjson_threshold_kb = 0
+
     for folder, _ in folder_channel_map.items():
         folder_path = os.path.join(export_dir, folder)
         if not os.path.isdir(folder_path):
             continue
         for msg_file in glob.glob(os.path.join(folder_path, "*.json")):
             try:
-                with open(msg_file, "r", encoding="utf-8") as f:
-                    for msg in ijson.items(f, "item"):
+                file_size = 0
+                try:
+                    file_size = os.path.getsize(msg_file)
+                except Exception:
+                    pass
+                use_fast_path = (
+                    orjson is not None and orjson_threshold_kb > 0 and file_size > 0 and file_size <= orjson_threshold_kb * 1024
+                )
+                if use_fast_path:
+                    try:
+                        with open(msg_file, "rb") as bf:
+                            data = bf.read()
+                        parsed = orjson.loads(data)  # type: ignore[union-attr]
+                        if not isinstance(parsed, list):
+                            use_fast_path = False
+                        else:
+                            iterator = iter(parsed)
+                    except Exception:
+                        use_fast_path = False
+                if not use_fast_path:
+                    f = open(msg_file, "r", encoding="utf-8")
+                    iterator = ijson.items(f, "item")  # type: ignore
+                try:
+                    for msg in iterator:  # type: ignore
                         raw = msg or {}
                         ts = raw.get("ts")
                         for reaction in raw.get("reactions", []) or []:
@@ -154,22 +265,38 @@ async def parse_reactions_from_export(
                                     auto_save=False,
                                     job_id=job_id,
                                 )
-                                ent = await reaction_entity.save_to_db()
-                                if ent is not None:
-                                    await reaction_entity.create_reacted_by_relation()
-                                    await reaction_entity.create_reacted_to_relation()
+                                if batch_mode:
+                                    batch_reactions.append(reaction_entity)
+                                    if len(batch_reactions) >= batch_size:
+                                        await flush_reactions(force=True)
                                     total += 1
-                                    if progress:
-                                        await progress(1)
+                                else:
+                                    ent = await reaction_entity.save_to_db()
+                                    if ent is not None:
+                                        await reaction_entity.create_reacted_by_relation()
+                                        await reaction_entity.create_reacted_to_relation()
+                                        total += 1
+                                        if progress:
+                                            await progress(1)
                                 if (
                                     emoji_list
                                     and name in emoji_list
                                     and emoji_list[name]
                                 ):
                                     custom_emoji_names.add(name)
+                finally:
+                    try:
+                        if not use_fast_path:
+                            f.close()  # type: ignore
+                    except Exception:
+                        pass
             except Exception as e:
                 backend_logger.error(f"Ошибка чтения {msg_file} при сборе реакций: {e}")
                 continue
+    # Final flush for any remaining batched reactions
+    if batch_mode:
+        await flush_reactions(force=True)
+
     # Create custom emojis seen in reactions
     for name in sorted(custom_emoji_names):
         emoji_entity = CustomEmoji(

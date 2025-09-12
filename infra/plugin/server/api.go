@@ -88,12 +88,12 @@ func (p *Plugin) HelloWorld(w http.ResponseWriter, r *http.Request) {
 // ---------------- Posts ----------------
 
 type ImportPostRequest struct {
-	UserID    string   `json:"user_id"`
-	ChannelID string   `json:"channel_id"`
-	Message   string   `json:"message"`
-	CreateAt  int64    `json:"create_at"`
-	RootID    string   `json:"root_id,omitempty"`
-	FileIDs   []string `json:"file_ids,omitempty"`
+	UserID    string         `json:"user_id"`
+	ChannelID string         `json:"channel_id"`
+	Message   string         `json:"message"`
+	CreateAt  int64          `json:"create_at"`
+	RootID    string         `json:"root_id,omitempty"`
+	FileIDs   []string       `json:"file_ids,omitempty"`
 	Props     map[string]any `json:"props,omitempty"`
 }
 

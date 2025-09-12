@@ -8,24 +8,46 @@ router = APIRouter()
 
 
 @router.get("/stats/mappings")
-async def get_mapping_stats():
-    """Return counts of mappings grouped by entity_type and status, plus totals and a matrix for table rendering."""
+async def get_mapping_stats(job_id: int | None = None):
+    """Return counts of mappings grouped by entity_type and status.
+    If job_id is provided, restrict to that job (Entity.job_id = job_id).
+    """
     async with SessionLocal() as session:
-        # total entities
-        total_q = await session.execute(select(func.count()).select_from(Entity))
+        base = select(Entity)
+        if job_id is not None:
+            # Filter base queries by job id
+            total_q = await session.execute(
+                select(func.count()).select_from(Entity).where(Entity.job_id == job_id)
+            )
+        else:
+            total_q = await session.execute(select(func.count()).select_from(Entity))
         total = total_q.scalar_one()
 
         # by entity_type
-        by_type_q = await session.execute(
-            select(Entity.entity_type, func.count()).group_by(Entity.entity_type)
-        )
+        if job_id is not None:
+            by_type_q = await session.execute(
+                select(Entity.entity_type, func.count())
+                .where(Entity.job_id == job_id)
+                .group_by(Entity.entity_type)
+            )
+        else:
+            by_type_q = await session.execute(
+                select(Entity.entity_type, func.count()).group_by(Entity.entity_type)
+            )
         by_type_rows = by_type_q.all()
         by_type = {etype: cnt for etype, cnt in by_type_rows}
 
         # by status
-        by_status_q = await session.execute(
-            select(Entity.status, func.count()).group_by(Entity.status)
-        )
+        if job_id is not None:
+            by_status_q = await session.execute(
+                select(Entity.status, func.count())
+                .where(Entity.job_id == job_id)
+                .group_by(Entity.status)
+            )
+        else:
+            by_status_q = await session.execute(
+                select(Entity.status, func.count()).group_by(Entity.status)
+            )
         by_status_rows = by_status_q.all()
         by_status = {
             str(status.value if hasattr(status, "value") else str(status)): cnt
@@ -33,11 +55,18 @@ async def get_mapping_stats():
         }
 
         # matrix: (type, status) -> count
-        matrix_q = await session.execute(
-            select(Entity.entity_type, Entity.status, func.count()).group_by(
-                Entity.entity_type, Entity.status
+        if job_id is not None:
+            matrix_q = await session.execute(
+                select(Entity.entity_type, Entity.status, func.count())
+                .where(Entity.job_id == job_id)
+                .group_by(Entity.entity_type, Entity.status)
             )
-        )
+        else:
+            matrix_q = await session.execute(
+                select(Entity.entity_type, Entity.status, func.count()).group_by(
+                    Entity.entity_type, Entity.status
+                )
+            )
         matrix_rows = matrix_q.all()
         # Collect all types and build a nested dict with zero-filled statuses
         all_types = sorted({row[0] for row in matrix_rows} | set(by_type.keys()))

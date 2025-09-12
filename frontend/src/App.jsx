@@ -17,6 +17,8 @@ function App() {
   const [stats, setStats] = useState({loading: false, data: null, error: null});
   const [liveStats, setLiveStats] = useState(null);
   const [jobs, setJobs] = useState({ loading: false, data: [], error: null });
+  const [jobStats, setJobStats] = useState({}); // job_id -> { loading, data, error }
+  const [expandedJobs, setExpandedJobs] = useState(() => new Set());
   const [toasts, setToasts] = useState([]);
   const [lastEnsureSuccessTs, setLastEnsureSuccessTs] = useState(null);
 
@@ -109,6 +111,30 @@ function App() {
     es.onerror = () => { /* ignore; browser will retry due to retry header */ };
     return () => es.close();
   }, []);
+
+  // Fetch per-job mapping stats (filtered) for active/in-progress jobs
+  useEffect(() => {
+    const active = (jobs.data || []).filter(j => !['success','failed'].includes(j.status));
+    if (active.length === 0) return;
+    let cancelled = false;
+    const fetchStatsFor = async (job) => {
+      setJobStats(prev => ({ ...prev, [job.id]: { ...(prev[job.id]||{}), updating: true, error: null } }));
+      try {
+        const res = await fetch(`/api/stats/mappings?job_id=${job.id}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'stat error');
+        if (!cancelled) setJobStats(prev => ({ ...prev, [job.id]: { updating: false, data, error: null } }));
+      } catch (e) {
+        if (!cancelled) setJobStats(prev => ({ ...prev, [job.id]: { ...(prev[job.id]||{}), updating: false, error: e.message } }));
+      }
+    };
+    active.forEach(j => fetchStatsFor(j));
+    return () => { cancelled = true; };
+  }, [jobs]);
+
+  const exportOrder = ['user','custom_emoji','attachment','channel','message','reaction'];
+  const labelMap = { user: 'user', custom_emoji: 'custom_emoji', attachment: 'attachment', channel: 'channel', message: 'message', reaction: 'reaction' };
+
 
   const handleFileChange = (e) => {
     setUploadResult(null);
@@ -288,6 +314,7 @@ function App() {
                     <div style={{display:'grid', gap:8}}>
                       {jobs.data.map((j) => {
                         const meta = j.meta || {};
+                        const singlePass = !!meta.single_pass;
                         // Fallback totals: if API did not provide, derive from SSE by_type snapshot
                         const fallbackTotals = liveStats?.by_type ? {
                           messages: liveStats.by_type.message || 0,
@@ -305,7 +332,9 @@ function App() {
                         // Import-stage file-based progress
                         const jsonTotal = Number(meta.json_files_total) || 0;
                         const jsonDone = Number(meta.json_files_processed) || 0;
-                        const importStages = ['extracting','users','channels','messages','emojis','reactions','attachments'];
+                        const importStages = singlePass
+                          ? ['extracting','users','channels','messages']
+                          : ['extracting','users','channels','messages','emojis','reactions','attachments'];
                         const inImport = importStages.includes(j.current_stage);
 
                         // Per-element weighting across all mapping items for exporting/done
@@ -319,14 +348,31 @@ function App() {
 
                         let pct = 0;
                         if (inImport) {
-                          if (jsonTotal > 0) {
-                            pct = Math.max(1, Math.min(100, Math.round((jsonDone / jsonTotal) * 100)));
-                          } else if ((totals.messages || 0) > 0) {
-                            // Fallback: approximate import progress by messages parsed
-                            pct = Math.max(1, Math.min(100, Math.round(((processed.messages || 0) / (totals.messages || 1)) * 100)));
+                          if (singlePass) {
+                            // In single-pass mode we weight by logical stages: users (1), channels (1), messages (bulk)
+                            // Use file progress for coarse feedback until messages known.
+                            if (j.current_stage === 'extracting') pct = 5; // small seed
+                            else if (j.current_stage === 'users') pct = 15;
+                            else if (j.current_stage === 'channels') pct = 25;
+                            else if (j.current_stage === 'messages') {
+                              if ((totals.messages || 0) > 0) {
+                                const msgPct = Math.min(1, (processed.messages || 0) / (totals.messages || 1));
+                                pct = 25 + Math.round(msgPct * 75);
+                              } else if (jsonTotal > 0) {
+                                // fallback to file fraction during early stream
+                                pct = 25 + Math.round(Math.min(1, jsonDone / jsonTotal) * 75);
+                              } else {
+                                pct = 30; // early messages unknown
+                              }
+                            }
                           } else {
-                            // Unknown totals yet: show a minimal indeterminate stub
-                            pct = 1;
+                            if (jsonTotal > 0) {
+                              pct = Math.max(1, Math.min(100, Math.round((jsonDone / jsonTotal) * 100)));
+                            } else if ((totals.messages || 0) > 0) {
+                              pct = Math.max(1, Math.min(100, Math.round(((processed.messages || 0) / (totals.messages || 1)) * 100)));
+                            } else {
+                              pct = 1;
+                            }
                           }
                         } else {
                           pct = totalsSum > 0 ? Math.round((processedSum / totalsSum) * 100) : 0;
@@ -336,24 +382,82 @@ function App() {
                         const barBg = inImport
                           ? 'linear-gradient(90deg, #22c55e, #16a34a)'
                           : 'linear-gradient(90deg, var(--primary), var(--primary-600))';
+                        const expanded = expandedJobs.has(j.id);
+                        const toggle = () => setExpandedJobs(prev => {
+                          const next = new Set([...prev]);
+                          if (next.has(j.id)) next.delete(j.id); else next.add(j.id);
+                          return next;
+                        });
                         return (
-                          <div key={j.id} style={{border:'1px solid var(--border)', borderRadius:8, padding:8}}>
+                          <div key={j.id} style={{border:'1px solid var(--border)', borderRadius:8, padding:8, transition:'background .2s'}}>
                             <div className="small" style={{display:'flex', justifyContent:'space-between', marginBottom:6}}>
-                              <span>Задача #{j.id} — {j.current_stage || '—'} • {j.status}</span>
+                              <span style={{display:'flex', gap:8, alignItems:'center'}}>
+                                <button
+                                  onClick={toggle}
+                                  style={{
+                                    background:'none', border:'1px solid var(--border)', width:20, height:20, borderRadius:4,
+                                    display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', color:'#9ca3af'
+                                  }}
+                                  title={expanded ? 'Свернуть' : 'Развернуть'}
+                                >{expanded ? '−' : '+'}</button>
+                                Задача #{j.id} — {j.current_stage || '—'} • {j.status}
+                              </span>
                               <span>{new Date(j.created_at || Date.now()).toLocaleString()}</span>
                             </div>
                             <div style={{height: 8, background: '#0b1223', border: '1px solid var(--border)', borderRadius: 9999, overflow: 'hidden'}}>
                               <div style={{width: `${pct}%`, height: '100%', background: barBg, transition: 'width 0.3s'}} />
                             </div>
                             <div className="small" style={{marginTop: 4, color:'#9ca3af'}}>
-                              {inImport
-                                ? (jsonTotal > 0
-                                  ? (<span>import files {jsonDone}/{jsonTotal}</span>)
-                                  : ((totals.messages || 0) > 0
-                                      ? (<span>import msgs {processed.messages}/{totals.messages || 0}</span>)
-                                      : (<span>import scanning…</span>)))
-                                : (<span>files {processed.attachments}/{totals.attachments || 0}, msgs {processed.messages}/{totals.messages || 0}, reactions {processed.reactions}/{totals.reactions || 0}</span>)}
+                              {inImport ? (
+                                singlePass ? (
+                                  j.current_stage === 'messages' && (totals.messages || 0) > 0
+                                    ? (<span>import msgs {processed.messages}/{totals.messages || 0}</span>)
+                                    : (<span>{j.current_stage}…</span>)
+                                ) : (
+                                  jsonTotal > 0
+                                    ? (<span>import files {jsonDone}/{jsonTotal}</span>)
+                                    : ((totals.messages || 0) > 0
+                                        ? (<span>import msgs {processed.messages}/{totals.messages || 0}</span>)
+                                        : (<span>import scanning…</span>))
+                                )
+                              ) : (
+                                <span>files {processed.attachments}/{totals.attachments || 0}, msgs {processed.messages}/{totals.messages || 0}, reactions {processed.reactions}/{totals.reactions || 0}</span>
+                              )}
                             </div>
+                            {expanded && (
+                              <div style={{marginTop:10}}>
+                                {jobStats[j.id]?.error && <div className="tiny" style={{color:'#f87171'}}>Ошибка статистики: {jobStats[j.id].error}</div>}
+                                {jobStats[j.id]?.data && (
+                                  <div style={{overflowX:'auto', position:'relative'}}>
+                                    {jobStats[j.id]?.updating && (
+                                      <div style={{position:'absolute', top:2, right:4, fontSize:10, color:'#6b7280'}}>upd…</div>
+                                    )}
+                                    <table className="table tiny" style={{fontSize:11, transition:'opacity .15s'}}>
+                                      <thead>
+                                        <tr>
+                                          <th style={{textAlign:'left'}}>Тип</th>
+                                          {jobStats[j.id].data.statuses.map(s => <th key={s}>{s}</th>)}
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {exportOrder.filter(t => (jobStats[j.id].data.types||[]).includes(t)).map(t => {
+                                          const row = jobStats[j.id].data.matrix[t] || {};
+                                          return (
+                                            <tr key={t}>
+                                              <td style={{textAlign:'left'}}>{labelMap[t] || t}</td>
+                                              {jobStats[j.id].data.statuses.map(s => <td key={s}>{row[s] || 0}</td>)}
+                                            </tr>
+                                          );
+                                        })}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                )}
+                                {!jobStats[j.id]?.data && !jobStats[j.id]?.error && (
+                                  <div className="tiny" style={{color:'#9ca3af'}}>Загрузка…</div>
+                                )}
+                              </div>
+                            )}
                           </div>
                         );
                       })}
