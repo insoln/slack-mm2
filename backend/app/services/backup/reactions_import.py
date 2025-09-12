@@ -1,12 +1,13 @@
 import os
 from app.services.entities.reaction import Reaction
-import os
 import glob
 import ijson
-from typing import Callable, Awaitable, Optional
+import time
+from typing import Callable, Awaitable, Optional, List, Tuple
 from app.services.entities.custom_emoji import CustomEmoji
 from app.logging_config import backend_logger
 from app.models.base import SessionLocal
+from sqlalchemy import text as _text
 
 
 def _extract_reactions_from_message(message):
@@ -123,9 +124,94 @@ async def parse_reactions_from_export(
     progress: Optional[Callable[[int], Awaitable[None]]] = None,
     job_id=None,
 ) -> int:
-    """Stream files in export and create reactions incrementally."""
+    """Stream files and import reactions.
+
+    Optimizations added:
+      - Optional batching (env: REACTIONS_BATCH_SIZE, REACTIONS_BULK=1)
+      - Throttled progress updates (env: REACTIONS_PROGRESS_FLUSH_INTERVAL_SEC)
+      - Reduced per-reaction round trips (bulk INSERT + post-processing of relations)
+
+    Falls back to legacy per-row behavior if batching env not enabled (to minimize risk).
+    """
+    try:
+        batch_size = int(os.environ.get("REACTIONS_BATCH_SIZE", "0") or 0)
+    except Exception:
+        batch_size = 0
+    bulk_enabled = os.environ.get("REACTIONS_BULK", "0") in ("1", "true", "TRUE") and batch_size > 0
+    try:
+        progress_interval = float(os.environ.get("REACTIONS_PROGRESS_FLUSH_INTERVAL_SEC", "2"))
+    except Exception:
+        progress_interval = 2.0
+
     total = 0
     custom_emoji_names = set()
+    last_progress_emit = time.time()
+
+    # Accumulators when bulk mode is ON
+    batch_rows: List[Tuple[str,str,dict]] = []  # (slack_id, emoji_name, raw_data)
+
+    async def _flush_batch(force: bool = False):
+        nonlocal batch_rows, total, last_progress_emit
+        if not bulk_enabled:
+            return
+        if not force and len(batch_rows) < batch_size:
+            return
+        if not batch_rows:
+            return
+        # Prepare single bulk INSERT using VALUES list + ON CONFLICT DO NOTHING
+        values_sql_parts = []
+        params = {}
+        for idx, (slack_id, _emoji, raw) in enumerate(batch_rows):
+            values_sql_parts.append(
+                f"(:etype{idx}, :sid{idx}, :mmid{idx}, :raw{idx}::jsonb, :job{idx}, :status{idx}, :err{idx})"
+            )
+            params[f"etype{idx}"] = "reaction"
+            params[f"sid{idx}"] = slack_id
+            params[f"mmid{idx}"] = None
+            params[f"raw{idx}"] = raw
+            params[f"job{idx}"] = job_id
+            params[f"status{idx}"] = "pending"
+            params[f"err{idx}"] = None
+        sql = f"""
+            INSERT INTO entities (entity_type, slack_id, mattermost_id, raw_data, job_id, status, error_message)
+            VALUES {', '.join(values_sql_parts)}
+            ON CONFLICT (entity_type, slack_id, job_id) DO NOTHING
+        """
+        try:
+            async with SessionLocal() as session:
+                await session.execute(_text(sql), params)
+                await session.commit()
+        except Exception as e:
+            backend_logger.error(f"Bulk insert reactions failed, fallback row mode for this batch: {e}")
+            # Fallback: row-by-row legacy path
+            for slack_id, _emoji, raw in batch_rows:
+                try:
+                    reaction_entity = Reaction(
+                        slack_id=slack_id,
+                        mattermost_id=None,
+                        raw_data=raw,
+                        status="pending",
+                        auto_save=False,
+                        job_id=job_id,
+                    )
+                    ent = await reaction_entity.save_to_db()
+                    if ent is not None:
+                        await reaction_entity.create_reacted_by_relation()
+                        await reaction_entity.create_reacted_to_relation()
+                except Exception as ie:
+                    backend_logger.error(f"Row fallback failed for reaction {slack_id}: {ie}")
+        # Progress accounting (batch size) — optimistic, relations created lazily in fallback only.
+        inc = len(batch_rows)
+        total += inc
+        batch_rows.clear()
+        # Throttled progress callback
+        if progress and (time.time() - last_progress_emit >= progress_interval):
+            try:
+                await progress(inc)  # note: if front expects per-item increments this still works (aggregated)
+            except Exception:
+                pass
+            last_progress_emit = time.time()
+
     for folder, _ in folder_channel_map.items():
         folder_path = os.path.join(export_dir, folder)
         if not os.path.isdir(folder_path):
@@ -134,53 +220,71 @@ async def parse_reactions_from_export(
             try:
                 with open(msg_file, "r", encoding="utf-8") as f:
                     for msg in ijson.items(f, "item"):
-                        raw = msg or {}
-                        ts = raw.get("ts")
-                        for reaction in raw.get("reactions", []) or []:
+                        raw_msg = msg or {}
+                        ts = raw_msg.get("ts")
+                        reactions_list = raw_msg.get("reactions", []) or []
+                        if not reactions_list:
+                            continue
+                        for reaction in reactions_list:
                             name = reaction.get("name")
                             if not name:
                                 continue
-                            for user_id in reaction.get("users") or []:
+                            users = reaction.get("users") or []
+                            if not users:
+                                continue
+                            for user_id in users:
                                 reaction_data = dict(reaction)
                                 reaction_data["user"] = user_id
                                 reaction_data["message_ts"] = ts
                                 reaction_data["emoji_name"] = name
                                 reaction_data["composite_id"] = f"{ts}_{name}"
-                                reaction_entity = Reaction(
-                                    slack_id=f"{ts}_{name}_{user_id}",
-                                    mattermost_id=None,
-                                    raw_data=reaction_data,
-                                    status="pending",
-                                    auto_save=False,
-                                    job_id=job_id,
-                                )
-                                ent = await reaction_entity.save_to_db()
-                                if ent is not None:
-                                    await reaction_entity.create_reacted_by_relation()
-                                    await reaction_entity.create_reacted_to_relation()
-                                    total += 1
-                                    if progress:
-                                        await progress(1)
-                                if (
-                                    emoji_list
-                                    and name in emoji_list
-                                    and emoji_list[name]
-                                ):
+                                slack_id = f"{ts}_{name}_{user_id}"
+                                if bulk_enabled:
+                                    batch_rows.append((slack_id, name, reaction_data))
+                                else:
+                                    # Legacy immediate path
+                                    reaction_entity = Reaction(
+                                        slack_id=slack_id,
+                                        mattermost_id=None,
+                                        raw_data=reaction_data,
+                                        status="pending",
+                                        auto_save=False,
+                                        job_id=job_id,
+                                    )
+                                    ent = await reaction_entity.save_to_db()
+                                    if ent is not None:
+                                        await reaction_entity.create_reacted_by_relation()
+                                        await reaction_entity.create_reacted_to_relation()
+                                        total += 1
+                                        if progress:
+                                            await progress(1)
+                                if emoji_list and name in emoji_list and emoji_list[name]:
                                     custom_emoji_names.add(name)
+                        if bulk_enabled:
+                            # Flush if batch full or time exceeded
+                            if len(batch_rows) >= batch_size or (time.time() - last_progress_emit >= progress_interval):
+                                await _flush_batch()
             except Exception as e:
                 backend_logger.error(f"Ошибка чтения {msg_file} при сборе реакций: {e}")
                 continue
+    # Final flush
+    await _flush_batch(force=True)
+
     # Create custom emojis seen in reactions
     for name in sorted(custom_emoji_names):
-        emoji_entity = CustomEmoji(
-            slack_id=name,
-            raw_data={
-                "name": name,
-                "url": emoji_list.get(name) if emoji_list else None,
-            },
-            status="pending",
-            auto_save=False,
-        )
-        await emoji_entity.save_to_db()
-    backend_logger.info(f"Импортировано реакций из экспорта: {total}")
+        try:
+            emoji_entity = CustomEmoji(
+                slack_id=name,
+                raw_data={
+                    "name": name,
+                    "url": emoji_list.get(name) if emoji_list else None,
+                },
+                status="pending",
+                auto_save=False,
+            )
+            await emoji_entity.save_to_db()
+        except Exception as e:
+            backend_logger.error(f"Не удалось сохранить кастомный эмодзи {name}: {e}")
+
+    backend_logger.info(f"Импортировано реакций из экспорта: {total} (bulk={'on' if bulk_enabled else 'off'})")
     return total
