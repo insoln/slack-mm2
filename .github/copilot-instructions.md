@@ -11,6 +11,26 @@ Slack-MM2 Sync is a monorepo for one-way data synchronization from Slack to Matt
 
 ## Working Effectively
 
+### Branching Policy (MANDATORY)
+ALL changes MUST be implemented in a separate feature branch – never commit directly to `master`.
+
+Required workflow:
+1. Pull latest `origin/master`.
+2. Create a branch: `git checkout -b feature/<short-topic>` (or `fix/`, `chore/`, `docs/`).
+3. Make and commit changes (small, logically grouped commits; run formatters / linters / tests before each push).
+4. Rebase onto `origin/master` before opening / updating a PR: `git fetch origin && git rebase origin/master`.
+5. Push with tracking: `git push -u origin feature/<short-topic>`.
+6. Open Pull Request → wait for checks → review → squash or fast-forward merge.
+7. Delete the branch after merge (remote + local).
+
+Hard rules:
+- No force pushes to `master`.
+- `master` must remain in a deployable / green state (tests pass, migrations valid).
+- If an emergency hotfix is required: still create `hotfix/<issue>` branch, PR, and only then merge.
+- Large refactors: coordinate early; prefer incremental PRs.
+
+Rationale: Guarantees reproducible review history, enables safe rewrites (rebases) off the mainline, reduces merge conflicts, and keeps CI signal clean.
+
 ### Initial Setup and Dependencies
 - **Python**: Version 3.11+ required (project tested with Python 3.12)
 - **Node.js**: Version 20+ required (tested with Node.js 20.19.5, npm 10.8.2)
@@ -200,6 +220,7 @@ docker compose -f docker-compose.dev.yml up --build
 - **ALWAYS** test manual validation scenarios after making changes
 - **SET TIMEOUTS** of 30+ minutes for Docker builds, 2+ minutes for plugin builds
 - Use the individual component build processes when Docker environment issues occur
+- **NEVER COMMIT DIRECTLY TO `master`** – always create a feature branch and go through a PR.
 
 ## File Locations
 
