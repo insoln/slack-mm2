@@ -60,6 +60,9 @@ Rationale: Guarantees reproducible review history, enables safe rewrites (rebase
 For integration tests that connect to Mattermost API:
 - `MATTERMOST_API_TOKEN=5x7rr788c7gwdnkdr9imb49ffo` (dev environment default)
 - `MATTERMOST_API_URL=http://localhost:8065/api/v4/users/me`
+#### Import / Performance Environment Variables
+Current unified single-pass importer (messages + reactions + attachments + emojis) honors these optional variables:
+- `IMPORT_URL_PREFIXES` — CSV of allowed `url_private` prefixes for attachments (default: `https://files.slack.com`). Test dataset adds `http://test-files:9000`.
 
 ### Frontend Development (React/Vite)
 - **Install dependencies**: `cd frontend && npm ci` -- takes ~7 seconds
