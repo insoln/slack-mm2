@@ -46,6 +46,8 @@ async def orchestrate_slack_import(zip_path):
     except Exception:
         pass
     try:
+        import os as _os
+        single_pass = _os.environ.get("IMPORT_SINGLE_PASS", "0") in ("1", "true", "TRUE")
         backend_logger.info(f"Распаковываю архив {zip_path} в {extract_dir}")
         from app.services.backup.zip_utils import extract_zip
 
@@ -142,82 +144,18 @@ async def orchestrate_slack_import(zip_path):
             f"Сопоставление папок и каналов/групп/чатов: {len(folder_channel_map)}"
         )
 
-        # Pre-count totals for progress (messages, reactions, attachments, emojis)
-        EMOJI_PATTERN = re.compile(r":([a-z0-9_+\-]+):")
-        counts = {"messages": 0, "reactions": 0, "attachments": 0, "emojis": 0}
-        seen_emoji: set[str] = set()
-        for folder, _ in folder_channel_map.items():
-            folder_path = os.path.join(extract_dir, folder)
-            if not os.path.isdir(folder_path):
-                continue
-            for msg_file in glob.glob(os.path.join(folder_path, "*.json")):
-                try:
-                    with open(msg_file, "r", encoding="utf-8") as f:
-                        for msg in ijson.items(f, "item"):
-                            raw = msg or {}
-                            counts["messages"] += 1
-                            # reactions
-                            for reaction in raw.get("reactions") or []:
-                                users = reaction.get("users") or []
-                                counts["reactions"] += len(users)
-                            # attachments
-                            for file_obj in raw.get("files") or []:
-                                url_private = file_obj.get("url_private")
-                                if url_private and str(url_private).startswith(
-                                    "https://files.slack.com"
-                                ):
-                                    counts["attachments"] += 1
-                            # emojis (rough unique names from text/blocks/attachments)
-                            text = raw.get("text") or ""
-                            for name in EMOJI_PATTERN.findall(text):
-                                seen_emoji.add(name)
-                            for a in raw.get("attachments") or []:
-                                for key in ("pretext", "title", "text", "fallback"):
-                                    val = a.get(key)
-                                    if isinstance(val, str):
-                                        for name in EMOJI_PATTERN.findall(val):
-                                            seen_emoji.add(name)
-                            # blocks minimal scan
-                            for b in raw.get("blocks") or []:
-                                if isinstance(b, dict):
-                                    if b.get("type") == "rich_text":
-                                        for el in b.get("elements", []) or []:
-                                            if isinstance(el, dict):
-                                                if el.get("type") in (
-                                                    "text",
-                                                    "mrkdwn",
-                                                    "plain_text",
-                                                ):
-                                                    t = el.get("text") or ""
-                                                    for name in EMOJI_PATTERN.findall(
-                                                        t
-                                                    ):
-                                                        seen_emoji.add(name)
-                                    else:
-                                        t = (
-                                            (b.get("text") or {}).get("text")
-                                            if isinstance(b.get("text"), dict)
-                                            else None
-                                        )
-                                        if t:
-                                            for name in EMOJI_PATTERN.findall(t):
-                                                seen_emoji.add(name)
-                except Exception as e:
-                    backend_logger.error(f"Ошибка предподсчёта {msg_file}: {e}")
-                    continue
-
-        # Only count emojis that exist in Slack emoji list with URL
-        valid_emoji = 0
-        for n in seen_emoji:
-            if emoji_list and emoji_list.get(n):
-                valid_emoji += 1
-        counts["emojis"] = valid_emoji
-
+        # Initialize empty totals instead of expensive deep pre-scan (will be filled incrementally by stages)
         async with SessionLocal() as session:
             job = await session.get(ImportJob, job_id)
             if job:
                 meta = cast(Dict[str, Any], (job.meta or {}))
-                meta["totals"] = counts
+                if "totals" not in meta:
+                    meta["totals"] = {
+                        "messages": 0,
+                        "reactions": 0,
+                        "attachments": 0,
+                        "emojis": 0,
+                    }
                 meta["stages"] = [
                     "extracting",
                     "users",
@@ -233,72 +171,109 @@ async def orchestrate_slack_import(zip_path):
                 await session.commit()
 
         # messages
+        from sqlalchemy import text as _text
+
+        async def _progress_messages(delta: int):
+            async with SessionLocal() as s:
+                await s.execute(
+                    _text(
+                        """
+                        UPDATE import_jobs
+                        SET meta = COALESCE(meta, '{}'::jsonb)
+                            || jsonb_build_object(
+                                'messages_processed',
+                                COALESCE((meta->>'messages_processed')::int, 0) + :delta
+                            )
+                        WHERE id = :job_id
+                        """
+                    ),
+                    {"delta": int(delta or 0), "job_id": job_id},
+                )
+                await s.commit()
+
+        async def _progress_msg_files(delta_files: int):
+            async with SessionLocal() as s:
+                await s.execute(
+                    _text(
+                        """
+                        UPDATE import_jobs
+                        SET meta = COALESCE(meta, '{}'::jsonb)
+                            || jsonb_build_object(
+                                'json_files_processed',
+                                COALESCE((meta->>'json_files_processed')::int, 0) + :delta
+                            )
+                        WHERE id = :job_id
+                        """
+                    ),
+                    {"delta": int(delta_files or 0), "job_id": job_id},
+                )
+                await s.commit()
+
+        async def _counters(delta: dict):
+            if not delta:
+                return
+            async with SessionLocal() as s:
+                job = await s.get(ImportJob, job_id)
+                if not job:
+                    return
+                meta = cast(Dict[str, Any], (job.meta or {}))
+                for k in ("messages", "reactions", "attachments"):
+                    if k in delta and k != "messages":
+                        meta[f"{k}_processed"] = int(meta.get(f"{k}_processed", 0)) + int(delta[k] or 0)
+                # messages handled separately by _progress_messages; emojis is max
+                if "emojis" in delta:
+                    cur = int(meta.get("emojis_processed", 0) or 0)
+                    if int(delta["emojis"] or 0) > cur:
+                        meta["emojis_processed"] = int(delta["emojis"])
+                setattr(job, "meta", meta)  # type: ignore[attr-defined]
+                await s.commit()
+
         async with SessionLocal() as session:
             job = await session.get(ImportJob, job_id)
             if job:
                 setattr(job, "current_stage", "messages")
                 await session.commit()
+        jid = cast(int | None, job_id)
+        _ = await parse_channel_messages(
+            extract_dir,
+            folder_channel_map,
+            batch_size=200,
+            progress=_progress_messages,
+            file_progress=_progress_msg_files,
+            job_id=jid,
+            single_pass=single_pass,
+            counters_callback=_counters if single_pass else None,
+            emoji_list=emoji_list if single_pass else None,
+        )
 
-            # progress callback for messages (per message)
-            async def _progress_messages(delta: int):
-                # Atomic merge to avoid lost updates from concurrent callbacks
-                from sqlalchemy import text
+        # Persist final messages total (and single-pass other counters)
+        try:
+            async with SessionLocal() as session:
+                job = await session.get(ImportJob, job_id)
+                if job:
+                    meta = cast(Dict[str, Any], (job.meta or {}))
+                    totals = meta.get("totals") or {}
+                    msgs = int(meta.get("messages_processed", 0) or 0)
+                    if msgs and msgs > int(totals.get("messages", 0) or 0):
+                        totals["messages"] = msgs
+                    if single_pass:
+                        for key in ("reactions", "attachments", "emojis"):
+                            val = int(meta.get(f"{key}_processed", 0) or 0)
+                            if val and val > int(totals.get(key, 0) or 0):
+                                totals[key] = val
+                    meta["totals"] = totals
+                    setattr(job, "meta", meta)  # type: ignore[attr-defined]
+                    await session.commit()
+        except Exception:
+            pass
 
-                async with SessionLocal() as s:
-                    await s.execute(
-                        text(
-                            """
-                            UPDATE import_jobs
-                            SET meta = COALESCE(meta, '{}'::jsonb)
-                                || jsonb_build_object(
-                                    'messages_processed',
-                                    COALESCE((meta->>'messages_processed')::int, 0) + :delta
-                                )
-                            WHERE id = :job_id
-                            """
-                        ),
-                        {"delta": int(delta or 0), "job_id": job_id},
-                    )
-                    await s.commit()
-
-            # file-level progress for messages (increment by number of files completed)
-            async def _progress_msg_files(delta_files: int):
-                # Atomic merge to avoid lost updates from concurrent callbacks
-                from sqlalchemy import text
-
-                async with SessionLocal() as s:
-                    await s.execute(
-                        text(
-                            """
-                            UPDATE import_jobs
-                            SET meta = COALESCE(meta, '{}'::jsonb)
-                                || jsonb_build_object(
-                                    'json_files_processed',
-                                    COALESCE((meta->>'json_files_processed')::int, 0) + :delta
-                                )
-                            WHERE id = :job_id
-                            """
-                        ),
-                        {"delta": int(delta_files or 0), "job_id": job_id},
-                    )
-                    await s.commit()
-
-            jid = cast(int | None, job_id)
-            _ = await parse_channel_messages(
-                extract_dir,
-                folder_channel_map,
-                batch_size=200,
-                progress=_progress_messages,
-                file_progress=_progress_msg_files,
-                job_id=jid,
-            )
-
-        # emojis
-        async with SessionLocal() as session:
-            job = await session.get(ImportJob, job_id)
-            if job:
-                setattr(job, "current_stage", "emojis")
-                await session.commit()
+        # emojis (skip if single_pass handled them)
+        if not single_pass:
+            async with SessionLocal() as session:
+                job = await session.get(ImportJob, job_id)
+                if job:
+                    setattr(job, "current_stage", "emojis")
+                    await session.commit()
 
             async def _progress_emojis(delta: int):
                 async with SessionLocal() as s:
@@ -318,12 +293,29 @@ async def orchestrate_slack_import(zip_path):
                 progress=_progress_emojis,
             )
 
-        # reactions
-        async with SessionLocal() as session:
-            job = await session.get(ImportJob, job_id)
-            if job:
-                setattr(job, "current_stage", "reactions")
-                await session.commit()
+        if not single_pass:
+            try:
+                async with SessionLocal() as session:
+                    job = await session.get(ImportJob, job_id)
+                    if job:
+                        meta = cast(Dict[str, Any], (job.meta or {}))
+                        emojis = int(meta.get("emojis_processed", 0) or 0)
+                        totals = meta.get("totals") or {}
+                        if emojis and (emojis > int(totals.get("emojis", 0) or 0)):
+                            totals["emojis"] = emojis
+                            meta["totals"] = totals
+                            setattr(job, "meta", meta)  # type: ignore[attr-defined]
+                            await session.commit()
+            except Exception:
+                pass
+
+        # reactions (skip if single_pass)
+        if not single_pass:
+            async with SessionLocal() as session:
+                job = await session.get(ImportJob, job_id)
+                if job:
+                    setattr(job, "current_stage", "reactions")
+                    await session.commit()
 
             async def _progress_reactions(delta: int):
                 async with SessionLocal() as s:
@@ -344,12 +336,29 @@ async def orchestrate_slack_import(zip_path):
                 job_id=jid,
             )
 
-        # attachments
-        async with SessionLocal() as session:
-            job = await session.get(ImportJob, job_id)
-            if job:
-                setattr(job, "current_stage", "attachments")
-                await session.commit()
+        if not single_pass:
+            try:
+                async with SessionLocal() as session:
+                    job = await session.get(ImportJob, job_id)
+                    if job:
+                        meta = cast(Dict[str, Any], (job.meta or {}))
+                        reactions = int(meta.get("reactions_processed", 0) or 0)
+                        totals = meta.get("totals") or {}
+                        if reactions and (reactions > int(totals.get("reactions", 0) or 0)):
+                            totals["reactions"] = reactions
+                            meta["totals"] = totals
+                            setattr(job, "meta", meta)  # type: ignore[attr-defined]
+                            await session.commit()
+            except Exception:
+                pass
+
+        # attachments (skip if single_pass)
+        if not single_pass:
+            async with SessionLocal() as session:
+                job = await session.get(ImportJob, job_id)
+                if job:
+                    setattr(job, "current_stage", "attachments")
+                    await session.commit()
 
             async def _progress_attachments(delta: int):
                 async with SessionLocal() as s:
@@ -368,6 +377,22 @@ async def orchestrate_slack_import(zip_path):
                 progress=_progress_attachments,
                 job_id=jid,
             )
+
+        if not single_pass:
+            try:
+                async with SessionLocal() as session:
+                    job = await session.get(ImportJob, job_id)
+                    if job:
+                        meta = cast(Dict[str, Any], (job.meta or {}))
+                        attachments = int(meta.get("attachments_processed", 0) or 0)
+                        totals = meta.get("totals") or {}
+                        if attachments and (attachments > int(totals.get("attachments", 0) or 0)):
+                            totals["attachments"] = attachments
+                            meta["totals"] = totals
+                            setattr(job, "meta", meta)  # type: ignore[attr-defined]
+                            await session.commit()
+            except Exception:
+                pass
 
         # export
         async with SessionLocal() as session:

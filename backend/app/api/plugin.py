@@ -158,6 +158,15 @@ async def _compute_status() -> dict:
     enabled = False
     installed_version = None
 
+    # We still want to return bundle metadata fields even if MM env missing
+    bundle_path = get_local_bundle_path(expected_id, expected_version)
+    bundle_exists = bool(bundle_path and bundle_path.exists())
+    bundle_sha256 = None
+    bundle_mtime = None
+    bundle_size = None
+    bundle_hash_computed_at = None
+    if bundle_exists and bundle_path is not None:
+        bundle_sha256, bundle_mtime, bundle_size, bundle_hash_computed_at = _get_cached_bundle_info(bundle_path)
     if not MM_URL or not MM_TOKEN:
         return {
             "plugin_id": expected_id,
@@ -167,8 +176,12 @@ async def _compute_status() -> dict:
             "installed_version": None,
             "needs_update": None,
             "error": "MM_URL or MM_TOKEN not set",
-            "bundle_exists": False,
-            "bundle_path": None,
+            "bundle_exists": bundle_exists,
+            "bundle_path": str(bundle_path) if bundle_path else None,
+            "bundle_sha256": bundle_sha256,
+            "bundle_mtime": bundle_mtime,
+            "bundle_size": bundle_size,
+            "bundle_hash_computed_at": bundle_hash_computed_at,
         }
 
     resp = await mm_get("/api/v4/plugins")
@@ -189,6 +202,7 @@ async def _compute_status() -> dict:
     if expected_version and installed_version and expected_version != installed_version:
         needs_update = True
 
+    # bundle metadata already computed above if env missing; recompute when env present
     bundle_path = get_local_bundle_path(expected_id, expected_version)
     bundle_exists = bool(bundle_path and bundle_path.exists())
     bundle_sha256 = None

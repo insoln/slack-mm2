@@ -39,8 +39,9 @@ async def test_parse_channel_messages_creates_entities(monkeypatch):
                 result = await messages_import.parse_channel_messages(
                     export_dir, folder_channel_map
                 )
-                # Проверки
-                assert result == 2
+                # Проверки: теперь функция возвращает словарь счётчиков
+                assert isinstance(result, dict)
+                assert result.get("messages") == 2
                 assert MockMessage.call_count == 2
                 mock_msg.save_to_db.assert_any_call("C123")
                 mock_msg.create_posted_in_relation.assert_any_call("C123")
