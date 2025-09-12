@@ -329,6 +329,7 @@ function App() {
                           reactions: meta.reactions_processed || 0,
                           attachments: meta.attachments_processed || 0,
                         };
+                        // New: parsed vs processed for reactions (backend may provide reactions_parsed)
                         // Import-stage file-based progress
                         const jsonTotal = Number(meta.json_files_total) || 0;
                         const jsonDone = Number(meta.json_files_processed) || 0;
@@ -409,19 +410,15 @@ function App() {
                             </div>
                             <div className="small" style={{marginTop: 4, color:'#9ca3af'}}>
                               {inImport ? (
-                                singlePass ? (
-                                  j.current_stage === 'messages' && (totals.messages || 0) > 0
-                                    ? (<span>import msgs {processed.messages}/{totals.messages || 0}</span>)
-                                    : (<span>{j.current_stage}…</span>)
-                                ) : (
-                                  jsonTotal > 0
-                                    ? (<span>import files {jsonDone}/{jsonTotal}</span>)
-                                    : ((totals.messages || 0) > 0
-                                        ? (<span>import msgs {processed.messages}/{totals.messages || 0}</span>)
-                                        : (<span>import scanning…</span>))
-                                )
+                                jsonTotal > 0
+                                  ? (<span>import files {jsonDone}/{jsonTotal}</span>)
+                                  : ((totals.messages || 0) > 0
+                                      ? (<span>import msgs {processed.messages}/{totals.messages || 0}</span>)
+                                      : (<span>import scanning…</span>))
                               ) : (
-                                <span>files {processed.attachments}/{totals.attachments || 0}, msgs {processed.messages}/{totals.messages || 0}, reactions {processed.reactions}/{totals.reactions || 0}</span>
+                                <span>
+                                  files {processed.attachments}/{totals.attachments || 0}, msgs {processed.messages}/{totals.messages || 0}, reactions {processed.reactions}/{totals.reactions || 0}
+                                </span>
                               )}
                             </div>
                             {expanded && (
