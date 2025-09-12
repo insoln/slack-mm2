@@ -19,6 +19,7 @@ class MessageCaches(TypedDict, total=False):
     user_mm_id_by_slack_id: Dict[str, str]
     username_by_slack_id: Dict[str, str]
     membership_seen: Set[Tuple[str, str]]
+    emoji_name_by_slack_name: Dict[str, str]
 
 
 class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
@@ -31,6 +32,7 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         #  - username_by_slack_id: dict[str, str]
         #  - membership_seen: set[tuple[str,str]] of (channel_id, user_id)
         self.caches: MessageCaches = caches or {}
+        # Cache with emoji_name_by_slack_name: dict[str, str] for Slack->Mattermost emoji mapping
 
     """
     Exports a Slack message to Mattermost via the plugin /import endpoint.
@@ -460,7 +462,9 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
             return text
         if t == "emoji":
             name = el.get("name") or ""
-            return f":{name}:" if name else ""
+            # Resolve custom emoji name from Slack to Mattermost
+            mattermost_name = await self._resolve_emoji_name_by_slack_name(name)
+            return f":{mattermost_name}:" if mattermost_name else f":{name}:"
         if t == "user":
             uid = el.get("user_id")
             uname = await self._resolve_username_by_slack_id(uid) if uid else None
@@ -743,3 +747,56 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         except Exception:  # noqa: BLE001
             return None
         return None
+
+    async def _resolve_emoji_name_by_slack_name(
+        self, slack_name: Optional[str]
+    ) -> Optional[str]:
+        """Resolve custom emoji name from Slack name to Mattermost name.
+        Checks if there's a custom_emoji entity for this Slack name and returns
+        the appropriate Mattermost name (which may be transliterated).
+        """
+        if not slack_name:
+            return None
+
+        # Check cache first
+        cache_emoji_names = self.caches.get("emoji_name_by_slack_name")
+        if isinstance(cache_emoji_names, dict):
+            cached_name = cache_emoji_names.get(slack_name)
+            if cached_name is not None:  # Could be empty string, which is valid
+                return cached_name
+
+        async with SessionLocal() as session:
+            # Look for custom emoji entity by slack_id
+            q = await session.execute(
+                select(Entity).where(
+                    (Entity.entity_type == "custom_emoji")
+                    & (Entity.slack_id == slack_name)
+                )
+            )
+            emoji_entity = q.scalar_one_or_none()
+
+            if emoji_entity is None:
+                # Not a custom emoji, use original name
+                mattermost_name = slack_name
+            else:
+                # Get the Mattermost emoji name from raw_data or transliterated name
+                raw = emoji_entity.raw_data or {}
+                mattermost_name = raw.get("name", slack_name)
+
+                # If the emoji was exported, it might have been transliterated
+                # Import the transliteration function to match the export logic
+                try:
+                    from app.services.export.custom_emoji_exporter import (
+                        transliterate_cyrillic,
+                    )
+
+                    mattermost_name = transliterate_cyrillic(mattermost_name)
+                except ImportError:
+                    # Fallback if import fails
+                    pass
+
+            # Cache the result
+            if isinstance(cache_emoji_names, dict):
+                cache_emoji_names[slack_name] = mattermost_name
+
+            return mattermost_name
