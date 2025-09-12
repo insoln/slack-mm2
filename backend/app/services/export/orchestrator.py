@@ -448,6 +448,7 @@ async def _export_messages_per_channel(job_id: int, mm_user_id: str) -> None:
         "user_mm_id_by_slack_id": {},
         "username_by_slack_id": {},
         "membership_seen": set(),
+        "emoji_name_by_slack_name": {},
     }
 
     async def _run_channel(ch_id: int, ents: list[Entity]):
