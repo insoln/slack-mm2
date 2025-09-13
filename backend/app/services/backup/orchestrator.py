@@ -5,7 +5,6 @@ from typing import Any, Dict, cast, Optional
 import os
 import glob
 import re
-import ijson
 
 from app.logging_config import backend_logger
 from app.models.base import SessionLocal
@@ -17,7 +16,6 @@ from app.services.export.orchestrator import orchestrate_mm_export
 from .users_import import parse_users
 from .channels_import import parse_channels_and_chats, find_channel_for_folder
 from .messages_import import parse_messages_and_related
-from .custom_emojis_import import parse_custom_emojis_from_export
 
 
 async def orchestrate_slack_import(zip_path: str):
@@ -148,39 +146,42 @@ async def orchestrate_slack_import(zip_path: str):
             for msg_file in glob.glob(os.path.join(folder_path, "*.json")):
                 try:
                     with open(msg_file, "r", encoding="utf-8") as f:
-                        for msg in ijson.items(f, "item"):
-                            raw = msg or {}
-                            counts["messages"] += 1
-                            for reaction in raw.get("reactions") or []:
-                                users_list = reaction.get("users") or []
-                                counts["reactions"] += len(users_list)
-                            for file_obj in raw.get("files") or []:
-                                url_private = file_obj.get("url_private")
-                                if url_private and str(url_private).startswith("https://files.slack.com"):
-                                    counts["attachments"] += 1
-                            text = raw.get("text") or ""
-                            for name in EMOJI_PATTERN.findall(text):
-                                seen_emoji.add(name)
-                            for a in raw.get("attachments") or []:
-                                for key in ("pretext", "title", "text", "fallback"):
-                                    val = a.get(key)
-                                    if isinstance(val, str):
-                                        for name in EMOJI_PATTERN.findall(val):
+                        data = json.load(f) or []
+                        if not isinstance(data, list):
+                            continue
+                    for raw in data:
+                        raw = raw or {}
+                        counts["messages"] += 1
+                        for reaction in raw.get("reactions") or []:
+                            users_list = reaction.get("users") or []
+                            counts["reactions"] += len(users_list)
+                        for file_obj in raw.get("files") or []:
+                            url_private = file_obj.get("url_private")
+                            if url_private and str(url_private).startswith("https://files.slack.com"):
+                                counts["attachments"] += 1
+                        text = raw.get("text") or ""
+                        for name in EMOJI_PATTERN.findall(text):
+                            seen_emoji.add(name)
+                        for a in raw.get("attachments") or []:
+                            for key in ("pretext", "title", "text", "fallback"):
+                                val = a.get(key)
+                                if isinstance(val, str):
+                                    for name in EMOJI_PATTERN.findall(val):
+                                        seen_emoji.add(name)
+                        for b in raw.get("blocks") or []:
+                            if isinstance(b, dict):
+                                if b.get("type") == "rich_text":
+                                    for el in b.get("elements", []) or []:
+                                        if isinstance(el, dict):
+                                            if el.get("type") in ("text", "mrkdwn", "plain_text"):
+                                                t = el.get("text") or ""
+                                                for name in EMOJI_PATTERN.findall(t):
+                                                    seen_emoji.add(name)
+                                else:
+                                    t = ((b.get("text") or {}).get("text") if isinstance(b.get("text"), dict) else None)
+                                    if t:
+                                        for name in EMOJI_PATTERN.findall(t):
                                             seen_emoji.add(name)
-                            for b in raw.get("blocks") or []:
-                                if isinstance(b, dict):
-                                    if b.get("type") == "rich_text":
-                                        for el in b.get("elements", []) or []:
-                                            if isinstance(el, dict):
-                                                if el.get("type") in ("text", "mrkdwn", "plain_text"):
-                                                    t = el.get("text") or ""
-                                                    for name in EMOJI_PATTERN.findall(t):
-                                                        seen_emoji.add(name)
-                                    else:
-                                        t = ((b.get("text") or {}).get("text") if isinstance(b.get("text"), dict) else None)
-                                        if t:
-                                            for name in EMOJI_PATTERN.findall(t):
-                                                seen_emoji.add(name)
                 except Exception as e:
                     backend_logger.error(f"Ошибка предподсчёта {msg_file}: {e}")
                     continue
@@ -196,14 +197,12 @@ async def orchestrate_slack_import(zip_path: str):
             if job:
                 meta = cast(Dict[str, Any], (job.meta or {}))
                 meta["totals"] = counts
+                # Simplified linear pipeline reflecting unified import
                 meta["stages"] = [
                     "extracting",
                     "users",
                     "channels",
-                    "messages",
-                    "emojis",
-                    "reactions",
-                    "attachments",
+                    "messages",  # unified (messages+reactions+attachments+emoji detection)
                     "exporting",
                     "done",
                 ]

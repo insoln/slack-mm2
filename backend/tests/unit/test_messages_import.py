@@ -20,14 +20,9 @@ async def test_parse_channel_messages_creates_entities(monkeypatch):
         messages_import.glob, "glob", lambda p: ["/fake/export/general/2024-01-01.json"]
     )
     # Мокаем open и json.load
-    m = mock_open(read_data="[]")
-    with patch("builtins.open", m):
-        # Patch ijson.items to yield our fake messages one by one
-        with patch(
-            "app.services.backup.messages_import.ijson.items",
-            return_value=iter(fake_messages),
-        ):
-            # Мокаем Message и его методы
+    # Вместо потокового ijson — подменяем json.load чтобы вернуть список сообщений
+    with patch("builtins.open", mock_open(read_data="[]")):
+        with patch("json.load", return_value=fake_messages):
             with patch("app.services.backup.messages_import.Message") as MockMessage:
                 mock_msg = MagicMock()
                 mock_msg.save_to_db = AsyncMock()
@@ -35,12 +30,10 @@ async def test_parse_channel_messages_creates_entities(monkeypatch):
                 mock_msg.create_posted_by_relation = AsyncMock()
                 mock_msg.create_thread_relation = AsyncMock()
                 MockMessage.side_effect = lambda **kwargs: mock_msg
-                # Запуск
-                result = await messages_import.parse_channel_messages(
-                    export_dir, folder_channel_map
+                summary = await messages_import.parse_messages_and_related(
+                    export_dir, folder_channel_map, emoji_list=None, job_id=None
                 )
-                # Проверки
-                assert result == 2
+                assert summary["messages"] == 2
                 assert MockMessage.call_count == 2
                 mock_msg.save_to_db.assert_any_call("C123")
                 mock_msg.create_posted_in_relation.assert_any_call("C123")

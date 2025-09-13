@@ -13,5 +13,5 @@ requests
 requests-toolbelt
 sqlalchemy
 asyncpg
-ijson
+	# ijson removed since legacy streaming is no longer needed
 aiosqlite

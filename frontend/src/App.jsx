@@ -216,6 +216,35 @@ function App() {
     }
   };
 
+  // Helper: render processed/total segments with optional parsed divergence
+  const renderPostImportLine = (totals, processed, parsed, divergence) => {
+    const order = [
+      { key: 'attachments', label: 'files' },
+      { key: 'messages', label: 'msgs' },
+      { key: 'reactions', label: 'reactions' },
+      { key: 'emojis', label: 'emojis' },
+    ];
+    const segs = [];
+    order.forEach(({ key, label }) => {
+      if (totals[key] === undefined) return; // skip if total not present
+      const base = (
+        <>
+          {label} {processed[key] || 0}/{totals[key] || 0}
+          {divergence[key] && (
+            <> (<span style={{ color: '#f59e0b' }} title={`Парсер уже обнаружил больше ${label} чем вставлено в БД`}>parsed {parsed[key]}</span>)</>
+          )}
+        </>
+      );
+      segs.push(base);
+    });
+    // Interleave commas
+    return segs.map((seg, idx) => (
+      <span key={idx}>
+        {idx > 0 && ', '} {seg}
+      </span>
+    ));
+  };
+
   return (
     <div className="app-shell">
       <Header title="Slack → Mattermost Importer" subtitle="Корпоративная панель управления" right={<StatusBadge status={error ? 'error' : status === 'ok' ? 'ok' : 'pending'} />} />
@@ -293,9 +322,19 @@ function App() {
                           reactions: meta.reactions_processed || 0,
                           attachments: meta.attachments_processed || 0,
                         };
-                        // New: parsed vs processed for reactions (backend may provide reactions_parsed)
-                        const reactionsParsed = meta.reactions_parsed || processed.reactions;
-                        const reactionsDiverged = reactionsParsed > processed.reactions;
+                        // Parsed counters (backend may provide *_parsed keys); fall back to processed if absent
+                        const parsed = {
+                          messages: meta.messages_parsed || processed.messages,
+                          reactions: meta.reactions_parsed || processed.reactions,
+                          attachments: meta.attachments_parsed || processed.attachments,
+                          emojis: meta.emojis_parsed || processed.emojis,
+                        };
+                        const divergence = {
+                          messages: parsed.messages > processed.messages,
+                          reactions: parsed.reactions > processed.reactions,
+                          attachments: parsed.attachments > processed.attachments,
+                          emojis: parsed.emojis > processed.emojis,
+                        };
                         // Import-stage file-based progress
                         const jsonTotal = Number(meta.json_files_total) || 0;
                         const jsonDone = Number(meta.json_files_processed) || 0;
@@ -347,16 +386,7 @@ function App() {
                                       ? (<span>import msgs {processed.messages}/{totals.messages || 0}</span>)
                                       : (<span>import scanning…</span>)))
                                 : (
-                                  <span>
-                                    files {processed.attachments}/{totals.attachments || 0},
-                                    {' '}msgs {processed.messages}/{totals.messages || 0},
-                                    {' '}reactions {processed.reactions}/{totals.reactions || 0}
-                                    {reactionsDiverged && (
-                                      <>
-                                        {' '}(<span style={{color:'#f59e0b'}} title="Парсер уже обнаружил больше реакций, чем успели вставиться в БД">parsed {reactionsParsed}</span>)
-                                      </>
-                                    )}
-                                  </span>
+                                  <span>{renderPostImportLine(totals, processed, parsed, divergence)}</span>
                                 )}
                             </div>
                           </div>
