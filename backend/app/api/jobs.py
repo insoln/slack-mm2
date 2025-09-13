@@ -147,7 +147,7 @@ async def list_jobs(limit: int = 50):
             totals = meta.get("totals") or {}
             needs_totals = not totals or all(
                 (totals.get(k, 0) == 0)
-                for k in ("messages", "reactions", "attachments")
+                for k in ("users", "channels", "messages", "reactions", "attachments")
             )
             if needs_totals and row.id is not None:
                 q = await session.execute(
@@ -157,6 +157,8 @@ async def list_jobs(limit: int = 50):
                 )
                 derived = {et: cnt for et, cnt in q.all()}
                 totals = {
+                    "users": int(derived.get("user", 0)),
+                    "channels": int(derived.get("channel", 0)),
                     "messages": int(derived.get("message", 0)),
                     "reactions": int(derived.get("reaction", 0)),
                     "attachments": int(derived.get("attachment", 0)),
@@ -192,6 +194,14 @@ async def list_jobs(limit: int = 50):
                     "attachments",
                 }
                 if in_import_stage:
+                    meta["users_processed"] = max(
+                        int(meta.get("users_processed") or 0),
+                        nonpend.get("user", 0),
+                    )
+                    meta["channels_processed"] = max(
+                        int(meta.get("channels_processed") or 0),
+                        nonpend.get("channel", 0),
+                    )
                     meta["messages_processed"] = max(
                         int(meta.get("messages_processed") or 0),
                         nonpend.get("message", 0),
@@ -205,6 +215,8 @@ async def list_jobs(limit: int = 50):
                         nonpend.get("attachment", 0),
                     )
                 else:
+                    meta["users_processed"] = int(nonpend.get("user", 0))
+                    meta["channels_processed"] = int(nonpend.get("channel", 0))
                     # Export/done: reflect actual exported items only
                     meta["messages_processed"] = int(nonpend.get("message", 0))
                     meta["reactions_processed"] = int(nonpend.get("reaction", 0))
