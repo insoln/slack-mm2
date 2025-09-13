@@ -233,7 +233,6 @@ function App() {
     return needsPluginFix;
   })();
 
-
   return (
     <div className="app-shell">
       <Header title="Slack → Mattermost Importer" subtitle="Корпоративная панель управления" right={<StatusBadge status={error ? 'error' : status === 'ok' ? 'ok' : 'pending'} />} />
