@@ -227,6 +227,10 @@ function App() {
     const segs = [];
     order.forEach(({ key, label }) => {
       if (totals[key] === undefined) return; // skip if total not present
+      // UX: hide empty emojis 0/0 segment when there is no divergence and nothing processed/totaled
+      if (key === 'emojis' && (Number(totals[key]) || 0) === 0 && (Number(processed[key]) || 0) === 0 && !divergence[key]) {
+        return;
+      }
       const base = (
         <>
           {label} {processed[key] || 0}/{totals[key] || 0}
