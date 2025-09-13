@@ -128,6 +128,100 @@ async def export_worker(queue, mm_user_id):
         entity, exporter_cls = item
         exporter = None
         try:
+            # Dependency guard: skip entity if any required dependency not successfully exported
+            from app.models.entity_relation import EntityRelation
+            from app.models.status_enum import MappingStatus as _MS
+            from sqlalchemy import select as _select
+
+            async def _dependency_failed() -> tuple[bool, str | None]:
+                et = entity.entity_type
+                # Map entity_type -> list of (relation_type, direction, expected_dep_type)
+                # direction: 'out' means entity -> dep (relation.from_entity_id == entity.id)
+                #            'in' means dep -> entity (relation.to_entity_id == entity.id)
+                dep_map = {
+                    "message": [
+                        ("posted_in", "out", "channel"),
+                        ("posted_by", "in", "user"),
+                        ("thread_reply", "out", "message"),  # parent message
+                    ],
+                    "reaction": [
+                        ("reacted_to", "out", "message"),
+                        ("reacted_by", "in", "user"),
+                    ],
+                    "attachment": [
+                        ("attached_to", "out", "message"),
+                    ],
+                }
+                deps = dep_map.get(et)
+                if not deps:
+                    return (False, None)
+                # Need entity.id; if absent, fetch by slack_id
+                ent_id = getattr(entity, "id", None)
+                if ent_id is None:
+                    async with SessionLocal() as _s:
+                        q = await _s.execute(
+                            _select(Entity).where(
+                                (Entity.entity_type == et)
+                                & (Entity.slack_id == entity.slack_id)
+                            )
+                        )
+                        row = q.scalars().first()
+                        ent_id = getattr(row, "id", None)
+                if ent_id is None:
+                    return (False, None)
+                async with SessionLocal() as _s:
+                    # Collect candidate dependency rows in one query per relation type to reduce roundtrips
+                    for rel_type, direction, dep_type in deps:
+                        cond_rel = (EntityRelation.relation_type == rel_type)
+                        if direction == "out":
+                            cond_rel = cond_rel & (EntityRelation.from_entity_id == ent_id)
+                        else:  # 'in'
+                            cond_rel = cond_rel & (EntityRelation.to_entity_id == ent_id)
+                        rel_rows = await _s.execute(_select(EntityRelation).where(cond_rel))
+                        rels = rel_rows.scalars().all()
+                        if not rels:
+                            # If relation missing, treat as dependency unresolved => skip (cannot be correctly exported)
+                            return (True, f"missing relation {rel_type}")
+                        # For each relation pick the opposite side id
+                        dep_ids = []
+                        for r in rels:
+                            dep_ids.append(r.to_entity_id if direction == "out" else r.from_entity_id)
+                        if not dep_ids:
+                            return (True, f"empty dependency set {rel_type}")
+                        dep_rows = await _s.execute(
+                            _select(Entity).where(
+                                (Entity.id.in_(dep_ids)) & (Entity.entity_type == dep_type)
+                            )
+                        )
+                        deps_entities = dep_rows.scalars().all()
+                        if not deps_entities:
+                            return (True, f"missing dependency entities for {rel_type}")
+                        for de in deps_entities:
+                            st = getattr(de, "status", None)
+                            if st != _MS.success:
+                                return (True, f"dependency {dep_type}:{de.slack_id} status={st}")
+                return (False, None)
+
+            failed, reason = await _dependency_failed()
+            if failed:
+                from app.models.status_enum import MappingStatus as _MS2
+                # Mark skipped and continue
+                async with SessionLocal() as _sess:
+                    from sqlalchemy import update as _update
+                    where_cond = (Entity.entity_type == entity.entity_type) & (
+                        Entity.slack_id == entity.slack_id
+                    )
+                    await _sess.execute(
+                        _update(Entity)
+                        .where(where_cond)
+                        .values(status=_MS2.skipped, error_message=reason)
+                    )
+                    await _sess.commit()
+                backend_logger.info(
+                    f"Skip {entity.entity_type} {entity.slack_id} due to unmet dependency: {reason}"
+                )
+                queue.task_done()
+                continue
             # Передаем mm_user_id только для CustomEmojiExporter
             if exporter_cls == CustomEmojiExporter:
                 exporter = exporter_cls(entity, mm_user_id=mm_user_id)
