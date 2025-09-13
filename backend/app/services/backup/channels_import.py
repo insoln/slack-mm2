@@ -3,10 +3,12 @@ import json
 from typing import Optional
 from app.services.entities.channel import Channel
 from app.logging_config import backend_logger
+from app.services.backup.progress_tracker import make_tracker
 
 
 async def parse_channels_and_chats(extract_dir, job_id: Optional[int] = None):
     files = ["channels.json", "dms.json", "mpims.json", "groups.json"]
+    tracker = make_tracker(job_id, "channel")
     channel_objs = []
     for fname in files:
         path = os.path.join(extract_dir, fname)
@@ -25,10 +27,14 @@ async def parse_channels_and_chats(extract_dir, job_id: Optional[int] = None):
                     job_id=job_id,
                 )
                 channel_objs.append(channel)
+                await tracker.incr_parsed(1)
         else:
             backend_logger.info(f"{fname} не найден в {extract_dir}")
     for channel in channel_objs:
-        await channel.save_to_db()
+        ent = await channel.save_to_db()
+        if ent is not None:
+            await tracker.incr_processed(1)
+    await tracker.flush()
     return channel_objs
 
 

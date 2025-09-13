@@ -5,6 +5,7 @@ import glob
 import ijson
 from app.logging_config import backend_logger
 from app.services.entities.custom_emoji import CustomEmoji
+from app.services.backup.progress_tracker import make_tracker
 from app.models.base import SessionLocal
 from app.models.entity import Entity
 from sqlalchemy import select
@@ -160,6 +161,7 @@ async def parse_custom_emojis_from_export(
         return 0
 
     wanted: Set[str] = set()
+    tracker = make_tracker(None, "custom_emoji")  # No job_id passed currently; orchestrator may adapt later
     for folder, _ in folder_channel_map.items():
         folder_path = os.path.join(export_dir, folder)
         if not os.path.isdir(folder_path):
@@ -169,19 +171,28 @@ async def parse_custom_emojis_from_export(
                 with open(msg_file, "r", encoding="utf-8") as f:
                     for msg in ijson.items(f, "item"):
                         # From plain text
-                        wanted |= set(
+                        found_inline = set(
                             EMOJI_PATTERN.findall((msg or {}).get("text") or "")
                         )
+                        if found_inline:
+                            tracker.parsed += len(found_inline)  # accumulate locally; flush later
+                            wanted |= found_inline
                         # From blocks
-                        wanted |= _collect_emoji_from_blocks(
+                        block_found = _collect_emoji_from_blocks(
                             (msg or {}).get("blocks") or []
                         )
+                        if block_found:
+                            tracker.parsed += len(block_found)
+                            wanted |= block_found
                         # From classic attachments
                         for a in (msg or {}).get("attachments", []) or []:
                             for key in ("pretext", "title", "text", "fallback"):
                                 val = a.get(key)
                                 if isinstance(val, str):
-                                    wanted |= set(EMOJI_PATTERN.findall(val))
+                                    inline_att = set(EMOJI_PATTERN.findall(val))
+                                    if inline_att:
+                                        tracker.parsed += len(inline_att)
+                                        wanted |= inline_att
             except Exception as e:
                 backend_logger.error(
                     f"Ошибка чтения {msg_file} при сборе custom emojis: {e}"
@@ -216,7 +227,9 @@ async def parse_custom_emojis_from_export(
         ent = await emoji_entity.save_to_db()
         if ent is not None:
             created += 1
+            await tracker.incr_processed(1)
             if progress:
                 await progress(1)
     backend_logger.info(f"Импортировано кастомных эмодзи из экспорта: {created}")
+    await tracker.flush()
     return created

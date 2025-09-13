@@ -1,13 +1,16 @@
 import os
-from app.services.entities.reaction import Reaction
 import glob
 import ijson
 import time
 from typing import Callable, Awaitable, Optional, List, Tuple
+
+from sqlalchemy import text as _text
+
+from app.services.entities.reaction import Reaction
 from app.services.entities.custom_emoji import CustomEmoji
 from app.logging_config import backend_logger
 from app.models.base import SessionLocal
-from sqlalchemy import text as _text
+from app.services.backup.progress_tracker import make_tracker
 
 
 def _extract_reactions_from_message(message):
@@ -124,14 +127,10 @@ async def parse_reactions_from_export(
     progress: Optional[Callable[[int], Awaitable[None]]] = None,
     job_id=None,
 ) -> int:
-    """Stream files and import reactions.
+    """Stream and import reactions using generic ProgressTracker.
 
-    Optimizations added:
-      - Optional batching (env: REACTIONS_BATCH_SIZE, REACTIONS_BULK=1)
-      - Throttled progress updates (env: REACTIONS_PROGRESS_FLUSH_INTERVAL_SEC)
-      - Reduced per-reaction round trips (bulk INSERT + post-processing of relations)
-
-    Falls back to legacy per-row behavior if batching env not enabled (to minimize risk).
+    Adds unified parsed vs processed counters (reactions_parsed / reactions_processed)
+    via ProgressTracker, while retaining batching optimization.
     """
     try:
         batch_size = int(os.environ.get("REACTIONS_BATCH_SIZE", "0") or 0)
@@ -143,10 +142,8 @@ async def parse_reactions_from_export(
     except Exception:
         progress_interval = 2.0
 
-    # inserted_count == reactions actually persisted (legacy reactions_processed)
-    inserted_count = 0
-    # parsed_count == reactions encountered while scanning JSON (may run ahead of inserts in bulk mode)
-    parsed_count = 0
+    tracker = make_tracker(job_id, "reaction")
+    inserted_count = 0  # still returned for caller compatibility
     custom_emoji_names = set()
     last_progress_emit = time.time()
 
@@ -154,38 +151,12 @@ async def parse_reactions_from_export(
     batch_rows: List[Tuple[str,str,dict]] = []  # (slack_id, emoji_name, raw_data)
 
     async def _emit_meta_progress(force: bool = False):
-        """Persist parsed/processed counters into import_jobs.meta (throttled).
-
-        We keep backwards compatibility: `reactions_processed` continues to reflect inserted_count.
-        New field: `reactions_parsed`.
-        """
+        """Delegate to tracker.flush if interval elapsed or forced (backwards compat)."""
         nonlocal last_progress_emit
-        if job_id is None:
-            return
         now = time.time()
-        if not force and (now - last_progress_emit) < progress_interval:
-            return
-        from sqlalchemy import text as _t
-        try:
-            async with SessionLocal() as s:
-                await s.execute(
-                    _t(
-                        """
-                        UPDATE import_jobs
-                        SET meta = COALESCE(meta, '{}'::jsonb)
-                            || jsonb_build_object(
-                                'reactions_parsed', :parsed,
-                                'reactions_processed', :inserted
-                            )
-                        WHERE id = :job_id
-                        """
-                    ),
-                    {"parsed": int(parsed_count), "inserted": int(inserted_count), "job_id": job_id},
-                )
-                await s.commit()
+        if force or (now - last_progress_emit) >= progress_interval:
+            await tracker.flush()
             last_progress_emit = now
-        except Exception:
-            pass
 
     async def _flush_batch(force: bool = False):
         nonlocal batch_rows, inserted_count, last_progress_emit
@@ -277,7 +248,7 @@ async def parse_reactions_from_export(
                                 reaction_data["composite_id"] = f"{ts}_{name}"
                                 slack_id = f"{ts}_{name}_{user_id}"
                                 # Count parsed immediately (for all modes)
-                                parsed_count += 1
+                                await tracker.incr_parsed(1)
                                 if bulk_enabled:
                                     batch_rows.append((slack_id, name, reaction_data))
                                 else:
@@ -295,10 +266,9 @@ async def parse_reactions_from_export(
                                         await reaction_entity.create_reacted_by_relation()
                                         await reaction_entity.create_reacted_to_relation()
                                         inserted_count += 1
+                                        await tracker.incr_processed(1)
                                         if progress:
                                             await progress(1)
-                                        # Emit meta occasionally (throttled)
-                                        await _emit_meta_progress()
                                 if emoji_list and name in emoji_list and emoji_list[name]:
                                     custom_emoji_names.add(name)
                         if bulk_enabled:
@@ -333,6 +303,6 @@ async def parse_reactions_from_export(
             backend_logger.error(f"Не удалось сохранить кастомный эмодзи {name}: {e}")
 
     backend_logger.info(
-        f"Импорт реакций завершён: parsed={parsed_count}, inserted={inserted_count} (bulk={'on' if bulk_enabled else 'off'})"
+        f"Импорт реакций завершён: parsed={tracker.parsed}, inserted={inserted_count} (bulk={'on' if bulk_enabled else 'off'})"
     )
     return inserted_count

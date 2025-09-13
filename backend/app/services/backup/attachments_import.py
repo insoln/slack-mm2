@@ -4,6 +4,7 @@ import os
 import glob
 import ijson
 from typing import Callable, Awaitable, Optional
+from app.services.backup.progress_tracker import make_tracker
 
 
 async def parse_attachments_from_messages(export_dir, message_entities):
@@ -45,6 +46,7 @@ async def parse_attachments_from_export(
 ) -> int:
     """Stream files in export and create attachment entities/relations incrementally."""
     total = 0
+    tracker = make_tracker(job_id, "attachment")
     for folder, _ in folder_channel_map.items():
         folder_path = os.path.join(export_dir, folder)
         if not os.path.isdir(folder_path):
@@ -63,6 +65,7 @@ async def parse_attachments_from_export(
                                 and url_private.startswith("https://files.slack.com")
                             ):
                                 continue
+                            await tracker.incr_parsed(1)
                             attachment = Attachment(
                                 slack_id=slack_id,
                                 mattermost_id=None,
@@ -75,6 +78,7 @@ async def parse_attachments_from_export(
                             if ent is not None:
                                 await attachment.create_attached_to_relation(message_ts)
                                 total += 1
+                                await tracker.incr_processed(1)
                                 if progress:
                                     await progress(1)
             except Exception as e:
@@ -83,4 +87,5 @@ async def parse_attachments_from_export(
                 )
                 continue
     backend_logger.info(f"Импортировано аттачментов из экспорта: {total}")
+    await tracker.flush()
     return total
