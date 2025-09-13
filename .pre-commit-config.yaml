@@ -1,0 +1,27 @@
+repos:
+  - repo: https://github.com/psf/black
+    rev: 24.4.2
+    hooks:
+      - id: black
+        language_version: python3
+        additional_dependencies: []
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: detect-private-key
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+  - repo: local
+    hooks:
+      - id: pytest-unit-fast
+        name: pytest (unit fast)
+        entry: bash -c 'cd backend && pytest tests/unit -q'
+        language: system
+        pass_filenames: false
+        stages: [commit]
+        always_run: false
+        # Make this hook optional (skip with: SKIP=pytest-unit-fast git commit ...)
+        # If it becomes too slow, contributors can skip or we can restrict patterns later
+        verbose: true

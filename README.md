@@ -72,6 +72,33 @@
 - Для запуска тестов с покрытием: `pytest --cov=app --cov-report=term-missing`
 - В CI эти проверки выполняются автоматически (см. .github/workflows/backend-ci.yml) 
 
+## Pre-commit хуки
+
+Чтобы автоматически проверять стиль и базовые ошибки перед коммитом, добавлен файл `.pre-commit-config.yaml`.
+
+Установка и активация (один раз):
+```bash
+pip install -r backend/requirements.txt  # содержит pre-commit
+pre-commit install
+```
+
+Что запускается при `git commit`:
+- `black` — автоформатирование Python
+- `end-of-file-fixer`, `trailing-whitespace`, `detect-private-key`, `check-added-large-files`
+- Опциональный быстрый юнит-тест хук (`pytest-unit-fast`) — можно пропустить: `SKIP=pytest-unit-fast git commit -m "msg"`
+
+Ручной прогон для всего репозитория (рекомендуется после больших refactor):
+```bash
+pre-commit run --all-files
+```
+
+Добавление нового hook:
+1. Открыть `.pre-commit-config.yaml`
+2. Добавить запись, указать `rev` (фиксированную версию)
+3. `pre-commit autoupdate` (по желанию) и закоммитить изменения.
+
+Если CI падает на format step — сначала локально запустить `pre-commit run --all-files` и повторить коммит.
+
 ## Логгирование
 - Конфигурация логгирования вынесена в `app/logging_config.py`.
 - Формат логов: время, уровень, имя логгера, сообщение.
