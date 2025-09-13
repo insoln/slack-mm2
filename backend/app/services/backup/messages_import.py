@@ -50,7 +50,10 @@ async def parse_messages_and_related(
     if message_bulk_size is None:
         try:
             import os as _os
-            message_bulk_size = int(_os.environ.get("IMPORT_MESSAGES_BULK_SIZE", "500") or 500)
+
+            message_bulk_size = int(
+                _os.environ.get("IMPORT_MESSAGES_BULK_SIZE", "500") or 500
+            )
         except Exception:
             message_bulk_size = 500
 
@@ -58,7 +61,10 @@ async def parse_messages_and_related(
     if reaction_bulk_size is None:
         try:
             import os as _os
-            reaction_bulk_size = int(_os.environ.get("IMPORT_REACTIONS_BULK_SIZE", "1000") or 1000)
+
+            reaction_bulk_size = int(
+                _os.environ.get("IMPORT_REACTIONS_BULK_SIZE", "1000") or 1000
+            )
         except Exception:
             reaction_bulk_size = 1000
 
@@ -66,7 +72,10 @@ async def parse_messages_and_related(
     if attachment_bulk_size is None:
         try:
             import os as _os
-            attachment_bulk_size = int(_os.environ.get("IMPORT_ATTACHMENTS_BULK_SIZE", "500") or 500)
+
+            attachment_bulk_size = int(
+                _os.environ.get("IMPORT_ATTACHMENTS_BULK_SIZE", "500") or 500
+            )
         except Exception:
             attachment_bulk_size = 500
 
@@ -74,14 +83,18 @@ async def parse_messages_and_related(
     pending_messages: list[dict] = []  # each: {slack_id, raw, channel_id}
     pending_reactions: list[dict] = []  # each: {slack_id, raw, msg_ts}
     pending_attachments: list[dict] = []  # each: {slack_id, raw, message_ts}
-    pending_relations: list[tuple] = []  # tuples of (from_entity_id, to_entity_id, relation_type)
+    pending_relations: list[tuple] = (
+        []
+    )  # tuples of (from_entity_id, to_entity_id, relation_type)
 
     # Lock to protect shared accumulators + flush operations under concurrency
     batch_lock = asyncio.Lock()
 
     # Allow tuning relation batch size via env
     try:
-        REL_BATCH_SIZE = int(os.environ.get("IMPORT_RELATIONS_BATCH_SIZE", "2000") or 2000)
+        REL_BATCH_SIZE = int(
+            os.environ.get("IMPORT_RELATIONS_BATCH_SIZE", "2000") or 2000
+        )
     except Exception:
         REL_BATCH_SIZE = 2000
 
@@ -93,6 +106,7 @@ async def parse_messages_and_related(
         try:
             from sqlalchemy import text as _text
             from app.models.base import SessionLocal
+
             values_parts = []
             params = {}
             for idx, (f_id, t_id, r_type) in enumerate(pending_relations):
@@ -114,10 +128,13 @@ async def parse_messages_and_related(
                 f"relations_batch_flush size>=1 ms={(time.perf_counter()-t0_rel)*1000:.2f}"
             )
         except Exception as re:
-            backend_logger.error(f"Bulk relation insert failed, fallback sequential: {re}")
+            backend_logger.error(
+                f"Bulk relation insert failed, fallback sequential: {re}"
+            )
             try:
                 from app.models.entity_relation import EntityRelation
                 from app.models.base import SessionLocal
+
                 async with SessionLocal() as session:
                     for f_id, t_id, r_type in pending_relations:
                         try:
@@ -144,6 +161,7 @@ async def parse_messages_and_related(
         try:
             from sqlalchemy import text as _text
             from app.models.base import SessionLocal
+
             values_sql_parts = []
             params = {}
             for idx, rec in enumerate(pending_messages):
@@ -177,6 +195,7 @@ async def parse_messages_and_related(
             from sqlalchemy import select as _select
             from app.models.base import SessionLocal as _SessionLocal
             from app.models.entity import Entity as _Entity
+
             async with _SessionLocal() as _session:
                 channel_cache = {}
                 user_cache = {}
@@ -213,7 +232,10 @@ async def parse_messages_and_related(
                             _select(_Entity).where(
                                 (_Entity.entity_type == "channel")
                                 & (_Entity.slack_id == channel_id)
-                                & ((_Entity.job_id == job_id) | (_Entity.job_id.is_(None)))
+                                & (
+                                    (_Entity.job_id == job_id)
+                                    | (_Entity.job_id.is_(None))
+                                )
                             )
                         )
                         ch_ent = q.scalar_one_or_none()
@@ -223,14 +245,19 @@ async def parse_messages_and_related(
                     if ch_id:
                         pending_relations.append((ent_id, ch_id, "posted_in"))
                     # posted_by
-                    user_id = (raw_msg or {}).get("user") or (raw_msg or {}).get("bot_id")
+                    user_id = (raw_msg or {}).get("user") or (raw_msg or {}).get(
+                        "bot_id"
+                    )
                     if user_id:
                         if user_id not in user_cache:
                             q = await _session.execute(
                                 _select(_Entity).where(
                                     (_Entity.entity_type == "user")
                                     & (_Entity.slack_id == user_id)
-                                    & ((_Entity.job_id == job_id) | (_Entity.job_id.is_(None)))
+                                    & (
+                                        (_Entity.job_id == job_id)
+                                        | (_Entity.job_id.is_(None))
+                                    )
                                 )
                             )
                             u_ent = q.scalar_one_or_none()
@@ -245,7 +272,9 @@ async def parse_messages_and_related(
                     if thread_ts and thread_ts != ts:
                         parent_id = message_id_cache.get(thread_ts)
                         if parent_id:
-                            pending_relations.append((ent_id, parent_id, "thread_reply"))
+                            pending_relations.append(
+                                (ent_id, parent_id, "thread_reply")
+                            )
                     if len(pending_relations) >= REL_BATCH_SIZE:
                         await _flush_relations_batch()
             pending_messages.clear()
@@ -253,7 +282,9 @@ async def parse_messages_and_related(
                 f"messages_batch_flush size={count_inserted} final={final} ms={(time.perf_counter()-t0)*1000:.2f}"
             )
         except Exception as be:
-            backend_logger.error(f"Bulk insert messages batch failed (fallback row mode next iteration): {be}")
+            backend_logger.error(
+                f"Bulk insert messages batch failed (fallback row mode next iteration): {be}"
+            )
             # Fallback: insert each individually (reuse old logic)
             for rec in pending_messages:
                 raw_msg = rec["raw"]
@@ -276,7 +307,9 @@ async def parse_messages_and_related(
                         total_messages += 1
                         await msg_tracker.incr_processed(1)
                 except Exception as ie:
-                    backend_logger.error(f"Row insert fallback failed for message {slack_id}: {ie}")
+                    backend_logger.error(
+                        f"Row insert fallback failed for message {slack_id}: {ie}"
+                    )
             pending_messages.clear()
 
     async def _flush_reactions_batch(final: bool = False):
@@ -287,6 +320,7 @@ async def parse_messages_and_related(
         try:
             from sqlalchemy import text as _text
             from app.models.base import SessionLocal
+
             values_sql_parts = []
             params = {}
             for idx, rec in enumerate(pending_reactions):
@@ -319,6 +353,7 @@ async def parse_messages_and_related(
             from sqlalchemy import select as _select_r
             from app.models.base import SessionLocal as _SessionLocal_r
             from app.models.entity import Entity as _Entity_r
+
             async with _SessionLocal_r() as _session_r:
                 user_cache = {}
                 message_cache = {}
@@ -336,7 +371,10 @@ async def parse_messages_and_related(
                                 _select_r(_Entity_r).where(
                                     (_Entity_r.entity_type == "user")
                                     & (_Entity_r.slack_id == user_id)
-                                    & ((_Entity_r.job_id == job_id) | (_Entity_r.job_id.is_(None)))
+                                    & (
+                                        (_Entity_r.job_id == job_id)
+                                        | (_Entity_r.job_id.is_(None))
+                                    )
                                 )
                             )
                             u_ent = q.scalar_one_or_none()
@@ -353,7 +391,10 @@ async def parse_messages_and_related(
                                 _select_r(_Entity_r).where(
                                     (_Entity_r.entity_type == "message")
                                     & (_Entity_r.slack_id == ts)
-                                    & ((_Entity_r.job_id == job_id) | (_Entity_r.job_id.is_(None)))
+                                    & (
+                                        (_Entity_r.job_id == job_id)
+                                        | (_Entity_r.job_id.is_(None))
+                                    )
                                 )
                             )
                             m_ent = q.scalar_one_or_none()
@@ -369,7 +410,9 @@ async def parse_messages_and_related(
                 f"reactions_batch_flush size={count_inserted} final={final} ms={(time.perf_counter()-t0)*1000:.2f}"
             )
         except Exception as be:
-            backend_logger.error(f"Bulk insert reactions batch failed (fallback row mode next iteration): {be}")
+            backend_logger.error(
+                f"Bulk insert reactions batch failed (fallback row mode next iteration): {be}"
+            )
             for rec in pending_reactions:
                 slack_id = rec["slack_id"]
                 raw_r = rec["raw"]
@@ -389,7 +432,9 @@ async def parse_messages_and_related(
                         await r_entity.create_reacted_to_relation()
                         await reaction_tracker.incr_processed(1)
                 except Exception as ie:
-                    backend_logger.error(f"Row insert fallback failed for reaction {slack_id}: {ie}")
+                    backend_logger.error(
+                        f"Row insert fallback failed for reaction {slack_id}: {ie}"
+                    )
             pending_reactions.clear()
 
     async def _flush_attachments_batch(final: bool = False):
@@ -400,6 +445,7 @@ async def parse_messages_and_related(
         try:
             from sqlalchemy import text as _text
             from app.models.base import SessionLocal
+
             values_sql_parts = []
             params = {}
             for idx, rec in enumerate(pending_attachments):
@@ -432,6 +478,7 @@ async def parse_messages_and_related(
             from sqlalchemy import select as _select_a
             from app.models.base import SessionLocal as _SessionLocal_a
             from app.models.entity import Entity as _Entity_a
+
             async with _SessionLocal_a() as _session_a:
                 message_cache = {}
                 for rec in pending_attachments:
@@ -445,7 +492,10 @@ async def parse_messages_and_related(
                             _select_a(_Entity_a).where(
                                 (_Entity_a.entity_type == "message")
                                 & (_Entity_a.slack_id == msg_ts)
-                                & ((_Entity_a.job_id == job_id) | (_Entity_a.job_id.is_(None)))
+                                & (
+                                    (_Entity_a.job_id == job_id)
+                                    | (_Entity_a.job_id.is_(None))
+                                )
                             )
                         )
                         m_ent = q.scalar_one_or_none()
@@ -461,7 +511,9 @@ async def parse_messages_and_related(
                 f"attachments_batch_flush size={count_inserted} final={final} ms={(time.perf_counter()-t0)*1000:.2f}"
             )
         except Exception as be:
-            backend_logger.error(f"Bulk insert attachments batch failed (fallback row mode next iteration): {be}")
+            backend_logger.error(
+                f"Bulk insert attachments batch failed (fallback row mode next iteration): {be}"
+            )
             for rec in pending_attachments:
                 slack_id = rec["slack_id"]
                 raw_a = rec["raw"]
@@ -481,7 +533,9 @@ async def parse_messages_and_related(
                         await a_entity.create_attached_to_relation(msg_ts)
                         await attach_tracker.incr_processed(1)
                 except Exception as ie:
-                    backend_logger.error(f"Row insert fallback failed for attachment {slack_id}: {ie}")
+                    backend_logger.error(
+                        f"Row insert fallback failed for attachment {slack_id}: {ie}"
+                    )
             pending_attachments.clear()
 
     async def _process_channel(folder: str, channel: dict):
@@ -501,7 +555,9 @@ async def parse_messages_and_related(
                     try:
                         data = json.load(f) or []
                         if not isinstance(data, list):
-                            backend_logger.error(f"Формат файла {msg_file} не список — пропуск")
+                            backend_logger.error(
+                                f"Формат файла {msg_file} не список — пропуск"
+                            )
                             continue
                     except Exception as je:
                         backend_logger.error(f"Ошибка парсинга JSON {msg_file}: {je}")
@@ -512,13 +568,17 @@ async def parse_messages_and_related(
                         if not slack_id:
                             continue
                         await msg_tracker.incr_parsed(1)
-                        has_related = bool((msg or {}).get("files")) or bool((msg or {}).get("reactions"))
+                        has_related = bool((msg or {}).get("files")) or bool(
+                            (msg or {}).get("reactions")
+                        )
                         async with batch_lock:
-                            pending_messages.append({
-                                "slack_id": slack_id,
-                                "raw": msg,
-                                "channel_id": channel_id,
-                            })
+                            pending_messages.append(
+                                {
+                                    "slack_id": slack_id,
+                                    "raw": msg,
+                                    "channel_id": channel_id,
+                                }
+                            )
                             if has_related and pending_messages:
                                 await _flush_messages_batch()
                             if len(pending_messages) >= (message_bulk_size or 500):
@@ -527,16 +587,23 @@ async def parse_messages_and_related(
                         for file_obj in (msg or {}).get("files") or []:
                             slack_aid = file_obj.get("id")
                             url_private = file_obj.get("url_private")
-                            if not slack_aid or not (url_private and url_private.startswith("https://files.slack.com")):
+                            if not slack_aid or not (
+                                url_private
+                                and url_private.startswith("https://files.slack.com")
+                            ):
                                 continue
                             await attach_tracker.incr_parsed(1)
                             async with batch_lock:
-                                pending_attachments.append({
-                                    "slack_id": slack_aid,
-                                    "raw": file_obj,
-                                    "message_ts": slack_id,
-                                })
-                                if len(pending_attachments) >= (attachment_bulk_size or 500):
+                                pending_attachments.append(
+                                    {
+                                        "slack_id": slack_aid,
+                                        "raw": file_obj,
+                                        "message_ts": slack_id,
+                                    }
+                                )
+                                if len(pending_attachments) >= (
+                                    attachment_bulk_size or 500
+                                ):
                                     await _flush_attachments_batch()
                         # Reactions
                         for reaction in (msg or {}).get("reactions") or []:
@@ -557,14 +624,22 @@ async def parse_messages_and_related(
                                     except Exception:
                                         pass
                                 async with batch_lock:
-                                    pending_reactions.append({
-                                        "slack_id": f"{slack_id}_{r_name}_{user_id}",
-                                        "raw": reaction_data,
-                                        "msg_ts": slack_id,
-                                    })
-                                    if len(pending_reactions) >= (reaction_bulk_size or 1000):
+                                    pending_reactions.append(
+                                        {
+                                            "slack_id": f"{slack_id}_{r_name}_{user_id}",
+                                            "raw": reaction_data,
+                                            "msg_ts": slack_id,
+                                        }
+                                    )
+                                    if len(pending_reactions) >= (
+                                        reaction_bulk_size or 1000
+                                    ):
                                         await _flush_reactions_batch()
-                                if emoji_list and r_name in emoji_list and emoji_list[r_name]:
+                                if (
+                                    emoji_list
+                                    and r_name in emoji_list
+                                    and emoji_list[r_name]
+                                ):
                                     local_emoji_names.add(r_name)
                         # Emoji scans (no shared state except custom_emoji_names set — safe without lock as GIL + set operations atomic enough; still to be safe use lock when adding many?)
                         text = (msg or {}).get("text") or ""
@@ -580,13 +655,21 @@ async def parse_messages_and_related(
                             if isinstance(blk, dict):
                                 if blk.get("type") == "rich_text":
                                     for el in blk.get("elements", []) or []:
-                                        if isinstance(el, dict) and el.get("type") in ("text", "mrkdwn", "plain_text"):
-                                            for name in EMOJI_PATTERN.findall(el.get("text") or ""):
+                                        if isinstance(el, dict) and el.get("type") in (
+                                            "text",
+                                            "mrkdwn",
+                                            "plain_text",
+                                        ):
+                                            for name in EMOJI_PATTERN.findall(
+                                                el.get("text") or ""
+                                            ):
                                                 local_emoji_names.add(name)
                                 else:
                                     txt_obj = blk.get("text")
                                     if isinstance(txt_obj, dict):
-                                        for name in EMOJI_PATTERN.findall(txt_obj.get("text") or ""):
+                                        for name in EMOJI_PATTERN.findall(
+                                            txt_obj.get("text") or ""
+                                        ):
                                             local_emoji_names.add(name)
                         if total_messages % batch_log_every == 0 and total_messages:
                             backend_logger.debug(
@@ -595,7 +678,9 @@ async def parse_messages_and_related(
                             if progress_messages:
                                 await progress_messages(batch_log_every)
                     except Exception as ie:
-                        backend_logger.error(f"Ошибка обработки сообщения в {msg_file}: {ie}")
+                        backend_logger.error(
+                            f"Ошибка обработки сообщения в {msg_file}: {ie}"
+                        )
                 if file_progress:
                     try:
                         await file_progress(1)
@@ -621,10 +706,15 @@ async def parse_messages_and_related(
             await _process_channel(folder, channel)
     else:
         sem = asyncio.Semaphore(channel_conc)
+
         async def _guarded(folder, channel):
             async with sem:
                 await _process_channel(folder, channel)
-        tasks = [asyncio.create_task(_guarded(folder, channel)) for folder, channel in folder_channel_map.items()]
+
+        tasks = [
+            asyncio.create_task(_guarded(folder, channel))
+            for folder, channel in folder_channel_map.items()
+        ]
         await asyncio.gather(*tasks)
 
     # Flush remaining messages

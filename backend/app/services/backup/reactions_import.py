@@ -136,9 +136,14 @@ async def parse_reactions_from_export(
         batch_size = int(os.environ.get("REACTIONS_BATCH_SIZE", "0") or 0)
     except Exception:
         batch_size = 0
-    bulk_enabled = os.environ.get("REACTIONS_BULK", "0") in ("1", "true", "TRUE") and batch_size > 0
+    bulk_enabled = (
+        os.environ.get("REACTIONS_BULK", "0") in ("1", "true", "TRUE")
+        and batch_size > 0
+    )
     try:
-        progress_interval = float(os.environ.get("REACTIONS_PROGRESS_FLUSH_INTERVAL_SEC", "2"))
+        progress_interval = float(
+            os.environ.get("REACTIONS_PROGRESS_FLUSH_INTERVAL_SEC", "2")
+        )
     except Exception:
         progress_interval = 2.0
 
@@ -148,7 +153,7 @@ async def parse_reactions_from_export(
     last_progress_emit = time.time()
 
     # Accumulators when bulk mode is ON
-    batch_rows: List[Tuple[str,str,dict]] = []  # (slack_id, emoji_name, raw_data)
+    batch_rows: List[Tuple[str, str, dict]] = []  # (slack_id, emoji_name, raw_data)
 
     async def _emit_meta_progress(force: bool = False):
         """Delegate to tracker.flush if interval elapsed or forced (backwards compat)."""
@@ -190,7 +195,9 @@ async def parse_reactions_from_export(
                 await session.execute(_text(sql), params)
                 await session.commit()
         except Exception as e:
-            backend_logger.error(f"Bulk insert reactions failed, fallback row mode for this batch: {e}")
+            backend_logger.error(
+                f"Bulk insert reactions failed, fallback row mode for this batch: {e}"
+            )
             # Fallback: row-by-row legacy path
             for slack_id, _emoji, raw in batch_rows:
                 try:
@@ -207,7 +214,9 @@ async def parse_reactions_from_export(
                         await reaction_entity.create_reacted_by_relation()
                         await reaction_entity.create_reacted_to_relation()
                 except Exception as ie:
-                    backend_logger.error(f"Row fallback failed for reaction {slack_id}: {ie}")
+                    backend_logger.error(
+                        f"Row fallback failed for reaction {slack_id}: {ie}"
+                    )
         # Progress accounting (batch size) — optimistic, relations created lazily in fallback only.
         inc = len(batch_rows)
         inserted_count += inc
@@ -269,11 +278,17 @@ async def parse_reactions_from_export(
                                         await tracker.incr_processed(1)
                                         if progress:
                                             await progress(1)
-                                if emoji_list and name in emoji_list and emoji_list[name]:
+                                if (
+                                    emoji_list
+                                    and name in emoji_list
+                                    and emoji_list[name]
+                                ):
                                     custom_emoji_names.add(name)
                         if bulk_enabled:
                             # Flush if batch full or time exceeded
-                            if len(batch_rows) >= batch_size or (time.time() - last_progress_emit >= progress_interval):
+                            if len(batch_rows) >= batch_size or (
+                                time.time() - last_progress_emit >= progress_interval
+                            ):
                                 await _flush_batch()
                         else:
                             # In legacy mode, opportunistically emit meta progress

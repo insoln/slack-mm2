@@ -161,7 +161,9 @@ async def parse_custom_emojis_from_export(
         return 0
 
     wanted: Set[str] = set()
-    tracker = make_tracker(None, "custom_emoji")  # No job_id passed currently; orchestrator may adapt later
+    tracker = make_tracker(
+        None, "custom_emoji"
+    )  # No job_id passed currently; orchestrator may adapt later
     for folder, _ in folder_channel_map.items():
         folder_path = os.path.join(export_dir, folder)
         if not os.path.isdir(folder_path):
@@ -175,7 +177,9 @@ async def parse_custom_emojis_from_export(
                             EMOJI_PATTERN.findall((msg or {}).get("text") or "")
                         )
                         if found_inline:
-                            tracker.parsed += len(found_inline)  # accumulate locally; flush later
+                            tracker.parsed += len(
+                                found_inline
+                            )  # accumulate locally; flush later
                             wanted |= found_inline
                         # From blocks
                         block_found = _collect_emoji_from_blocks(

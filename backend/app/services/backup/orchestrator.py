@@ -70,7 +70,13 @@ async def orchestrate_slack_import(zip_path: str):
 
         # Helper to count json files (for file-level progress bar)
         def _json_files_count(base_dir: str) -> tuple[int, dict[str, bool]]:
-            top_files = ["users.json", "channels.json", "groups.json", "dms.json", "mpims.json"]
+            top_files = [
+                "users.json",
+                "channels.json",
+                "groups.json",
+                "dms.json",
+                "mpims.json",
+            ]
             presence: dict[str, bool] = {}
             total = 0
             for fname in top_files:
@@ -91,7 +97,9 @@ async def orchestrate_slack_import(zip_path: str):
             if job:
                 meta = cast(Dict[str, Any], (job.meta or {}))
                 meta["json_files_total"] = int(json_total)
-                meta["json_files_processed"] = int(meta.get("json_files_processed", 0) or 0)
+                meta["json_files_processed"] = int(
+                    meta.get("json_files_processed", 0) or 0
+                )
                 setattr(job, "meta", meta)  # type: ignore[attr-defined]
                 await session.commit()
 
@@ -103,13 +111,17 @@ async def orchestrate_slack_import(zip_path: str):
                 await session.commit()
         backend_logger.info("Архив распакован. Начинаю парсинг пользователей…")
         users = await parse_users(extract_dir, job_id=job_id)
-        backend_logger.info(f"Импорт пользователей завершён. Всего обработано: {len(users)}")
+        backend_logger.info(
+            f"Импорт пользователей завершён. Всего обработано: {len(users)}"
+        )
         if json_presence.get("users.json"):
             async with SessionLocal() as session:
                 job = await session.get(ImportJob, job_id)
                 if job:
                     meta = cast(Dict[str, Any], (job.meta or {}))
-                    meta["json_files_processed"] = int(meta.get("json_files_processed", 0)) + 1
+                    meta["json_files_processed"] = (
+                        int(meta.get("json_files_processed", 0)) + 1
+                    )
                     setattr(job, "meta", meta)  # type: ignore[attr-defined]
                     await session.commit()
 
@@ -120,7 +132,9 @@ async def orchestrate_slack_import(zip_path: str):
                 setattr(job, "current_stage", "channels")
                 await session.commit()
         channels = await parse_channels_and_chats(extract_dir, job_id=job_id)
-        backend_logger.info(f"Импорт каналов завершён. Всего обработано: {len(channels)}")
+        backend_logger.info(
+            f"Импорт каналов завершён. Всего обработано: {len(channels)}"
+        )
         top_channel_files = ["channels.json", "groups.json", "dms.json", "mpims.json"]
         add = sum(1 for f in top_channel_files if json_presence.get(f))
         if add:
@@ -128,16 +142,27 @@ async def orchestrate_slack_import(zip_path: str):
                 job = await session.get(ImportJob, job_id)
                 if job:
                     meta = cast(Dict[str, Any], (job.meta or {}))
-                    meta["json_files_processed"] = int(meta.get("json_files_processed", 0)) + add
+                    meta["json_files_processed"] = (
+                        int(meta.get("json_files_processed", 0)) + add
+                    )
                     setattr(job, "meta", meta)  # type: ignore[attr-defined]
                     await session.commit()
 
         folder_channel_map = find_channel_for_folder(extract_dir, [])
-        backend_logger.debug(f"Сопоставление папок и каналов/групп/чатов: {len(folder_channel_map)}")
+        backend_logger.debug(
+            f"Сопоставление папок и каналов/групп/чатов: {len(folder_channel_map)}"
+        )
 
         # 5. Pre-count totals for progress UI
         EMOJI_PATTERN = re.compile(r":([a-z0-9_+\-]+):")
-        counts = {"users": len(users), "channels": len(channels), "messages": 0, "reactions": 0, "attachments": 0, "emojis": 0}
+        counts = {
+            "users": len(users),
+            "channels": len(channels),
+            "messages": 0,
+            "reactions": 0,
+            "attachments": 0,
+            "emojis": 0,
+        }
         seen_emoji: set[str] = set()
         for folder, _ in folder_channel_map.items():
             folder_path = os.path.join(extract_dir, folder)
@@ -157,7 +182,9 @@ async def orchestrate_slack_import(zip_path: str):
                             counts["reactions"] += len(users_list)
                         for file_obj in raw.get("files") or []:
                             url_private = file_obj.get("url_private")
-                            if url_private and str(url_private).startswith("https://files.slack.com"):
+                            if url_private and str(url_private).startswith(
+                                "https://files.slack.com"
+                            ):
                                 counts["attachments"] += 1
                         text = raw.get("text") or ""
                         for name in EMOJI_PATTERN.findall(text):
@@ -173,12 +200,20 @@ async def orchestrate_slack_import(zip_path: str):
                                 if b.get("type") == "rich_text":
                                     for el in b.get("elements", []) or []:
                                         if isinstance(el, dict):
-                                            if el.get("type") in ("text", "mrkdwn", "plain_text"):
+                                            if el.get("type") in (
+                                                "text",
+                                                "mrkdwn",
+                                                "plain_text",
+                                            ):
                                                 t = el.get("text") or ""
                                                 for name in EMOJI_PATTERN.findall(t):
                                                     seen_emoji.add(name)
                                 else:
-                                    t = ((b.get("text") or {}).get("text") if isinstance(b.get("text"), dict) else None)
+                                    t = (
+                                        (b.get("text") or {}).get("text")
+                                        if isinstance(b.get("text"), dict)
+                                        else None
+                                    )
                                     if t:
                                         for name in EMOJI_PATTERN.findall(t):
                                             seen_emoji.add(name)
@@ -215,9 +250,11 @@ async def orchestrate_slack_import(zip_path: str):
             if job:
                 setattr(job, "current_stage", "messages")
                 await session.commit()
+
             # progress callbacks only for legacy file + message increments
             async def _progress_msg_files(delta_files: int):
                 from sqlalchemy import text
+
                 async with SessionLocal() as s:
                     await s.execute(
                         text(
@@ -254,6 +291,7 @@ async def orchestrate_slack_import(zip_path: str):
         # 8. Done
         async with SessionLocal() as session:
             from sqlalchemy import update
+
             await session.execute(
                 update(ImportJob)
                 .where(ImportJob.id == job_id)
@@ -264,6 +302,7 @@ async def orchestrate_slack_import(zip_path: str):
         backend_logger.error(f"Оркестратор импорта завершился с ошибкой: {e}")
         async with SessionLocal() as session:
             from sqlalchemy import update
+
             await session.execute(
                 update(ImportJob)
                 .where(ImportJob.id == job_id)
@@ -277,7 +316,9 @@ async def orchestrate_slack_import(zip_path: str):
             shutil.rmtree(extract_dir)
             backend_logger.debug(f"Временная директория {extract_dir} удалена")
         except Exception as e:  # noqa: BLE001
-            backend_logger.error(f"Ошибка при удалении временной директории {extract_dir}: {e}")
+            backend_logger.error(
+                f"Ошибка при удалении временной директории {extract_dir}: {e}"
+            )
         # Remove extract_dir from meta
         try:
             async with SessionLocal() as session:
