@@ -1,6 +1,9 @@
 import os
 import glob
-import ijson
+try:  # ijson is optional; retained only for very large reaction streams if present.
+    import ijson  # type: ignore
+except Exception:  # pragma: no cover
+    ijson = None
 import time
 from typing import Callable, Awaitable, Optional, List, Tuple
 
@@ -140,10 +143,9 @@ async def parse_reactions_from_export(
         os.environ.get("REACTIONS_BULK", "0") in ("1", "true", "TRUE")
         and batch_size > 0
     )
+    # Progress flush interval now unified via ProgressTracker global env; retain local timing as a soft trigger only.
     try:
-        progress_interval = float(
-            os.environ.get("REACTIONS_PROGRESS_FLUSH_INTERVAL_SEC", "2")
-        )
+        progress_interval = float(os.environ.get("IMPORT_PROGRESS_FLUSH_INTERVAL_SEC", "2"))
     except Exception:
         progress_interval = 2.0
 
@@ -156,7 +158,7 @@ async def parse_reactions_from_export(
     batch_rows: List[Tuple[str, str, dict]] = []  # (slack_id, emoji_name, raw_data)
 
     async def _emit_meta_progress(force: bool = False):
-        """Delegate to tracker.flush if interval elapsed or forced (backwards compat)."""
+        """Delegate to tracker.flush if interval elapsed or forced."""
         nonlocal last_progress_emit
         now = time.time()
         if force or (now - last_progress_emit) >= progress_interval:
@@ -236,7 +238,17 @@ async def parse_reactions_from_export(
         for msg_file in glob.glob(os.path.join(folder_path, "*.json")):
             try:
                 with open(msg_file, "r", encoding="utf-8") as f:
-                    for msg in ijson.items(f, "item"):
+                    iterator = None
+                    if ijson is not None:
+                        iterator = ijson.items(f, "item")
+                    else:  # fallback to full load (files expected small enough after unification)
+                        import json as _json
+                        try:
+                            data = _json.load(f) or []
+                        except Exception:
+                            data = []
+                        iterator = data
+                    for msg in iterator:
                         raw_msg = msg or {}
                         ts = raw_msg.get("ts")
                         reactions_list = raw_msg.get("reactions", []) or []

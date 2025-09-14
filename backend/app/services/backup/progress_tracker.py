@@ -18,21 +18,17 @@ KEY_MAP = {
 
 
 def _get_interval(entity_type: str) -> float:
-    # Global override
+    """Resolve flush interval.
+
+    Simplified: we no longer support per-type legacy overrides; a single
+    global interval applies to all entity types. Default remains 2s.
+    """
     try:
         global_interval = os.environ.get("IMPORT_PROGRESS_FLUSH_INTERVAL_SEC")
         if global_interval:
             return float(global_interval)
     except Exception:
         pass
-    # Backwards compatible per-type legacy envs (currently only reactions had one)
-    if entity_type == "reaction":
-        try:
-            r = os.environ.get("REACTIONS_PROGRESS_FLUSH_INTERVAL_SEC")
-            if r:
-                return float(r)
-        except Exception:
-            pass
     return 2.0
 
 

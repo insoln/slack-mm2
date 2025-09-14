@@ -373,6 +373,30 @@ function App() {
                         const barBg = inImport
                           ? 'linear-gradient(90deg, #22c55e, #16a34a)'
                           : 'linear-gradient(90deg, var(--primary), var(--primary-600))';
+
+                        // NEW: pull speed/eta from liveStats.jobs (SSE) by id
+                        let jobLive = null;
+                        if (liveStats && Array.isArray(liveStats.jobs)) {
+                          jobLive = liveStats.jobs.find(x => x.id === j.id);
+                        }
+                        let aggSpeed = null;
+                        let aggEta = null;
+                        if (jobLive && jobLive.speed && jobLive.speed.aggregate) {
+                          aggSpeed = jobLive.speed.aggregate.eps;
+                          aggEta = jobLive.speed.aggregate.eta_sec;
+                        }
+                        const fmtEta = (sec) => {
+                          if (sec == null) return null;
+                          if (sec < 1) return '<1s';
+                          const m = Math.floor(sec / 60);
+                          const s = Math.floor(sec % 60);
+                          if (m === 0) return `${s}s`;
+                          const h = Math.floor(m / 60);
+                          const mm = m % 60;
+                          if (h === 0) return `${m}m ${s}s`;
+                          return `${h}h ${mm}m`; // coarse
+                        };
+
                         return (
                           <div key={j.id} style={{border:'1px solid var(--border)', borderRadius:8, padding:8}}>
                             <div className="small" style={{display:'flex', justifyContent:'space-between', marginBottom:6}}>
@@ -393,6 +417,16 @@ function App() {
                                   <span>{renderPostImportLine(totals, processed, parsed, divergence)}</span>
                                 )}
                             </div>
+                            {(!inImport) && (
+                              <div className="small" style={{marginTop: 4, color:'#9ca3af'}}>
+                                {aggSpeed != null && aggSpeed > 0 && (
+                                  <>
+                                    скорость ~{aggSpeed.toFixed(1)} entities/s{aggEta != null && <> • ETA {fmtEta(aggEta)}</>}
+                                  </>
+                                )}
+                                {aggSpeed === 0 && aggEta == null && <span>скорость рассчитывается…</span>}
+                              </div>
+                            )}
                           </div>
                         );
                       })}

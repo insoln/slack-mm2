@@ -567,6 +567,10 @@ async def parse_messages_and_related(
                         slack_id = (msg or {}).get("ts")
                         if not slack_id:
                             continue
+                        # Ensure channel_id field is present inside raw message for invariant / backfill
+                        if channel_id and isinstance(msg, dict) and "channel_id" not in msg:
+                            # Non-destructive enrichment of raw message
+                            msg["channel_id"] = channel_id
                         await msg_tracker.incr_parsed(1)
                         has_related = bool((msg or {}).get("files")) or bool(
                             (msg or {}).get("reactions")
@@ -760,5 +764,4 @@ async def parse_messages_and_related(
     }
 
 
-## Legacy interface parse_channel_messages removed.
-## Use parse_messages_and_related exclusively.
+## End of module.
