@@ -71,9 +71,11 @@ class ExporterBase(ABC):
         et = self.entity.entity_type
         dep_map: dict[str, list[tuple[str, str, str]]] = {
             "message": [
+                # For messages only channel + author are hard requirements.
+                # Thread parent (thread_reply) is conditional: only enforced
+                # for replies that actually have a relation row.
                 ("posted_in", "out", "channel"),
                 ("posted_by", "in", "user"),
-                ("thread_reply", "out", "message"),
             ],
             "reaction": [
                 ("reacted_to", "out", "message"),
@@ -130,6 +132,35 @@ class ExporterBase(ABC):
                             True,
                             f"dependency {dep_type}:{de.slack_id} status={getattr(de, 'status', None)}",
                         )
+
+            # Extra conditional dependency logic for message replies: if a message has
+            # an outgoing thread_reply relation, its parent message MUST be success.
+            if et == "message":
+                cond_rel = (
+                    (EntityRelation.relation_type == "thread_reply")
+                    & (EntityRelation.from_entity_id == ent_id)
+                )
+                rel_rows = await _s.execute(_select(EntityRelation).where(cond_rel))
+                reply_rels = rel_rows.scalars().all()
+                if reply_rels:
+                    parent_ids = [r.to_entity_id for r in reply_rels]
+                    if not parent_ids:
+                        return (True, "empty dependency set thread_reply")
+                    dep_rows = await _s.execute(
+                        _select(_Entity).where(
+                            (_Entity.id.in_(parent_ids))
+                            & (_Entity.entity_type == "message")
+                        )
+                    )
+                    parents = dep_rows.scalars().all()
+                    if not parents:
+                        return (True, "missing thread parent message")
+                    for pm in parents:
+                        if getattr(pm, "status", None) != _MS.success:
+                            return (
+                                True,
+                                f"dependency message:{pm.slack_id} status={getattr(pm, 'status', None)}",
+                            )
         return (False, None)
 
 
