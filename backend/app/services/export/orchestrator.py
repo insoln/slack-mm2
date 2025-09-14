@@ -460,19 +460,46 @@ async def _export_messages_per_channel(job_id: int, mm_user_id: str) -> None:
     }
 
     async def _run_channel(ch_id: int, ents: list[Entity]):
+        """Export messages for a single channel in two phases:
+        1. Root messages (those not in reply_set) first.
+        2. Reply messages afterwards (ensures parent post_ids are mostly available).
+        Optional timing logs if EXPORT_MESSAGE_TIMINGS=1.
+        """
         async with sem:
+            roots: list[Entity] = []
+            replies: list[Entity] = []
             for e in ents:
-                exporter = MessageExporter(e, caches=caches)
-                try:
-                    await exporter.export_entity()
-                except Exception as ex:  # noqa: BLE001
-                    backend_logger.error(
-                        f"Ошибка экспорта сообщения {e.slack_id} в канале {ch_id}: {ex}"
-                    )
+                if e.id in reply_set:
+                    replies.append(e)
+                else:
+                    roots.append(e)
+
+            timing = os.getenv("EXPORT_MESSAGE_TIMINGS") in ("1", "true", "True")
+
+            async def _export_list(lst: list[Entity], phase: str):
+                for e in lst:
+                    exporter = MessageExporter(e, caches=caches)
+                    start = asyncio.get_event_loop().time() if timing else None
                     try:
-                        await exporter.set_status("failed", error=str(ex))
-                    except Exception:
-                        pass
+                        await exporter.export_entity()
+                        if timing and start is not None:
+                            dt = asyncio.get_event_loop().time() - start
+                            backend_logger.debug(
+                                f"[MSG_TIMING] job={job_id} channel={ch_id} phase={phase} slack_ts={e.slack_id} dt={dt:.3f}s"
+                            )
+                    except Exception as ex:  # noqa: BLE001
+                        backend_logger.error(
+                            f"Ошибка экспорта сообщения {e.slack_id} в канале {ch_id}: {ex}"
+                        )
+                        try:
+                            await exporter.set_status("failed", error=str(ex))
+                        except Exception:
+                            pass
+
+            # Phase 1: roots
+            await _export_list(roots, "roots")
+            # Phase 2: replies
+            await _export_list(replies, "replies")
 
     tasks = [
         asyncio.create_task(_run_channel(ch_id, ents)) for ch_id, ents in groups.items()
