@@ -383,3 +383,4 @@ async def parse_channel_messages(
         "attachments": attachments_count,
         "emojis": created_emojis if created_emojis else len(emojis_seen),
     }
+## End of module.
