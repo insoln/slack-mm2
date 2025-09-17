@@ -65,6 +65,28 @@ async def orchestrate_slack_import(zip_path: str):
 
         await extract_zip(zip_path, extract_dir)
 
+        # Detect nested root (archive packed with a single top-level directory)
+        try:
+            entries = [e for e in os.listdir(extract_dir) if not e.startswith(".")]
+            if len(entries) == 1:
+                candidate = os.path.join(extract_dir, entries[0])
+                if os.path.isdir(candidate):
+                    # Heuristic: if expected top-level files are inside candidate — descend
+                    expected = {
+                        "users.json",
+                        "channels.json",
+                        "groups.json",
+                        "dms.json",
+                    }
+                    inner = set(os.listdir(candidate))
+                    if expected.intersection(inner):
+                        backend_logger.info(
+                            f"Обнаружена вложенная корневая директория '{entries[0]}', переключаю base на неё"
+                        )
+                        extract_dir = candidate
+        except Exception:
+            pass
+
         # Slack emoji list once
         emoji_list = await get_slack_emoji_list()
 
@@ -164,6 +186,12 @@ async def orchestrate_slack_import(zip_path: str):
             "emojis": 0,
         }
         seen_emoji: set[str] = set()
+        # Allowed URL prefixes for attachments (mirrors messages_import logic)
+        prefixes_env = os.environ.get(
+            "IMPORT_URL_PREFIXES", "https://files.slack.com,http://test-files:9000/"
+        )
+        allowed_prefixes = [p.strip() for p in prefixes_env.split(",") if p.strip()]
+
         for folder, _ in folder_channel_map.items():
             folder_path = os.path.join(extract_dir, folder)
             if not os.path.isdir(folder_path):
@@ -181,9 +209,9 @@ async def orchestrate_slack_import(zip_path: str):
                             users_list = reaction.get("users") or []
                             counts["reactions"] += len(users_list)
                         for file_obj in raw.get("files") or []:
-                            url_private = file_obj.get("url_private")
-                            if url_private and str(url_private).startswith(
-                                "https://files.slack.com"
+                            url_private = (file_obj or {}).get("url_private") or ""
+                            if url_private and any(
+                                url_private.startswith(p) for p in allowed_prefixes
                             ):
                                 counts["attachments"] += 1
                         text = raw.get("text") or ""
