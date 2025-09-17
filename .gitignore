@@ -16,7 +16,11 @@
 *.swp
 
 # Test/Export data
-infra/test-data/
+# Ignore everything under test-data by default except curated mini dataset and builder script
+infra/test-data/*
+!infra/test-data/slack-mini-backup/
+!infra/test-data/slack-mini-backup.zip
+!infra/test-data/build_mini_backup_zip.py
 *.log
 
 # Mattermost plugin build artifacts

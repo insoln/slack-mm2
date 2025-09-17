@@ -1,0 +1,20 @@
+[
+  {
+    "id": "U0001",
+    "team_id": "T0001",
+    "name": "alice",
+    "real_name": "Alice Example",
+    "profile": {"email": "alice@example.com"},
+    "is_bot": false,
+    "deleted": false
+  },
+  {
+    "id": "U0002",
+    "team_id": "T0001",
+    "name": "bob",
+    "real_name": "Bob Example",
+    "profile": {"email": "bob@example.com"},
+    "is_bot": false,
+    "deleted": false
+  }
+]
