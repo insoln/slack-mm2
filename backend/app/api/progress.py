@@ -24,8 +24,8 @@ async def progress_stream(interval: float = 2.0, window_sec: float = 8.0):
     """
 
     # Rolling window per job: job_id -> deque[(ts, {type: {pending:int, processed:int}})]
-    job_windows: Dict[int, Deque[tuple[float, Dict[str, Dict[str, int]]]]] = defaultdict(
-        lambda: deque(maxlen=50)
+    job_windows: Dict[int, Deque[tuple[float, Dict[str, Dict[str, int]]]]] = (
+        defaultdict(lambda: deque(maxlen=50))
     )
 
     job_scoped_types = ("message", "reaction", "attachment")
@@ -38,10 +38,12 @@ async def progress_stream(interval: float = 2.0, window_sec: float = 8.0):
             # Active jobs: queued or running
             jobs_rows = await session.execute(
                 select(ImportJob).where(
-                    ImportJob.status.in_([
-                        _JobStatus.queued,
-                        _JobStatus.running,
-                    ])
+                    ImportJob.status.in_(
+                        [
+                            _JobStatus.queued,
+                            _JobStatus.running,
+                        ]
+                    )
                 )
             )
             jobs = list(jobs_rows.scalars().all())
@@ -62,34 +64,47 @@ async def progress_stream(interval: float = 2.0, window_sec: float = 8.0):
                 )
                 .group_by(Entity.job_id, Entity.entity_type, Entity.status)
             )
-            out: Dict[int, Dict[str, Dict[str, int]]] = {int(getattr(j, "id")): {} for j in jobs}
+            out: Dict[int, Dict[str, Dict[str, int]]] = {
+                int(getattr(j, "id")): {} for j in jobs
+            }
             for job_id, etype, status, cnt in rows.all():
                 jdict = out.setdefault(int(job_id), {})
-                sdict = jdict.setdefault(etype, {st: 0 for st in (
-                    MappingStatus.pending,
-                    MappingStatus.skipped,
-                    MappingStatus.failed,
-                    MappingStatus.success,
-                )})
+                sdict = jdict.setdefault(
+                    etype,
+                    {
+                        st: 0
+                        for st in (
+                            MappingStatus.pending,
+                            MappingStatus.skipped,
+                            MappingStatus.failed,
+                            MappingStatus.success,
+                        )
+                    },
+                )
                 sdict[status] = cnt
             # Ensure missing types appear with zeroes
             for jid in out:
                 for t in job_scoped_types:
                     out[jid].setdefault(
                         t,
-                        {st: 0 for st in (
-                            MappingStatus.pending,
-                            MappingStatus.skipped,
-                            MappingStatus.failed,
-                            MappingStatus.success,
-                        )},
+                        {
+                            st: 0
+                            for st in (
+                                MappingStatus.pending,
+                                MappingStatus.skipped,
+                                MappingStatus.failed,
+                                MappingStatus.success,
+                            )
+                        },
                     )
             # Attach job metadata
             job_meta = {int(getattr(j, "id")): j for j in jobs}
             return [
                 {
                     "id": int(jid),
-                    "status": getattr(job_meta[jid].status, "value", job_meta[jid].status),
+                    "status": getattr(
+                        job_meta[jid].status, "value", job_meta[jid].status
+                    ),
                     "current_stage": job_meta[jid].current_stage,
                     "counts": counts,
                 }
@@ -164,6 +179,7 @@ async def progress_stream(interval: float = 2.0, window_sec: float = 8.0):
             "processed": total_processed,
         }
         return per_type, aggregate
+
     async def event_generator():
         # Initial lines to help proxies start streaming immediately
         yield ": init\n\n"

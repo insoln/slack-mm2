@@ -110,7 +110,7 @@ class ExporterBase(ABC):
             return (False, None)
         async with SessionLocal() as _s:
             for rel_type, direction, dep_type in deps:
-                cond_rel = (EntityRelation.relation_type == rel_type)
+                cond_rel = EntityRelation.relation_type == rel_type
                 if direction == "out":
                     cond_rel = cond_rel & (EntityRelation.from_entity_id == ent_id)
                 else:
@@ -147,9 +147,8 @@ class ExporterBase(ABC):
             # entities are success so we can include their file_ids now. If any are still
             # pending/failed/skipped -> skip the message for now; orchestrator loop will retry.
             if et == "message":
-                cond_rel = (
-                    (EntityRelation.relation_type == "thread_reply")
-                    & (EntityRelation.from_entity_id == ent_id)
+                cond_rel = (EntityRelation.relation_type == "thread_reply") & (
+                    EntityRelation.from_entity_id == ent_id
                 )
                 rel_rows = await _s.execute(_select(EntityRelation).where(cond_rel))
                 reply_rels = rel_rows.scalars().all()
@@ -175,9 +174,8 @@ class ExporterBase(ABC):
 
                 # Conditional attachment dependency inversion:
                 # Find attachments (from_entity attachment -> to_entity this message) relation 'attached_to'
-                cond_att = (
-                    (EntityRelation.relation_type == "attached_to")
-                    & (EntityRelation.to_entity_id == ent_id)
+                cond_att = (EntityRelation.relation_type == "attached_to") & (
+                    EntityRelation.to_entity_id == ent_id
                 )
                 att_rows = await _s.execute(_select(EntityRelation).where(cond_att))
                 att_rels = att_rows.scalars().all()

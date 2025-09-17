@@ -1,5 +1,6 @@
 import os
 import glob
+
 try:  # ijson is optional; retained only for very large reaction streams if present.
     import ijson  # type: ignore
 except Exception:  # pragma: no cover
@@ -145,7 +146,9 @@ async def parse_reactions_from_export(
     )
     # Progress flush interval now unified via ProgressTracker global env; retain local timing as a soft trigger only.
     try:
-        progress_interval = float(os.environ.get("IMPORT_PROGRESS_FLUSH_INTERVAL_SEC", "2"))
+        progress_interval = float(
+            os.environ.get("IMPORT_PROGRESS_FLUSH_INTERVAL_SEC", "2")
+        )
     except Exception:
         progress_interval = 2.0
 
@@ -243,6 +246,7 @@ async def parse_reactions_from_export(
                         iterator = ijson.items(f, "item")
                     else:  # fallback to full load (files expected small enough after unification)
                         import json as _json
+
                         try:
                             data = _json.load(f) or []
                         except Exception:
