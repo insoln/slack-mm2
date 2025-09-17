@@ -7,7 +7,7 @@
 - `orchestrator.py` — координация полного импорта (users, channels, messages+related, custom emojis и т.п.).
 - `progress_tracker.py` — унифицированные parsed/processed счётчики.
 
-Исторические специализированные импортёры (например, отдельный reactions_import) больше не используются — функциональность консолидирована в единый поток `parse_messages_and_related`.
+Специализированные частичные импортёры удалены — всё консолидировано в единый поток `parse_messages_and_related`.
 
 ## Упрощённый импорт
 

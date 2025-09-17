@@ -6,8 +6,8 @@ from app.models.entity import Entity
 def job_scoped_condition(base_cond, entity_type: str, job_id):
     """
     Build a condition adding job scoping rules:
-    - For job-specific types (message, reaction, attachment): restrict to the given job_id (or NULL if not provided).
-    - For global types (user, channel, custom_emoji): do not constrain by job_id (to pick up legacy/global rows).
+    - message / reaction / attachment: always scoped to the provided job_id (or restricted to NULL if job_id not set explicitly).
+    - user / channel / custom_emoji: treated as global reference data (shared across jobs) — no job filter applied.
     """
     if entity_type in ("message", "reaction", "attachment"):
         if job_id is not None:
