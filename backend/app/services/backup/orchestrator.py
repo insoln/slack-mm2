@@ -14,6 +14,7 @@ import glob
 import tempfile
 import shutil
 import time
+import asyncio
 from typing import Any, Dict, cast
 
 from sqlalchemy import text as _text
@@ -99,10 +100,10 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
         except Exception:  # pragma: no cover
             pass
 
-    # Slack emoji list for later stage
+    # Slack emoji list for later stage (single-pass usage)
     emoji_list = await get_slack_emoji_list()
 
-    # Helper placed here (needed before users stage completion logic)
+    # Helper to count JSON files for progress UI; supports flat archive only (validated earlier)
     def _json_files_count(base_dir: str) -> tuple[int, dict[str, bool]]:
         top_files = [
             "users.json",
@@ -118,6 +119,7 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
             presence[fname] = exists
             if exists:
                 total += 1
+        # Count per-channel message JSON files inside folders
         for entry in os.listdir(base_dir):
             p = os.path.join(base_dir, entry)
             if os.path.isdir(p):
@@ -125,15 +127,15 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
                     total += 1
         return total, presence
 
-        json_total, json_presence = _json_files_count(extract_dir)
-        async with SessionLocal() as session:
-            job = await session.get(ImportJob, job_id)
-            if job:
-                meta = cast(Dict[str, Any], (job.meta or {}))
-                meta["json_files_total"] = int(json_total)
-                meta.setdefault("json_files_processed", 0)
-                setattr(job, "meta", meta)  # type: ignore[attr-defined]
-                await session.commit()
+    json_total, json_presence = _json_files_count(extract_dir)
+    async with SessionLocal() as session:
+        job = await session.get(ImportJob, job_id)
+        if job:
+            meta = cast(Dict[str, Any], (job.meta or {}))
+            meta["json_files_total"] = int(json_total)
+            meta.setdefault("json_files_processed", 0)
+            setattr(job, "meta", meta)  # type: ignore[attr-defined]
+            await session.commit()
 
         # --- Users ---
         async with SessionLocal() as session:
