@@ -1,24 +1,22 @@
 import os
 import glob
 import ijson
-# NOTE: We keep streaming via ijson for large Slack daily files.
-# For small files (size <= IMPORT_ORJSON_THRESHOLD_KB) we optionally fall back to an orjson
-# fast path to avoid Python-level iteration overhead of ijson.
-try:
-    import orjson  # type: ignore  # ultra fast JSON for small-file fast path (optional dependency)
+import re
+import time
+from typing import Awaitable, Callable, Optional, List, Tuple
+
+try:  # Optional fast JSON for small files
+    import orjson  # type: ignore
 except Exception:  # pragma: no cover
     orjson = None  # type: ignore
+
+from app.logging_config import backend_logger
 from app.services.entities.message import Message
 from app.services.entities.reaction import Reaction
 from app.services.entities.attachment import Attachment
 from app.services.entities.custom_emoji import CustomEmoji
-import re
-import time
-from app.logging_config import backend_logger
-from typing import Awaitable, Callable, Optional, List, Tuple
 from app.models.base import SessionLocal
-from app.models.entity import Entity
-from sqlalchemy import select, text as _text
+from sqlalchemy import text as _text
 
 
 async def parse_channel_messages(
@@ -32,27 +30,17 @@ async def parse_channel_messages(
     counters_callback: Optional[Callable[[dict], Awaitable[None]]] = None,
     emoji_list: Optional[dict] = None,
 ):
-    """Stream-parse messages by JSON file and persist incrementally.
-    If single_pass is True, also persist reactions & attachments and collect custom emojis in one pass.
-    counters_callback (if provided) MUST now receive per-batch DELTAS only:
-        {
-           "messages": <delta_messages>,
-           "reactions": <delta_reactions>,
-           "attachments": <delta_attachments>,
-           "emojis": <cumulative_unique_emojis_seen_so_far OR delta?>
-        }
-    Rationale: orchestrator adds non-message counters atomically; providing cumulative values would overcount.
-    For emojis we pass the current unique total (acts as a max) because we only discover new unique names; orchestrator
-    uses max semantics (keeps greater of existing vs provided). Messages are already updated via the separate progress
-    callback; we still include the per-batch delta for symmetry / future use.
-    Returns dict of final cumulative counters.
+    """Stream parse Slack export channel message files.
+
+    Single pass mode persists messages + reactions + attachments and tracks emojis.
+    counters_callback receives PER-BATCH DELTAS (messages, reactions, attachments) and current unique emoji count.
     """
     if single_pass is None:
-        import os as _os
-        single_pass = _os.environ.get("IMPORT_SINGLE_PASS", "0") in ("1", "true", "TRUE")
+        single_pass = os.environ.get("IMPORT_SINGLE_PASS", "0") in ("1", "true", "TRUE")
 
     EMOJI_PATTERN = re.compile(r":([a-z0-9_+\-]+):")
-    # Allow env override of batch size (IMPORT_BATCH_SIZE) & meta throttling
+
+    # Allow env overrides
     try:
         env_batch = int(os.environ.get("IMPORT_BATCH_SIZE", "0") or 0)
         if env_batch > 0:
@@ -66,27 +54,24 @@ async def parse_channel_messages(
     reactions_count = 0
     attachments_count = 0
     emojis_seen: set[str] = set()
-    # Track last emitted cumulative counts so we can compute deltas for counters_callback
     last_emitted_reactions = 0
     last_emitted_attachments = 0
 
-    # Accumulators for batch persistence
     batch_messages: List[Message] = []
     batch_reactions: List[Reaction] = []
-    batch_attachments: List[Tuple[Attachment, str]] = []  # (attachment_entity, message_ts)
+    batch_attachments: List[Tuple[Attachment, str]] = []
     last_meta_emit = time.time()
 
     async def flush_batch(force: bool = False):
-        nonlocal batch_messages, batch_reactions, batch_attachments, last_meta_emit, reactions_count, attachments_count, last_emitted_reactions, last_emitted_attachments
+        nonlocal last_meta_emit, last_emitted_reactions, last_emitted_attachments
         if not force and len(batch_messages) < batch_size:
             return
         if not batch_messages and not batch_reactions and not batch_attachments:
             return
-        # Persist in a single session/transaction to minimize round-trips
+
         batch_mode_ok = True
         async with SessionLocal() as session:
             try:
-                # Prepare bulk values
                 def _row(entity_type, slack_id, raw_data, job):
                     return {
                         "entity_type": entity_type,
@@ -97,25 +82,32 @@ async def parse_channel_messages(
                         "status": "pending",
                         "error_message": None,
                     }
-                msg_rows = [_row(getattr(m,'entity_type','message'), getattr(m,'slack_id',None), getattr(m,'raw_data',None), getattr(m,'job_id',None)) for m in batch_messages]
+
+                msg_rows = [
+                    _row(getattr(m, "entity_type", "message"), getattr(m, "slack_id", None), getattr(m, "raw_data", None), getattr(m, "job_id", None))
+                    for m in batch_messages
+                ]
                 react_rows = []
                 for r in batch_reactions:
-                    rd = getattr(r, 'raw_data', None)
-                    if isinstance(rd, dict) and 'ts' not in rd and getattr(r, 'slack_id', None):
+                    rd = getattr(r, "raw_data", None)
+                    if isinstance(rd, dict) and "ts" not in rd and getattr(r, "slack_id", None):
                         try:
-                            rd['ts'] = str(getattr(r, 'slack_id')).split('_')[0]
+                            rd["ts"] = str(getattr(r, "slack_id")).split("_")[0]
                         except Exception:
                             pass
-                    react_rows.append(_row(getattr(r,'entity_type','reaction'), getattr(r,'slack_id',None), rd, getattr(r,'job_id',None)))
-                attach_rows = [_row(getattr(a,'entity_type','attachment'), getattr(a,'slack_id',None), getattr(a,'raw_data',None), getattr(a,'job_id',None)) for a,_ in batch_attachments]
+                    react_rows.append(_row(getattr(r, "entity_type", "reaction"), getattr(r, "slack_id", None), rd, getattr(r, "job_id", None)))
+                attach_rows = [
+                    _row(getattr(a, "entity_type", "attachment"), getattr(a, "slack_id", None), getattr(a, "raw_data", None), getattr(a, "job_id", None))
+                    for a, _ in batch_attachments
+                ]
                 all_rows = msg_rows + react_rows + attach_rows
                 if all_rows:
-                    # Use UNNEST via VALUES for simplicity; ON CONFLICT DO NOTHING relies on unique index
-                    # Build parameterized multi-row insert
                     values_sql_parts = []
                     params = {}
                     for idx, row in enumerate(all_rows):
-                        values_sql_parts.append(f"(:entity_type{idx}, :slack_id{idx}, :mattermost_id{idx}, :raw_data{idx}::jsonb, :job_id{idx}, :status{idx}, :error_message{idx})")
+                        values_sql_parts.append(
+                            f"(:entity_type{idx}, :slack_id{idx}, :mattermost_id{idx}, :raw_data{idx}::jsonb, :job_id{idx}, :status{idx}, :error_message{idx})"
+                        )
                         for k, v in row.items():
                             params[f"{k}{idx}"] = v
                     sql = f"""
@@ -129,82 +121,79 @@ async def parse_channel_messages(
                 backend_logger.error(f"Bulk insert failure, fallback to row mode: {e}")
                 batch_mode_ok = False
 
-        # After commit, create relations
+        # Relations (and row-mode fallback for messages)
         for m in batch_messages:
             try:
                 if not batch_mode_ok:
                     ch_id = getattr(m, "_channel_id", None)
                     if ch_id is None:
                         try:
-                            ch_id = (getattr(m, 'raw_data', {}) or {}).get('channel_id')
+                            raw_data = getattr(m, "raw_data", {}) or {}
+                            if isinstance(raw_data, dict):
+                                ch_id = raw_data.get("channel_id")
                         except Exception:
                             ch_id = None
                     try:
                         await m.save_to_db(ch_id)
                     except Exception:
                         pass
-                # Determine channel id: use stored attribute if raw_data is not a dict (mock case)
-                raw = getattr(m, 'raw_data', None)
-                if isinstance(raw, dict):
-                    ch_arg = raw.get('channel_id')
-                else:
-                    ch_arg = getattr(m, '_channel_id', None)
+                raw = getattr(m, "raw_data", None)
+                ch_arg = raw.get("channel_id") if isinstance(raw, dict) else getattr(m, "_channel_id", None)
                 await m.create_posted_in_relation(ch_arg)
                 await m.create_posted_by_relation()
                 await m.create_thread_relation()
             except Exception as e:
-                backend_logger.error(f"Связи для сообщения {getattr(m,'slack_id',None)}: {e}")
+                backend_logger.error(f"Связи для сообщения {getattr(m, 'slack_id', None)}: {e}")
         for r in batch_reactions:
             try:
                 await r.create_reacted_by_relation()
                 await r.create_reacted_to_relation()
             except Exception as e:
-                backend_logger.error(f"Связи для реакции {getattr(r,'slack_id',None)}: {e}")
+                backend_logger.error(f"Связи для реакции {getattr(r, 'slack_id', None)}: {e}")
         for a, msg_ts in batch_attachments:
             try:
                 await a.create_attached_to_relation(msg_ts)
             except Exception as e:
-                backend_logger.error(f"Связи для аттачмента {getattr(a,'slack_id',None)}: {e}")
+                backend_logger.error(f"Связи для аттачмента {getattr(a, 'slack_id', None)}: {e}")
 
         emitted_msgs = len(batch_messages)
         if emitted_msgs and progress:
-            await progress(emitted_msgs)
-        # Emit per-batch deltas for reactions/attachments (messages already handled separately but included for symmetry)
+            try:
+                await progress(emitted_msgs)
+            except Exception:
+                pass
         if single_pass and counters_callback:
-            # Compute deltas based on last emitted cumulative counts
             delta_reactions = reactions_count - last_emitted_reactions
             delta_attachments = attachments_count - last_emitted_attachments
-            # Update emitted trackers BEFORE callback to avoid double emission if callback raises
             last_emitted_reactions = reactions_count
             last_emitted_attachments = attachments_count
-            if (delta_reactions or delta_attachments or emitted_msgs):
+            if delta_reactions or delta_attachments or emitted_msgs:
                 try:
                     await counters_callback(
                         {
-                            "messages": emitted_msgs,  # delta
+                            "messages": emitted_msgs,
                             "reactions": max(0, delta_reactions),
                             "attachments": max(0, delta_attachments),
-                            # emojis: send current unique total (acts as a max value on orchestrator side)
                             "emojis": len(emojis_seen),
                         }
                     )
                 except Exception:
                     pass
+
         batch_messages.clear()
         batch_reactions.clear()
         batch_attachments.clear()
-        nonlocal last_meta_emit
+        nonlocal saved_count  # allow maybe_emit_meta to trigger repeated saves
         last_meta_emit = time.time()
 
     def maybe_emit_meta():
         return (time.time() - last_meta_emit) >= meta_interval_sec or (len(batch_messages) >= meta_every)
 
-    # If file smaller than threshold, we can load whole file and parse with orjson for speed.
-    orjson_threshold_kb = 0
+    # Fast-path threshold
     try:
         orjson_threshold_kb = int(os.environ.get("IMPORT_ORJSON_THRESHOLD_KB", "0") or 0)
     except Exception:
-        orjson_threshold_kb = 0
+        orjson_threshold_kb = 0  # type: ignore
 
     for folder, channel in folder_channel_map.items():
         backend_logger.debug(
@@ -221,26 +210,24 @@ async def parse_channel_messages(
         for msg_file in glob.glob(os.path.join(folder_path, "*.json")):
             backend_logger.debug(f"Чтение файла сообщений: {msg_file}")
             try:
-                file_size = 0
                 try:
                     file_size = os.path.getsize(msg_file)
                 except Exception:
-                    pass
+                    file_size = 0
                 use_fast_path = (
-                    orjson is not None and orjson_threshold_kb > 0 and file_size > 0 and file_size <= orjson_threshold_kb * 1024
+                    orjson is not None and file_size > 0 and "orjson_threshold_kb" in locals() and orjson_threshold_kb > 0 and file_size <= orjson_threshold_kb * 1024
                 )
                 if use_fast_path:
-                    # Fast path: read entire file (Slack daily file is JSON array) and iterate list
                     try:
                         with open(msg_file, "rb") as bf:
-                            data = bf.read()
-                        parsed = orjson.loads(data)  # type: ignore[union-attr]
+                            raw_bytes = bf.read()
+                        parsed = orjson.loads(raw_bytes)  # type: ignore[union-attr]
                         if not isinstance(parsed, list):
                             backend_logger.debug("Ожидался JSON-массив сообщений, получен другой тип — fallback ijson")
                             use_fast_path = False
                         else:
                             iterator = iter(parsed)
-                    except Exception as e:  # fallback to streaming
+                    except Exception as e:  # fallback
                         backend_logger.debug(f"orjson fast path error ({msg_file}): {e}; fallback to streaming")
                         use_fast_path = False
                 if not use_fast_path:
@@ -249,7 +236,7 @@ async def parse_channel_messages(
                 try:
                     for msg in iterator:  # type: ignore
                         try:
-                            slack_id = msg.get("ts")
+                            slack_id = (msg or {}).get("ts")
                             if not slack_id:
                                 continue
                             message_entity = Message(
@@ -260,12 +247,8 @@ async def parse_channel_messages(
                                 auto_save=False,
                                 job_id=job_id,
                             )
-                            if message_entity.raw_data is not None:
-                                try:
-                                    if isinstance(message_entity.raw_data, dict):
-                                        message_entity.raw_data.setdefault("channel_id", channel_id)
-                                except Exception:
-                                    pass
+                            if isinstance(message_entity.raw_data, dict):  # enrich channel id
+                                message_entity.raw_data.setdefault("channel_id", channel_id)
                             try:
                                 setattr(message_entity, "_channel_id", channel_id)
                             except Exception:
@@ -274,6 +257,7 @@ async def parse_channel_messages(
                             saved_count += 1
 
                             if single_pass:
+                                # Reactions
                                 for reaction in (msg or {}).get("reactions") or []:
                                     rname = reaction.get("name")
                                     if not rname:
@@ -294,6 +278,7 @@ async def parse_channel_messages(
                                         )
                                         batch_reactions.append(reaction_entity)
                                         reactions_count += 1
+                                # Attachments
                                 for file_obj in (msg or {}).get("files") or []:
                                     slack_file_id = file_obj.get("id")
                                     url_private = file_obj.get("url_private")
@@ -309,6 +294,7 @@ async def parse_channel_messages(
                                     )
                                     batch_attachments.append((attachment, slack_id))
                                     attachments_count += 1
+                                # Emojis discovery
                                 if emoji_list:
                                     text = (msg or {}).get("text") or ""
                                     for name in EMOJI_PATTERN.findall(text):
@@ -325,18 +311,15 @@ async def parse_channel_messages(
                                         if isinstance(b, dict):
                                             if b.get("type") == "rich_text":
                                                 for el in b.get("elements", []) or []:
-                                                    if isinstance(el, dict):
-                                                        if el.get("type") in ("text", "mrkdwn", "plain_text"):
-                                                            t = el.get("text") or ""
-                                                            for name in EMOJI_PATTERN.findall(t):
-                                                                if emoji_list.get(name):
-                                                                    emojis_seen.add(name)
+                                                    if isinstance(el, dict) and el.get("type") in ("text", "mrkdwn", "plain_text"):
+                                                        t = el.get("text") or ""
+                                                        for name in EMOJI_PATTERN.findall(t):
+                                                            if emoji_list.get(name):
+                                                                emojis_seen.add(name)
                                             else:
-                                                t = (
-                                                    (b.get("text") or {}).get("text")
-                                                    if isinstance(b.get("text"), dict)
-                                                    else None
-                                                )
+            										# plain text block variant
+                                                t_obj = b.get("text")
+                                                t = (t_obj or {}).get("text") if isinstance(t_obj, dict) else None
                                                 if t:
                                                     for name in EMOJI_PATTERN.findall(t):
                                                         if emoji_list.get(name):
@@ -344,10 +327,9 @@ async def parse_channel_messages(
 
                             if len(batch_messages) >= batch_size or maybe_emit_meta():
                                 await flush_batch(force=True)
-                        except Exception as e:
-                            backend_logger.error(f"Ошибка при сохранении сообщения из {msg_file}: {e}")
+                        except Exception as ie:
+                            backend_logger.error(f"Ошибка при сохранении сообщения из {msg_file}: {ie}")
                 finally:
-                    # Close file handle if streaming path used
                     try:
                         if not use_fast_path:
                             f.close()  # type: ignore
@@ -361,6 +343,7 @@ async def parse_channel_messages(
             except Exception as e:
                 backend_logger.error(f"Ошибка чтения {msg_file}: {e}")
                 continue
+
     await flush_batch(force=True)
     backend_logger.info(f"Импортировано сообщений: {saved_count}")
 
@@ -383,4 +366,4 @@ async def parse_channel_messages(
         "attachments": attachments_count,
         "emojis": created_emojis if created_emojis else len(emojis_seen),
     }
-## End of module.
+
