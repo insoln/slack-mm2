@@ -594,11 +594,20 @@ async def parse_messages_and_related(
                         # Attachments
                         for file_obj in (msg or {}).get("files") or []:
                             slack_aid = file_obj.get("id")
-                            url_private = file_obj.get("url_private")
-                            if not slack_aid or not (
-                                url_private
-                                and url_private.startswith("https://files.slack.com")
-                            ):
+                            url_private = file_obj.get("url_private") or ""
+                            # Allowed URL prefixes configurable via env (comma separated)
+                            prefixes_env = os.environ.get(
+                                "IMPORT_URL_PREFIXES",
+                                "https://files.slack.com,http://test-files:9000/",
+                            )
+                            allowed_prefixes = [
+                                p.strip() for p in prefixes_env.split(",") if p.strip()
+                            ]
+                            valid_url = any(
+                                url_private.startswith(pref)
+                                for pref in allowed_prefixes
+                            )
+                            if not slack_aid or not (url_private and valid_url):
                                 continue
                             await attach_tracker.incr_parsed(1)
                             async with batch_lock:

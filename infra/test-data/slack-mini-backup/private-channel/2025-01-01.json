@@ -13,7 +13,7 @@
         "title": "Image Png",
         "mimetype": "image/png",
         "filetype": "png",
-        "url_private": "https://files.slack.com/files-pri/T0001-FIMG1/image.png",
+  "url_private": "http://test-files:9000/slack-mini-backup/files/image.png",
         "size": 1234
       }
     ]

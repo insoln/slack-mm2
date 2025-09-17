@@ -13,7 +13,7 @@
         "title": "Example Text",
         "mimetype": "text/plain",
         "filetype": "text",
-        "url_private": "https://files.slack.com/files-pri/T0001-FTXT1/example.txt",
+  "url_private": "http://test-files:9000/slack-mini-backup/files/example.txt",
         "size": 20
       }
     ]
