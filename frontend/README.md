@@ -24,36 +24,40 @@
 ## Политика сборки (ВАЖНО)
 Локальная сборка через `npm run build` вне Docker НЕ поддерживается. Используем только `docker compose`
 
-## Как запустить (dev)
-```bash
-docker compose -f infra/docker-compose.dev.yml up --build frontend backend
-```
-Особенности dev:
-* Vite dev server внутри контейнера (hot reload).
-* Код примонтирован как volume — редактируете локально, браузер обновляется.
-* Node_modules кэшируются в named volume (см. compose), чтобы ускорить повторные сборки.
-
-## Production build
-Продакшн-слой также собираем только через Docker. Пример (если понадобится отдельный прод-слой для фронта):
-```bash
-docker build -t slack-mm2-frontend:prod -f frontend/Dockerfile .
-```
-А затем можно запустить статический сервер (если Dockerfile настроен на `npm run build` + serve, либо через nginx). На текущий момент достаточно dev-компоновки, т.к. интерфейс внутренний.
-
-## Частые задачи
-| Задача | Команда |
-|--------|---------|
-| Обновить контейнеры после изменения package.json | `docker compose -f infra/docker-compose.dev.yml build frontend` |
-| Принудительно пересобрать без кеша | `docker compose -f infra/docker-compose.dev.yml build --no-cache frontend` |
-| Перезапустить только фронт | `docker compose -f infra/docker-compose.dev.yml up -d frontend` |
-
-## Тестирование изменений фронта
-1. Внести правку в `src/`.
-2. Убедиться что авто‑пересборка прошла (логи контейнера `frontend`).
-3. Проверить UI в браузере.
-4. При изменении зависимостей: пересобрать образ фронта (см. таблицу выше).
+## Эфемерная dev-среда (коротко)
+Dev контейнер каждый старт выполняет `npm ci` в рабочей директории (`/workspace`), исходники монтируются read‑only. Это гарантирует чистые зависимоcти и отсутствие «залипших» node_modules. Для добавления пакета: обновите `package.json` локально и пересоберите образ `frontend` через compose build.
 
 ## TODO (возможные улучшения)
 - Добавить отдельный production compose профиль.
 - Вынести общие ENV (API base URL) в `.env` с примером.
 - Добавить e2e smoke тест (Playwright) в CI.
+- Кеш npm через buildkit cache mount.
+
+#### Обновление зависимостей
+```bash
+npm update                # локально, затем rebuild
+docker compose -f infra/docker-compose.dev.yml build frontend
+docker compose -f infra/docker-compose.dev.yml up -d frontend --force-recreate
+```
+
+#### Ограничения
+- Старт медленнее (полный `npm ci` ~7–9s) — плата за чистоту и отсутствие кэша.
+- Нельзя писать в `/app` внутри контейнера (это ожидаемо). Любые ошибки `EROFS` означают, что что-то ещё пытается кэшироваться вне `/workspace`.
+
+#### Как понять что всё работает
+В логах контейнера `frontend` после старта:
+```
+[entrypoint] Installing dependencies (ephemeral)
+...
+VITE vX.Y.Z  ready in N ms
+```
+Если видите повторяющийся цикл install → crash — проверьте, не добавлен ли флаг, не поддерживаемый текущей версией Vite.
+
+#### Добавление dev-only инструментов
+Просто добавьте их в `devDependencies`, пересоберите образ. Они попадут в слой, но устанавливаться всё равно будут заново при старте — если это критично по времени, можно рассмотреть многостадийный Dockerfile с кешированием (`--mount=type=cache,target=/root/.npm`). Пока сознательно упрощено.
+
+#### Возможные улучшения (отложено)
+- Кеш npm (`/root/.npm`) через buildkit cache mount.
+- Предварительная оптимизация Vite deps в образе (можно через `vite build --ssr config-only`).
+- Watch через polling отключить, если FS события надёжны у вашей платформы.
+>>>>>>> 1c59c28 (frontend: ephemeral workspace dev env (RO bind + /workspace deps) + docs; add entrypoint refactor docs references)
