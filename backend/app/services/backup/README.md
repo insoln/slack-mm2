@@ -4,9 +4,10 @@
 - `zip_utils.py` — распаковка архивов.
 - `file_storage.py` — временное и постоянное хранение загруженных архивов.
 - `messages_import.py` — единый высокопроизводительный импорт сообщений, реакций, вложений и кандидатов кастомных эмодзи.
- - `orchestrator.py` — координация полного импорта (users, channels, messages+related, export).
- - (устар.) `attachments_import.py`, `reactions_import.py` — сохранены как заглушки/совместимость.
- - Прогресс‑трекирование через прямые обновления JSONB меты (без progress_tracker).
+- `orchestrator.py` — координация полного импорта (users, channels, unified messages+related, export).
+- `progress_tracker.py` — унифицированные parsed/processed счётчики (используется там, где ещё нужно), при этом основная мета обновляется прямыми JSONB апдейтами.
+- (legacy) `attachments_import.py` и `custom_emojis_import.py` — оставлены для совместимости внешнего кода; логика инлайна теперь в `messages_import.py`.
+- Удалён `reactions_import.py` (реакции обрабатываются внутри единого прохода сообщений).
 
 ## Упрощённый импорт (single-pass)
 
