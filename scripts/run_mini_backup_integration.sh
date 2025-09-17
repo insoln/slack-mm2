@@ -79,7 +79,7 @@ echo "[INFO] Backend healthy (code=$HTTP_CODE)"
 
 echo "[STEP] Ensuring Mattermost plugin (build+deploy+enable) BEFORE dataset upload"
 PLUGIN_OK=0
-for i in {1..12}; do
+for i in {1..20}; do
   RESP=$(curl -s -o /tmp/plugin_status.json -w '%{http_code}' -X POST http://localhost:8000/plugin/ensure || true)
   BODY=$(cat /tmp/plugin_status.json 2>/dev/null || true)
   STATUS=$(python3 - <<'PY'
@@ -106,7 +106,7 @@ PY
     break
   fi
   if (( i % 4 == 0 )); then
-    echo "[WAIT] plugin ensure attempt=$i code=$RESP status=$STATUS enabled=$ENABLED body=$(echo "$BODY" | head -c 140)" >&2
+    echo "[WAIT] plugin ensure attempt=$i code=$RESP status=$STATUS enabled=$ENABLED body=$(echo "$BODY" | head -c 160)" >&2
   fi
   sleep 2
 done
@@ -228,7 +228,7 @@ if grep -E "TRACEBACK|Traceback" -i "$LOG_CAPTURE" >/dev/null; then
   exit 1
 fi
 if grep -E "ERROR" "$LOG_CAPTURE" \
-  | grep -vE "HTTP \w+ /upload -> 200" \
+  | grep -vE "HTTP \\w+ /upload -> 200" \
   | grep -vE "Ошибка создания (DM|GDM) через плагин: 404" \
   | grep -vE "Ошибка при создании канала: Extra data: .*404" \
   | grep -vE "Auto-ensure plugin failed:" >/dev/null; then
