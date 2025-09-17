@@ -8,8 +8,10 @@
   },
   {
     "type": "message",
-    "user": "U0002",
-    "text": "Public no attachment day2",
+    "subtype": "bot_message",
+    "bot_id": "B0001",
+    "username": "mini-bot",
+    "text": "Public bot announcement day2",
     "ts": "1735776100.000400"
   }
 ]

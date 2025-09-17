@@ -21,7 +21,15 @@
   {
     "type": "message",
     "user": "U0001",
-    "text": "Private day2 plain",
-    "ts": "1735776100.000800"
+    "text": "Private day2 plain (edited)",
+    "ts": "1735776100.000800",
+    "edited": {"user": "U0001", "ts": "1735776110.000801"}
+  },
+  {
+    "type": "message",
+    "subtype": "message_deleted",
+    "hidden": true,
+    "deleted_ts": "1735776100.000800",
+    "ts": "1735776120.000900"
   }
 ]
