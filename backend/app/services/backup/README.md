@@ -51,9 +51,13 @@ await import_slack_backup(zip_path, job_id=job_id)
 6. В каждый день по два сообщения: одно с вложением (чередуются три типа файлов — text/plain, image/png, application/zip), одно без.
 7. Пример треда (reply через `thread_ts`).
 8. Пример реакции (`thumbsup`) без использования кастомных эмодзи.
+9. Сообщение бота (`subtype=bot_message`, `bot_id=B0001`).
+10. Отредактированное сообщение (`edited`).
+11. Тумбстоун удалённого сообщения (`subtype=message_deleted`, `hidden=true`).
 
 Цели покрытия:
 - Проверка отношений `posted_in`, `posted_by`, `thread_reply`, `reacted_by`, `reacted_to`, `attached_to`.
+ - Дополнительно: покрытия веток для `bot_message`, обработка `edited`, игнор/тумбстоун `message_deleted`.
 - Валидация пакетных вставок для сообщений/реакций/вложений на маленьком объёме.
 - Отсутствие зависимостей от Slack API (нет кастомных emoji URL, только стандартные реакционные имена).
 

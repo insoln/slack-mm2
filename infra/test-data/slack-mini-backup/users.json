@@ -16,5 +16,14 @@
     "profile": {"email": "bob@example.com"},
     "is_bot": false,
     "deleted": false
+  },
+  {
+    "id": "B0001",
+    "team_id": "T0001",
+    "name": "mini-bot",
+    "real_name": "Mini Bot",
+    "profile": {"email": "mini-bot@example.com"},
+    "is_bot": true,
+    "deleted": false
   }
 ]
