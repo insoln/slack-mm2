@@ -33,7 +33,7 @@ await import_slack_backup(zip_path, job_id=job_id)
 - Каждое импортированное сообщение имеет `posted_in` отношение (канал) — обеспечивается в момент вставки.
 
 ## Прогресс
-В `import_jobs.meta` обновляются ключи: `messages_processed`, `reactions_processed`, `attachments_processed`, `emojis_processed`, `json_files_processed`, `json_files_total`, `current_stage`, `stages`, `totals`, опционально `durations`.
+В `import_jobs.meta` обновляются ключи: `messages_processed`, `reactions_processed`, `attachments_processed`, `emojis_processed`, `json_files_processed`, `json_files_total`, `current_stage`, `stages`, `totals`, опционально `durations`. В наследованных местах ещё могут использоваться промежуточные `*_parsed` / `*_processed` счётчики через вспомогательный `progress_tracker`, но основной поток обновляет JSONB атомарными SQL.
 
 ## Тестовый минимальный архив
 Для интеграционного/локального тестирования добавлен небольшой искусственный экспорт Slack:
@@ -41,21 +41,21 @@ await import_slack_backup(zip_path, job_id=job_id)
 `infra/test-data/slack-mini-backup.zip` (распакованная версия: `infra/test-data/slack-mini-backup/`)
 
 Содержит:
-1. Два пользователя (`U0001`, `U0002`).
+1. Три сущности пользователя в экспорте: два обычных (`U0001`, `UADMIN` — админ) и один бот (`B0001`).
 2. Публичный канал (`public-channel` / `C0001`).
 3. Приватный канал (`private-channel` / `G0001`).
 4. Личный диалог (DM `D0001`).
 5. По два дня активности (2025-01-01, 2025-01-02) в каждом канале/DM.
-6. В каждый день по два сообщения: одно с вложением (чередуются три типа файлов — text/plain, image/png, application/zip), одно без.
+6. В каждый день по два сообщения (вариации): одно с вложением (чередуются файлы text/plain, image/png, application/zip), одно без.
 7. Пример треда (reply через `thread_ts`).
-8. Пример реакции (`thumbsup`) без использования кастомных эмодзи.
+8. Пример реакции (`thumbsup`) без кастомных эмодзи.
 9. Сообщение бота (`subtype=bot_message`, `bot_id=B0001`).
 10. Отредактированное сообщение (`edited`).
 11. Тумбстоун удалённого сообщения (`subtype=message_deleted`, `hidden=true`).
 
 Цели покрытия:
-- Проверка отношений `posted_in`, `posted_by`, `thread_reply`, `reacted_by`, `reacted_to`, `attached_to`.
- - Дополнительно: покрытия веток для `bot_message`, обработка `edited`, игнор/тумбстоун `message_deleted`.
+* Проверка отношений `posted_in`, `posted_by`, `thread_reply`, `reacted_by`, `reacted_to`, `attached_to`.
+* Дополнительно: ветки для `bot_message`, обработка `edited`, игнор/тумбстоун `message_deleted`.
 - Валидация пакетных вставок для сообщений/реакций/вложений на маленьком объёме.
 - Отсутствие зависимостей от Slack API (нет кастомных emoji URL, только стандартные реакционные имена).
 

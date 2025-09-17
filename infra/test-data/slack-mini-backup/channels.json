@@ -10,6 +10,6 @@
     "creator": "U0001",
     "topic": {"value": "Public discussion", "creator": "U0001", "last_set": 1736467200},
     "purpose": {"value": "General public channel", "creator": "U0001", "last_set": 1736467200},
-  "members": ["U0001", "UADMIN"]
+    "members": ["U0001", "UADMIN"]
   }
 ]

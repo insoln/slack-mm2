@@ -19,7 +19,7 @@ def build():
     with zipfile.ZipFile(ZIP_PATH, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for path in SRC_DIR.rglob("*"):
             if path.is_file():
-                # We want files directly at root (strip the 'slack-mini-backup' folder).
+                # Place files directly at archive root (flatten 'slack-mini-backup' wrapper)
                 arcname = path.relative_to(SRC_DIR)
                 zf.write(path, arcname)
     print(f"Created {ZIP_PATH} ({ZIP_PATH.stat().st_size} bytes)")
