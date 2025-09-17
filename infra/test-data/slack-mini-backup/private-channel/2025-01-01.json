@@ -1,0 +1,27 @@
+[
+  {
+    "type": "message",
+    "user": "U0002",
+    "text": "Private intro day1",
+    "ts": "1735689600.000500",
+    "files": [
+      {
+        "id": "FIMG1",
+        "created": 1735689602,
+        "timestamp": 1735689602,
+        "name": "image.png",
+        "title": "Image Png",
+        "mimetype": "image/png",
+        "filetype": "png",
+        "url_private": "https://files.slack.com/files-pri/T0001-FIMG1/image.png",
+        "size": 1234
+      }
+    ]
+  },
+  {
+    "type": "message",
+    "user": "U0001",
+    "text": "Private plain no file day1",
+    "ts": "1735689700.000600"
+  }
+]

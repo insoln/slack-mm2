@@ -1,0 +1,15 @@
+[
+  {
+    "id": "G0001",
+    "name": "private-channel",
+    "is_channel": false,
+    "is_group": true,
+    "is_private": true,
+    "is_archived": false,
+    "created": 1736467200,
+    "creator": "U0002",
+    "topic": {"value": "Private strategy", "creator": "U0002", "last_set": 1736467200},
+    "purpose": {"value": "Internal private channel", "creator": "U0002", "last_set": 1736467200},
+    "members": ["U0001", "U0002"]
+  }
+]

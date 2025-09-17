@@ -1,0 +1,10 @@
+[
+  {
+    "id": "D0001",
+    "is_im": true,
+    "user": "U0002",
+    "created": 1736467200,
+    "is_user_deleted": false,
+    "members": ["U0001", "U0002"]
+  }
+]
