@@ -7,7 +7,6 @@ from .users_import import parse_users
 from .channels_import import parse_channels_and_chats, find_channel_for_folder
 from .messages_import import parse_channel_messages
 from .attachments_import import parse_attachments_from_export
-from .reactions_import import parse_reactions_from_export
 from app.services.export.orchestrator import orchestrate_mm_export
 from app.models.base import SessionLocal
 from app.models.import_job import ImportJob
@@ -452,63 +451,6 @@ async def orchestrate_slack_import(zip_path):
             except Exception:
                 pass
 
-        # reactions (skip if single_pass)
-        if not single_pass:
-            async with SessionLocal() as session:
-                job = await session.get(ImportJob, job_id)
-                if job:
-                    setattr(job, "current_stage", "reactions")
-                    await session.commit()
-
-            async def _progress_reactions(delta: int):
-                async with SessionLocal() as s:
-                    job = await s.get(ImportJob, job_id)
-                    if job:
-                        meta = cast(Dict[str, Any], (job.meta or {}))
-                        meta["reactions_processed"] = int(
-                            meta.get("reactions_processed", 0)
-                        ) + int(delta or 0)
-                        setattr(job, "meta", meta)  # type: ignore[attr-defined]
-                        await s.commit()
-
-            _stage_start = time.time()
-            await parse_reactions_from_export(
-                extract_dir,
-                folder_channel_map,
-                emoji_list,
-                progress=_progress_reactions,
-                job_id=jid,
-            )
-            _dur = int((time.time() - _stage_start) * 1000)
-            if record_durations:
-                try:
-                    async with SessionLocal() as session:
-                        job = await session.get(ImportJob, job_id)
-                        if job:
-                            meta = cast(Dict[str, Any], (job.meta or {}))
-                            durs = meta.get("durations", {}) or {}
-                            durs["reactions"] = _dur
-                            meta["durations"] = durs
-                            setattr(job, "meta", meta)  # type: ignore[attr-defined]
-                            await session.commit()
-                except Exception:
-                    pass
-
-        if not single_pass:
-            try:
-                async with SessionLocal() as session:
-                    job = await session.get(ImportJob, job_id)
-                    if job:
-                        meta = cast(Dict[str, Any], (job.meta or {}))
-                        reactions = int(meta.get("reactions_processed", 0) or 0)
-                        totals = meta.get("totals") or {}
-                        if reactions and (reactions > int(totals.get("reactions", 0) or 0)):
-                            totals["reactions"] = reactions
-                            meta["totals"] = totals
-                            setattr(job, "meta", meta)  # type: ignore[attr-defined]
-                            await session.commit()
-            except Exception:
-                pass
 
         # attachments (skip if single_pass)
         if not single_pass:
