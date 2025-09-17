@@ -13,7 +13,7 @@
         "title": "Archive Zip",
         "mimetype": "application/zip",
         "filetype": "zip",
-        "url_private": "https://files.slack.com/files-pri/T0001-FZIP1/archive.zip",
+  "url_private": "http://test-files:9000/slack-mini-backup/files/archive.zip",
         "size": 4567
       }
     ]

@@ -5,7 +5,7 @@ import re
 import time
 from typing import Awaitable, Callable, Optional, List, Tuple
 
-try:  # Optional fast JSON for small files
+try:  # optional fast JSON
     import orjson  # type: ignore
 except Exception:  # pragma: no cover
     orjson = None  # type: ignore
@@ -30,10 +30,10 @@ async def parse_channel_messages(
     counters_callback: Optional[Callable[[dict], Awaitable[None]]] = None,
     emoji_list: Optional[dict] = None,
 ):
-    """Stream parse Slack export channel message files.
+    """Parse all channel message JSON files (streaming) and persist entities.
 
-    Single pass mode persists messages + reactions + attachments and tracks emojis.
-    counters_callback receives PER-BATCH DELTAS (messages, reactions, attachments) and current unique emoji count.
+    In single_pass mode we also ingest reactions, attachments and detect custom emojis.
+    counters_callback (if provided) gets per-batch deltas: {messages,reactions,attachments,emojis(unique_total)}.
     """
     if single_pass is None:
         single_pass = os.environ.get("IMPORT_SINGLE_PASS", "0") in ("1", "true", "TRUE")
@@ -155,45 +155,13 @@ async def parse_channel_messages(
                 await a.create_attached_to_relation(msg_ts)
             except Exception as e:
                 backend_logger.error(f"Связи для аттачмента {getattr(a, 'slack_id', None)}: {e}")
-
-        emitted_msgs = len(batch_messages)
-        if emitted_msgs and progress:
-            try:
-                await progress(emitted_msgs)
-            except Exception:
-                pass
-        if single_pass and counters_callback:
-            delta_reactions = reactions_count - last_emitted_reactions
-            delta_attachments = attachments_count - last_emitted_attachments
-            last_emitted_reactions = reactions_count
-            last_emitted_attachments = attachments_count
-            if delta_reactions or delta_attachments or emitted_msgs:
-                try:
-                    await counters_callback(
-                        {
-                            "messages": emitted_msgs,
-                            "reactions": max(0, delta_reactions),
-                            "attachments": max(0, delta_attachments),
-                            "emojis": len(emojis_seen),
-                        }
-                    )
-                except Exception:
-                    pass
-
-        batch_messages.clear()
-        batch_reactions.clear()
-        batch_attachments.clear()
-        nonlocal saved_count  # allow maybe_emit_meta to trigger repeated saves
-        last_meta_emit = time.time()
-
     def maybe_emit_meta():
         return (time.time() - last_meta_emit) >= meta_interval_sec or (len(batch_messages) >= meta_every)
 
-    # Fast-path threshold
     try:
         orjson_threshold_kb = int(os.environ.get("IMPORT_ORJSON_THRESHOLD_KB", "0") or 0)
     except Exception:
-        orjson_threshold_kb = 0  # type: ignore
+        orjson_threshold_kb = 0
 
     for folder, channel in folder_channel_map.items():
         backend_logger.debug(
@@ -215,7 +183,10 @@ async def parse_channel_messages(
                 except Exception:
                     file_size = 0
                 use_fast_path = (
-                    orjson is not None and file_size > 0 and "orjson_threshold_kb" in locals() and orjson_threshold_kb > 0 and file_size <= orjson_threshold_kb * 1024
+                    orjson is not None
+                    and file_size > 0
+                    and orjson_threshold_kb > 0
+                    and file_size <= orjson_threshold_kb * 1024
                 )
                 if use_fast_path:
                     try:
@@ -227,7 +198,7 @@ async def parse_channel_messages(
                             use_fast_path = False
                         else:
                             iterator = iter(parsed)
-                    except Exception as e:  # fallback
+                    except Exception as e:
                         backend_logger.debug(f"orjson fast path error ({msg_file}): {e}; fallback to streaming")
                         use_fast_path = False
                 if not use_fast_path:
@@ -247,7 +218,7 @@ async def parse_channel_messages(
                                 auto_save=False,
                                 job_id=job_id,
                             )
-                            if isinstance(message_entity.raw_data, dict):  # enrich channel id
+                            if isinstance(message_entity.raw_data, dict):
                                 message_entity.raw_data.setdefault("channel_id", channel_id)
                             try:
                                 setattr(message_entity, "_channel_id", channel_id)
@@ -278,11 +249,17 @@ async def parse_channel_messages(
                                         )
                                         batch_reactions.append(reaction_entity)
                                         reactions_count += 1
-                                # Attachments
+                                # Attachments with allowed URL prefixes
                                 for file_obj in (msg or {}).get("files") or []:
                                     slack_file_id = file_obj.get("id")
-                                    url_private = file_obj.get("url_private")
-                                    if not slack_file_id or not (url_private and url_private.startswith("https://files.slack.com")):
+                                    url_private = (file_obj.get("url_private") or "").strip()
+                                    prefixes_env = os.environ.get(
+                                        "IMPORT_URL_PREFIXES",
+                                        "https://files.slack.com,http://test-files:9000",
+                                    )
+                                    allowed_prefixes = [p.strip() for p in prefixes_env.split(",") if p.strip()]
+                                    valid_url = any(url_private.startswith(pref) for pref in allowed_prefixes)
+                                    if not slack_file_id or not (url_private and valid_url):
                                         continue
                                     attachment = Attachment(
                                         slack_id=slack_file_id,
@@ -294,7 +271,7 @@ async def parse_channel_messages(
                                     )
                                     batch_attachments.append((attachment, slack_id))
                                     attachments_count += 1
-                                # Emojis discovery
+                                # Emoji discovery
                                 if emoji_list:
                                     text = (msg or {}).get("text") or ""
                                     for name in EMOJI_PATTERN.findall(text):
@@ -317,7 +294,6 @@ async def parse_channel_messages(
                                                             if emoji_list.get(name):
                                                                 emojis_seen.add(name)
                                             else:
-            										# plain text block variant
                                                 t_obj = b.get("text")
                                                 t = (t_obj or {}).get("text") if isinstance(t_obj, dict) else None
                                                 if t:
@@ -356,9 +332,12 @@ async def parse_channel_messages(
                 status="pending",
                 auto_save=False,
             )
-            ent_e = await emoji_entity.save_to_db()
-            if ent_e is not None:
-                created_emojis += 1
+            try:
+                ent_e = await emoji_entity.save_to_db()
+                if ent_e is not None:
+                    created_emojis += 1
+            except Exception:
+                pass
 
     return {
         "messages": saved_count,

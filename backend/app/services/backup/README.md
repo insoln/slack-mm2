@@ -67,3 +67,21 @@ python infra/test-data/build_mini_backup_zip.py
 ```
 
 Использование в тестах: укажите путь к zip при создании `ImportJob` или через API загрузки.
+
+### Локальные тестовые вложения (service `test-files`)
+В dev `docker-compose.dev.yml` добавлен сервис `test-files` (порт 9000), который отдаёт содержимое директории `infra/test-data/` через простой Python HTTP сервер. 
+
+В тестовом архиве `url_private` указывает на ссылки вида:
+```
+http://test-files:9000/slack-mini-backup/files/example.txt
+```
+Импортер допускает несколько префиксов URL, задаваемых переменной окружения `IMPORT_URL_PREFIXES` (CSV). Значение по умолчанию:
+```
+IMPORT_URL_PREFIXES="https://files.slack.com,http://test-files:9000/"
+```
+Это позволяет без модификации кода принимать как реальные Slack ссылки, так и локальные тестовые.
+
+Если нужно добавить ещё один источник (например `http://minio:9001/`), просто расширьте переменную:
+```
+IMPORT_URL_PREFIXES="https://files.slack.com,http://test-files:9000/,http://minio:9001/"
+```

@@ -101,6 +101,16 @@ services:
       - backend
     restart: unless-stopped
 
+  test-files:
+    image: python:3.12-slim
+    command: ["python", "-m", "http.server", "9000"]
+    working_dir: /data
+    volumes:
+      - ../infra/test-data:/data:ro
+    ports:
+      - "9000:9000"
+    restart: unless-stopped
+
   mattermost:
     image: mattermost/mattermost-team-edition:release-10.11
     restart: unless-stopped
