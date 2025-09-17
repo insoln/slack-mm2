@@ -251,7 +251,7 @@ async def orchestrate_slack_import(zip_path: str):
                 setattr(job, "current_stage", "messages")
                 await session.commit()
 
-            # progress callbacks only for legacy file + message increments
+            # progress callback increments json_files_processed for UI (messages phase)
             async def _progress_msg_files(delta_files: int):
                 from sqlalchemy import text
 
