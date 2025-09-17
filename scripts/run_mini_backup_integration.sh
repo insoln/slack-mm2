@@ -26,7 +26,7 @@ set -euo pipefail
 # Compose file, services list, dataset, and log capture path (override allowed)
 : "${COMPOSE_FILE:=infra/docker-compose.dev.yml}"
 SERVICES="${COMPOSE_SERVICES:-db mattermost backend}"
-DATASET_FILE="${DATASET_FILE:-infra/test-data/Careerum Slack export Dec 30 2024 - Jan 6 2025.zip}"
+DATASET_FILE="${DATASET_FILE:-infra/test-data/slack-mini-backup.zip}"
 LOG_CAPTURE=${LOG_CAPTURE:-/tmp/backend_integration_logs.txt}
 
 echo "[INFO] Using compose file: $COMPOSE_FILE"
