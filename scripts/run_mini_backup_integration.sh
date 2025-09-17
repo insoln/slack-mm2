@@ -70,21 +70,39 @@ echo "[INFO] Backend healthy (code=$HTTP_CODE)"
 
 echo "[STEP] Ensuring Mattermost plugin (build+deploy+enable) BEFORE dataset upload"
 PLUGIN_OK=0
-for i in {1..20}; do
+for i in {1..12}; do
   RESP=$(curl -s -o /tmp/plugin_status.json -w '%{http_code}' -X POST http://localhost:8000/plugin/ensure || true)
   BODY=$(cat /tmp/plugin_status.json 2>/dev/null || true)
-  if [[ "$RESP" == "200" && "$BODY" == *"\"status\":\"ensured\""* && "$BODY" == *"\"enabled\": true"* ]]; then
+  STATUS=$(python3 - <<'PY'
+import json,sys
+try:
+    d=json.load(open('/tmp/plugin_status.json'))
+    print(d.get('status'))
+except Exception:
+    print('')
+PY
+)
+  ENABLED=$(python3 - <<'PY'
+import json,sys
+try:
+    d=json.load(open('/tmp/plugin_status.json'))
+    print('true' if d.get('enabled') else 'false')
+except Exception:
+    print('false')
+PY
+)
+  if [[ "$RESP" == "200" && "$STATUS" == "ensured" && "$ENABLED" == "true" ]]; then
     echo "[INFO] Plugin ensured and enabled (attempt $i)"
     PLUGIN_OK=1
     break
   fi
-  if (( i % 5 == 0 )); then
-    echo "[WAIT] plugin ensure attempt=$i code=$RESP body=$(echo "$BODY" | head -c 160)" >&2
+  if (( i % 4 == 0 )); then
+    echo "[WAIT] plugin ensure attempt=$i code=$RESP status=$STATUS enabled=$ENABLED body=$(echo "$BODY" | head -c 140)" >&2
   fi
-  sleep 3
+  sleep 2
 done
 if [[ $PLUGIN_OK -ne 1 ]]; then
-  echo "Plugin failed to be ensured/enabled in time (last code=$RESP)" >&2
+  echo "Plugin failed to be ensured/enabled in time (last code=$RESP status=$STATUS enabled=$ENABLED)" >&2
   cat /tmp/plugin_status.json >&2 || true
   exit 1
 fi
