@@ -9,11 +9,11 @@ set -euo pipefail
 #  4. Poll job status until success (bounded) and assert final counters
 #  5. Scan logs for errors and validate admin user mapping
 #  6. Tear down services
-# Expected counts (derived from mini dataset):
-#   users=3 (2 реальных + 1 bot; админ UADMIN присутствует как отдельная сущность в БД после импорта)
+# Expected counts (derived from current mini dataset, strict deterministic):
+#   users=3 (2 real + 1 bot; admin UADMIN present)
 #   channels=3 (public + private + DM)
-#   messages=17 (все сообщения с ts во всех JSON, включая ответы в thread)
-#   attachments=0 (в текущем мини-архиве отсутствуют валидные files с url_private https://files.slack.com)
+#   messages=17 (all messages including thread replies; deleted tombstone still counted for determinism)
+#   attachments=0 (no valid url_private with allowed prefixes in mini archive)
 #   reactions=1
 
 # Expected counts (allow override via env for flexibility)
@@ -47,7 +47,6 @@ SLACK_BOT_TOKEN=dummy
 SLACK_SIGNING_SECRET=dummy
 ENVEOF
 fi
-
 teardown() {
   echo "[CLEANUP] docker compose down"
   docker compose -f "$COMPOSE_FILE" down -v || true
@@ -135,7 +134,6 @@ if [[ $HELLO_OK -ne 1 ]]; then
   exit 1
 fi
 echo "[INFO] Plugin hello endpoint OK"
-
 echo "[STEP] Uploading dataset"
 UPLOAD_RESP=$(curl -s -S -w '%{http_code}' -o /tmp/upload_resp.json -F "file=@${DATASET_FILE}" http://localhost:8000/upload || true)
 if [[ "$UPLOAD_RESP" != "200" ]]; then
