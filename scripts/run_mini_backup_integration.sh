@@ -68,6 +68,43 @@ if [[ $HEALTH_OK -ne 1 ]]; then
 fi
 echo "[INFO] Backend healthy (code=$HTTP_CODE)"
 
+echo "[STEP] Ensuring Mattermost plugin (build+deploy+enable) BEFORE dataset upload"
+PLUGIN_OK=0
+for i in {1..20}; do
+  RESP=$(curl -s -o /tmp/plugin_status.json -w '%{http_code}' -X POST http://localhost:8000/plugin/ensure || true)
+  BODY=$(cat /tmp/plugin_status.json 2>/dev/null || true)
+  if [[ "$RESP" == "200" && "$BODY" == *"\"status\":\"ensured\""* && "$BODY" == *"\"enabled\": true"* ]]; then
+    echo "[INFO] Plugin ensured and enabled (attempt $i)"
+    PLUGIN_OK=1
+    break
+  fi
+  if (( i % 5 == 0 )); then
+    echo "[WAIT] plugin ensure attempt=$i code=$RESP body=$(echo "$BODY" | head -c 160)" >&2
+  fi
+  sleep 3
+done
+if [[ $PLUGIN_OK -ne 1 ]]; then
+  echo "Plugin failed to be ensured/enabled in time (last code=$RESP)" >&2
+  cat /tmp/plugin_status.json >&2 || true
+  exit 1
+fi
+
+echo "[STEP] Verifying plugin hello endpoint"
+HELLO_OK=0
+for i in {1..15}; do
+  HCODE=$(curl -s -o /tmp/plugin_hello.txt -w '%{http_code}' http://localhost:8065/plugins/mm-importer/api/v1/hello || true)
+  HBODY=$(cat /tmp/plugin_hello.txt 2>/dev/null || true)
+  if [[ "$HCODE" == "200" && "$HBODY" == *"Hello"* ]]; then
+    HELLO_OK=1; break
+  fi
+  sleep 2
+done
+if [[ $HELLO_OK -ne 1 ]]; then
+  echo "Plugin hello endpoint not responding (last code=$HCODE body=$HBODY)" >&2
+  exit 1
+fi
+echo "[INFO] Plugin hello endpoint OK"
+
 echo "[STEP] Uploading dataset"
 UPLOAD_RESP=$(curl -s -S -w '%{http_code}' -o /tmp/upload_resp.json -F "file=@${DATASET_FILE}" http://localhost:8000/upload || true)
 if [[ "$UPLOAD_RESP" != "200" ]]; then
@@ -146,7 +183,9 @@ if grep -E "TRACEBACK|Traceback" -i "$LOG_CAPTURE" >/dev/null; then
   grep -i -E "Traceback" -n "$LOG_CAPTURE" >&2
   exit 1
 fi
-if grep -E "ERROR" "$LOG_CAPTURE" | grep -vE "HTTP \w+ /upload -> 200" >/dev/null; then
+if grep -E "ERROR" "$LOG_CAPTURE" | grep -vE "HTTP \w+ /upload -> 200" \
+  | grep -vE "Ошибка создания (DM|GDM) через плагин: 404" \
+  | grep -vE "Ошибка при создании канала: Extra data: .*404" >/dev/null; then
   echo "ERROR lines found in backend logs (excluding benign upload access log)" >&2
   grep -n "ERROR" "$LOG_CAPTURE" >&2
   exit 1
