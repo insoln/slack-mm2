@@ -79,7 +79,7 @@ echo "[INFO] Backend healthy (code=$HTTP_CODE)"
 
 echo "[STEP] Ensuring Mattermost plugin (build+deploy+enable) BEFORE dataset upload"
 PLUGIN_OK=0
-for i in {1..20}; do
+for i in {1..12}; do
   RESP=$(curl -s -o /tmp/plugin_status.json -w '%{http_code}' -X POST http://localhost:8000/plugin/ensure || true)
   BODY=$(cat /tmp/plugin_status.json 2>/dev/null || true)
   STATUS=$(python3 - <<'PY'
