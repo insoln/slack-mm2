@@ -12,8 +12,8 @@
         "name": "example.txt",
         "title": "Example Text",
         "mimetype": "text/plain",
-        "filetype": "text",
-        "url_private": "http://test-files:9000/slack-mini-backup/files/example.txt",
+  "filetype": "text",
+  "url_private": "http://test-files:9000/slack-mini-backup/files/example.txt",
         "size": 20
       }
     ]
