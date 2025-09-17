@@ -82,7 +82,28 @@ async def orchestrate_slack_import(zip_path):
             except Exception:
                 pass
 
-        # Получаем список эмодзи из Slack API один раз
+        # Detect nested root (archive packed with a single top-level directory)
+        try:
+            entries = [e for e in os.listdir(extract_dir) if not e.startswith('.')]
+            if len(entries) == 1:
+                candidate = os.path.join(extract_dir, entries[0])
+                if os.path.isdir(candidate):
+                    expected = {
+                        'users.json',
+                        'channels.json',
+                        'groups.json',
+                        'dms.json',
+                    }
+                    inner = set(os.listdir(candidate))
+                    if expected.intersection(inner):
+                        backend_logger.info(
+                            f"Обнаружена вложенная корневая директория '{entries[0]}', переключаю base на неё"
+                        )
+                        extract_dir = candidate
+        except Exception:
+            pass
+
+        # Slack emoji list once
         emoji_list = await get_slack_emoji_list()
 
         # Подсчитать общее количество JSON-файлов в бэкапе (для прогресса импорта по файлам)
