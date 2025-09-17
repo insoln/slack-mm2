@@ -4,10 +4,10 @@
 - `zip_utils.py` — распаковка архивов.
 - `file_storage.py` — временное и постоянное хранение загруженных архивов.
 - `messages_import.py` — единый высокопроизводительный импорт сообщений, реакций, вложений и кандидатов кастомных эмодзи.
-- `orchestrator.py` — координация полного импорта (users, channels, messages+related, custom emojis и т.п.).
+- `orchestrator.py` — координация полного импорта (users, channels, unified messages+related).
 - `progress_tracker.py` — унифицированные parsed/processed счётчики.
 
-Специализированные частичные импортёры удалены — всё консолидировано в единый поток `parse_messages_and_related`.
+Специализированные частичные импортёры (attachments, reactions, custom emojis) удалены — всё консолидировано в единый поток `parse_messages_and_related`.
 
 ## Упрощённый импорт
 
