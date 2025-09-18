@@ -73,16 +73,20 @@ Backend реализует REST API для загрузки данных Slack (
 
 ## Экспорт данных в Mattermost
 
-### Архитектура
-- Экспорт реализован через оркестратор (services/export/orchestrator.py), который обрабатывает сущности по очереди: user, custom_emoji, attachment, channel, message, reaction.
-- Для каждого типа сущности используется отдельный экспортер (например, UserExporter), реализующий бизнес-логику экспорта.
-- HTTP-запросы к Mattermost вынесены в MMApiMixin (services/export/mm_api_mixin.py), что позволяет легко переключаться между штатным API и плагином.
+Полная детализация вынесена в `app/services/export/README.md` (единственный источник правды по порядку типов и правилам). Ниже сводка.
+
+### Архитектура (сводка)
+- Оркестратор (`services/export/orchestrator.py`) обрабатывает сущности с глобальным барьером типо́в в порядке:
+  `user → custom_emoji → channel → attachment → message → reaction`.
+  (Ранее в документации ошибочно фигурировал порядок с attachment перед channel — исправлено.)
+- Для каждого типа сущности — свой экспортер (UserExporter, ChannelExporter, AttachmentExporter, MessageExporter, ReactionExporter и т.д.).
+- HTTP-взаимодействие с Mattermost (ядро + плагин) инкапсулировано в `MMApiMixin`.
 
 ### Управление статусами
-- Все экспортеры наследуют `ExporterBase` с методом `set_status(status, error=None)`
-- Статусы обновляются в БД через SQL UPDATE для корректного отслеживания прогресса
-- Поддерживаемые статусы: `pending`, `success`, `failed`, `skipped`
-- При ошибке сохраняется `error_message` для диагностики
+- Все экспортеры наследуют `ExporterBase` с методом `set_status(status, error=None)`.
+- Статусы обновляются через `UPDATE` (не оставляя «подвешенных» pending на ошибках).
+- Поддерживаемые статусы: `pending`, `success`, `failed`, `skipped`.
+- При ошибке текст фиксируется в `error_message`.
 
 ### Экспорт пользователей
 - Все поля для Mattermost заполняются по максимуму из raw_data Slack.
@@ -97,16 +101,16 @@ Backend реализует REST API для загрузки данных Slack (
 - Имена эмодзи должны быть 1-64 символа, только строчные буквы и цифры
 - URL эмодзи из Slack могут требовать аутентификации
 
-### Переменные окружения
-- MM_URL — адрес Mattermost (например, http://mattermost:8065)
-- MM_TOKEN — токен администратора Mattermost
-- EXPORT_WORKERS — количество параллельных воркеров экспорта (по умолчанию 5)
+### Переменные окружения (экспорт)
+- `MM_URL` — базовый URL Mattermost (например, http://mattermost:8065)
+- `MM_TOKEN` — админский (или системный) токен
+- `EXPORT_WORKERS` — число воркеров для глобальных и job-scoped типов
 
 #### Производительность / Тюнинг
-- ATTACHMENT_WORKERS — воркеры загрузки файлов (по умолчанию = EXPORT_WORKERS)
-- EXPORT_CHANNEL_CONCURRENCY — параллельных каналов для экспорта сообщений (по умолчанию = EXPORT_WORKERS)
-- MM_MAX_KEEPALIVE, MM_MAX_CONNECTIONS, MM_HTTP2 — настройки HTTP пула клиентов
-- DB_POOL_SIZE, DB_MAX_OVERFLOW, DB_POOL_TIMEOUT — настройки пула подключений к БД
+- `ATTACHMENT_WORKERS` — воркеры загрузки файлов (если не задан, используется значение `EXPORT_WORKERS`).
+- `EXPORT_CHANNEL_CONCURRENCY` — максимальное число каналов, экспортируемых параллельно при публикации сообщений (по умолчанию равно `EXPORT_WORKERS`, либо может переопределяться).
+- `MM_MAX_KEEPALIVE`, `MM_MAX_CONNECTIONS`, `MM_HTTP2` — параметры HTTP пула.
+- `DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_POOL_TIMEOUT` — параметры пула соединений БД.
 
 ### Логирование
 - Все логи экспорта и ошибок централизованы через backend_logger.

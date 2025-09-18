@@ -5,31 +5,35 @@
 ## Структура
 - `k8s/` — манифесты Kubernetes
 - `db/` — миграции и инициализация Postgres
-- `plugin/` — Mattermost plugin для импорта сообщений и метаданных из внешних систем (см. подробности в plugin/README.md)
+- `plugin/` — Mattermost plugin (см. `plugin/README.md`)
 - `mattermost/` — конфиг Mattermost (`mm_config.json`)
-- `docker-compose.dev.yml` — dev-окружение: backend, frontend, ephemeral Postgres, ephemeral Mattermost
-- `docker-compose.prod.yml` — prod-окружение: backend, frontend, persistent Postgres
-- `docker-compose.yml` — (по умолчанию, можно использовать как prod)
+- `test-data/` — мини-набор Slack и вспомогательные файлы (используются импортом и сервисом test-files)
+- `docker-compose.dev.yml` — dev-окружение: backend, frontend, Postgres, Mattermost, test-files
+- `docker-compose.prod.yml` — prod-окружение: backend, frontend, persistent Postgres (без Mattermost)
+- `docker-compose.yml` — базовый compose (может использоваться как prod)
 
 ## Окружения
 
 ### Development (dev)
-- Запуск: backend, frontend, Mattermost, ephemeral Postgres (tmpfs, все данные теряются при остановке)
-- Mattermost использует конфиг из `mattermost/mm_config.json`
-- - Backend в dev-окружении подключается к Mattermost по адресу `http://mattermost:8065` (см. переменную окружения `MM_URL` в docker-compose.dev.yml)
-- - Для работы backend требуется токен пользователя Mattermost (`MM_TOKEN`). В dev-окружении токен всегда одинаковый и предзадан в init-mattermost.sql:
-  - MM_TOKEN=5x7rr788c7gwdnkdr9imb49ffo
-- - Название команды Mattermost в dev-окружении всегда 'Test' (name: test, id: b7u9rycm43nip86mdiuqsxdcbe) — см. init-mattermost.sql.
-- Для запуска:
-  ```bash
-  cd infra
-  docker-compose -f docker-compose.dev.yml up --build
-  ```
-- Доступ:
-  - Backend: http://localhost:8000
-  - Frontend: http://localhost:5173
-  - Mattermost: http://localhost:8065
-  - Postgres: localhost:5432 (user/pass/db: slack-mm)
+Запускается полный стек сервисов (никаких частичных запусков): backend, frontend, Mattermost, Postgres, test-files.
+
+- Backend → Mattermost: `MM_URL=http://mattermost:8065`.
+- Токен (`MM_TOKEN=5x7rr788c7gwdnkdr9imb49ffo`) зашит init-м скриптом.
+- Команда Mattermost: name=`test`, id=`b7u9rycm43nip86mdiuqsxdcbe`.
+- Сервис `test-files` (порт 9000) — простой HTTP server для локальных вложений (`infra/test-data/`). Мини-архив Slack ссылается на `http://test-files:9000/...` для быстрой, оффлайн-доступной проверки.
+
+Запуск:
+```bash
+cd infra
+docker compose -f docker-compose.dev.yml up --build -d
+```
+
+Доступ:
+- Backend: http://localhost:8000
+- Frontend: http://localhost:5173
+- Mattermost: http://localhost:8065
+- Test files: http://localhost:9000
+- Postgres: localhost:5432 (user/pass/db: slack-mm)
 
 #### Frontend: immutable + ephemeral deps
 - Каталог исходников фронтенда монтируется read-only (RO) внутрь контейнера (`../frontend:/app:ro`).
@@ -75,3 +79,20 @@
   - Перед повторным запуском: `docker compose -f infra/docker-compose.dev.yml down --remove-orphans`.
   - При проблемах после сна/перезапуска Docker/WSL: перезапустить демон Docker или выполнить `wsl.exe --shutdown` (из Windows) для очистки namespaces/cgroups.
   - Если порт занят осиротевшим процессом: завершить процесс и повторно поднять сервисы.
+
+## Мини-интеграционный тестовый скрипт
+
+Скрипт `scripts/run_mini_backup_integration.sh` (из корня репозитория) автоматизирует проверку:
+
+1. Полный поднятие стека (dev compose).
+2. Авто ensure плагина (deploy/enable при необходимости).
+3. Загрузка мини-архива и ожидание завершения джоба.
+4. Проверка финальных чисел (users/channels/messages/attachments/reactions) и отсутствие ошибок в логах.
+5. Валидация корректного сопоставления admin пользователя.
+
+Запуск:
+```bash
+./scripts/run_mini_backup_integration.sh
+```
+
+Используйте перед коммитом, меняющим пайплайн импорта/экспорта.
