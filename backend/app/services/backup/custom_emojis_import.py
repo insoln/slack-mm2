@@ -1,8 +1,13 @@
 import re
-from typing import Dict, Set, Optional, Callable, Awaitable
+from typing import Dict, Set, Optional
 import os
 import glob
-import ijson
+
+try:  # ijson optional
+    import ijson  # type: ignore
+except Exception:  # pragma: no cover
+    ijson = None
+
 from app.logging_config import backend_logger
 from app.services.entities.custom_emoji import CustomEmoji
 from app.models.base import SessionLocal
@@ -148,10 +153,10 @@ async def parse_custom_emojis_from_export(
     export_dir: str,
     folder_channel_map: Dict[str, dict],
     emoji_list: Optional[Dict[str, str]] = None,
-    progress: Optional[Callable[[int], Awaitable[None]]] = None,
 ) -> int:
-    """Stream files in export to collect custom emoji usages and create entities.
-    Returns number of created emojis.
+    """Scan all message JSON files collecting :shortcode: usages; create new custom_emoji entities.
+
+    No progress tracker; tolerant to per-file errors. Returns created count.
     """
     if not emoji_list:
         backend_logger.info(
@@ -167,17 +172,23 @@ async def parse_custom_emojis_from_export(
         for msg_file in glob.glob(os.path.join(folder_path, "*.json")):
             try:
                 with open(msg_file, "r", encoding="utf-8") as f:
-                    for msg in ijson.items(f, "item"):
-                        # From plain text
-                        wanted |= set(
-                            EMOJI_PATTERN.findall((msg or {}).get("text") or "")
-                        )
-                        # From blocks
-                        wanted |= _collect_emoji_from_blocks(
-                            (msg or {}).get("blocks") or []
-                        )
-                        # From classic attachments
-                        for a in (msg or {}).get("attachments", []) or []:
+                    iterator = []
+                    if ijson is not None:
+                        try:
+                            iterator = ijson.items(f, "item")
+                        except Exception:
+                            iterator = []
+                    else:  # fallback full load if streaming not available
+                        import json as _json
+                        try:
+                            iterator = _json.load(f) or []
+                        except Exception:
+                            iterator = []
+                    for msg in iterator:  # type: ignore
+                        raw_msg = msg or {}
+                        wanted |= set(EMOJI_PATTERN.findall(raw_msg.get("text") or ""))
+                        wanted |= _collect_emoji_from_blocks(raw_msg.get("blocks") or [])
+                        for a in raw_msg.get("attachments", []) or []:
                             for key in ("pretext", "title", "text", "fallback"):
                                 val = a.get(key)
                                 if isinstance(val, str):
@@ -196,7 +207,6 @@ async def parse_custom_emojis_from_export(
         )
         return 0
 
-    # Exclude already present
     existing: Set[str] = set()
     async with SessionLocal() as session:
         q = await session.execute(
@@ -205,6 +215,10 @@ async def parse_custom_emojis_from_export(
         existing = {row[0] for row in q.all()}
 
     to_create = [name for name in resolved.keys() if name not in existing]
+    if not to_create:
+        backend_logger.info("Все найденные кастомные эмодзи уже существуют в БД")
+        return 0
+
     created = 0
     for name in to_create:
         emoji_entity = CustomEmoji(
@@ -216,7 +230,5 @@ async def parse_custom_emojis_from_export(
         ent = await emoji_entity.save_to_db()
         if ent is not None:
             created += 1
-            if progress:
-                await progress(1)
     backend_logger.info(f"Импортировано кастомных эмодзи из экспорта: {created}")
     return created

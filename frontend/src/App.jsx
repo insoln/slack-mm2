@@ -22,26 +22,207 @@ function App() {
   const [lastEnsureSuccessTs, setLastEnsureSuccessTs] = useState(null);
   const [liveStats, setLiveStats] = useState(null);
 
-  useEffect(()=>{ fetch('/api/healthcheck').then(r=>r.json()).then(d=>setStatus(d.status)).catch(e=>setError(e.message)); },[]);
-  const refreshPluginStatus = async ()=>{ setPlugin(s=>({...s,loading:true,error:null})); try{ const r=await fetch('/api/plugin/status'); const d=await r.json(); if(!r.ok) throw new Error(d.error||'plugin status'); setPlugin({loading:false,data:d,error:null}); }catch(e){ setPlugin({loading:false,data:null,error:e.message}); } };
-  useEffect(()=>{ refreshPluginStatus(); },[]);
-  const refreshStats = async ()=>{ setStats(s=>({...s,loading:true,error:null})); try{ const r=await fetch('/api/stats/mappings'); const d=await r.json(); if(!r.ok) throw new Error(d.error||'stats'); setStats({loading:false,data:d,error:null}); }catch(e){ setStats({loading:false,data:null,error:e.message}); } };
-  useEffect(()=>{ refreshStats(); },[]);
-  useEffect(()=>{ let m=true; const load=async()=>{ try{ setJobs(s=>({...s,loading:true})); const r=await fetch('/api/jobs'); const d=await r.json(); if(!m) return; if(!r.ok) throw new Error(d.error||'jobs'); setJobs({loading:false,data:d.jobs||[],error:null}); }catch(e){ if(m) setJobs({loading:false,data:[],error:e.message}); } }; load(); const t=setInterval(load,3000); return ()=>{ m=false; clearInterval(t); }; },[]);
-  useEffect(()=>{ const es=new EventSource('/api/progress/stream'); es.addEventListener('stats',e=>{ try{ setLiveStats(JSON.parse(e.data)); }catch{ /* ignore malformed stats event */ } }); return ()=>es.close(); },[]);
-  useEffect(()=>{ const active=(jobs.data||[]).filter(j=>!['success','failed'].includes(j.status)); if(active.length===0) return; let cancelled=false; active.forEach(job=>{ (async()=>{ setJobStats(p=>({...p,[job.id]:{...(p[job.id]||{}),updating:true,error:null}})); try{ const r=await fetch(`/api/stats/mappings?job_id=${job.id}`); const d=await r.json(); if(!r.ok) throw new Error(d.error||'stat'); if(!cancelled) setJobStats(p=>({...p,[job.id]:{updating:false,data:d,error:null}})); }catch(e){ if(!cancelled) setJobStats(p=>({...p,[job.id]:{...(p[job.id]||{}),updating:false,error:e.message}})); } })(); }); return ()=>{ cancelled=true; }; },[jobs]);
+  // Toast helpers (deduplicated by tone+title+message within 5s)
+  const pushToast = (t) => {
+    const now = Date.now();
+    setToasts(arr => {
+      const exists = arr.some(x => x.tone === (t.tone||'info') && x.title===t.title && x.message===t.message && (now - x._ts) < 5000);
+      if (exists) return arr;
+      const id = now + Math.random();
+      const toast = { id, tone: 'info', timeout: 4000, _ts: now, ...t };
+      if (toast.timeout) setTimeout(()=> setToasts(cur => cur.filter(x => x.id !== id)), toast.timeout);
+      return [...arr, toast];
+    });
+  };
+  const closeToast = id => setToasts(arr => arr.filter(t => t.id !== id));
 
-  const pushToast = (t)=>{ const now=Date.now(); setToasts(a=>{ const exists=a.some(x=>x.tone===(t.tone||'info')&&x.title===t.title&&x.message===t.message&&(now-x._ts)<5000); if(exists) return a; const id=now+Math.random(); const toast={id,tone:'info',timeout:4000,_ts:now,...t}; if(toast.timeout) setTimeout(()=>setToasts(c=>c.filter(x=>x.id!==id)),toast.timeout); return [...a,toast]; }); };
-  const closeToast = id => setToasts(a=>a.filter(x=>x.id!==id));
+  // Initial health check
+  useEffect(() => {
+    fetch('/api/healthcheck')
+      .then(r => r.json())
+      .then(d => setStatus(d.status))
+      .catch(e => setError(e.message));
+  }, []);
 
-  const handleFileChange = (e)=>{ setUploadResult(null); setUploadError(null); const f=e.target.files[0]||null; setSelectedFile(f); if(f){ doUpload(f); e.target.value=''; } };
-  const handleSubmit = (e)=>{ e.preventDefault(); if(!selectedFile){ setUploadError('Файл не выбран'); return;} doUpload(selectedFile); };
-  const doUpload = (file)=>{ setUploadResult(null); setUploadError(null); setUploadProgress(0); const fd=new FormData(); fd.append('file',file); try{ const xhr=new XMLHttpRequest(); xhr.open('POST','/api/upload'); xhr.upload.onprogress=ev=>{ if(ev.lengthComputable) setUploadProgress(Math.round((ev.loaded/ev.total)*100)); }; xhr.onload=()=>{ const s=xhr.status; const text=xhr.responseText||''; let parsed=null; try{ parsed=text?JSON.parse(text):null;}catch{ /* ignore parse error */ } if(parsed){ if(parsed.error){ setUploadError(parsed.error);} else setUploadResult(parsed); } else { if(s>=200&&s<300) setUploadResult({filename:file.name,size:file.size,raw:text||null,note:'Non-JSON response'}); else setUploadError(`Сервер вернул ${s}${text?': '+text.slice(0,200):''}`); } setUploadProgress(null); }; xhr.onerror=()=>{ setUploadError('Ошибка сети'); setUploadProgress(null); }; xhr.send(fd); }catch(e){ setUploadError(e.message); setUploadProgress(null); } };
-  const handleExport = async()=>{ setExportStatus(null); setExportError(null); try{ const r=await fetch('/api/export',{method:'POST'}); const d=await r.json(); if(r.ok) setExportStatus(d.message); else setExportError(d.error||'Ошибка запуска экспорта'); }catch(e){ setExportError(e.message); } };
-  const handleEnsurePlugin = async()=>{ setFixingPlugin(true); try{ const r=await fetch('/api/plugin/ensure',{method:'POST'}); const d=await r.json(); if(!r.ok || d.status==='needs_bundle'){ let msg=d.error||'Ensure failed'; if(d.status==='needs_bundle') msg=`Нужен bundle. ${d.hint||''} ${d.expected_path? 'Ожидаемый путь: '+d.expected_path:''}`; pushToast({tone:'error',title:'Ensure',message:msg}); throw new Error(msg); } pushToast({tone:'success',title:'Ensure',message:'Плагин установлен и включен'}); setLastEnsureSuccessTs(Date.now()); }catch(e){ setPlugin(s=>({...s,error:e.message})); }finally{ setFixingPlugin(false); await refreshPluginStatus(); } };
+  // Plugin status
+  const refreshPluginStatus = async () => {
+    setPlugin(s => ({...s, loading: true, error: null}));
+    try {
+      const r = await fetch('/api/plugin/status');
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'plugin status');
+      setPlugin({ loading: false, data: d, error: null });
+    } catch (e) {
+      setPlugin({ loading: false, data: null, error: e.message });
+    }
+  };
+  useEffect(() => { refreshPluginStatus(); }, []);
+
+  // Mapping stats snapshot (manual refresh + initial auto)
+  const refreshStats = async () => {
+    setStats(s => ({...s, loading: true, error: null}));
+    try {
+      const r = await fetch('/api/stats/mappings');
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'stats');
+      setStats({ loading: false, data: d, error: null });
+    } catch (e) {
+      setStats({ loading: false, data: null, error: e.message });
+    }
+  };
+  useEffect(() => { refreshStats(); }, []);
+
+  // Jobs polling
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      try {
+        setJobs(s => ({...s, loading: true}));
+        const r = await fetch('/api/jobs');
+        const d = await r.json();
+        if (!active) return;
+        if (!r.ok) throw new Error(d.error || 'jobs');
+        setJobs({ loading: false, data: d.jobs || [], error: null });
+      } catch (e) {
+        if (active) setJobs({ loading: false, data: [], error: e.message });
+      }
+    };
+    load();
+    const t = setInterval(load, 3000);
+    return () => { active = false; clearInterval(t); };
+  }, []);
+
+  // SSE progress (stats events only)
+  useEffect(() => {
+    const es = new EventSource('/api/progress/stream');
+    es.addEventListener('stats', e => { try { setLiveStats(JSON.parse(e.data)); } catch { /* ignore */ } });
+    return () => es.close();
+  }, []);
+
+  // Per-active-job stats refresh
+  useEffect(() => {
+    const active = (jobs.data || []).filter(j => !['success','failed'].includes(j.status));
+    if (active.length === 0) return;
+  let cancelled = false;
+    active.forEach(job => {
+      (async () => {
+        setJobStats(p => ({...p, [job.id]: { ...(p[job.id]||{}), updating: true, error: null }}));
+        try {
+          const r = await fetch(`/api/stats/mappings?job_id=${job.id}`);
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.error || 'stat');
+          if (!cancelled) setJobStats(p => ({...p, [job.id]: { updating: false, data: d, error: null }}));
+        } catch (e) {
+          if (!cancelled) setJobStats(p => ({...p, [job.id]: { ...(p[job.id]||{}), updating: false, error: e.message }}));
+        }
+      })();
+    });
+    return () => { cancelled = true; };
+  }, [jobs]);
+
   const healthy = !!(plugin?.data && plugin.data.installed && plugin.data.enabled && !plugin.data.needs_update);
   const needsPluginFix = !!(plugin?.data && (!plugin.data.installed || plugin.data.needs_update || !plugin.data.enabled));
-  const modalShouldBeOpen = (()=>{ if(!plugin.data) return false; if(!healthy) return needsPluginFix; if(lastEnsureSuccessTs && Date.now()-lastEnsureSuccessTs<1200) return false; return needsPluginFix; })();
+  const modalShouldBeOpen = (() => {
+    if (!plugin.data) return false;
+    if (!healthy) return needsPluginFix;
+    if (lastEnsureSuccessTs && Date.now() - lastEnsureSuccessTs < 1200) return false;
+    return needsPluginFix;
+  })();
+
+
+  const handleFileChange = (e) => {
+    setUploadResult(null);
+    setUploadError(null);
+    const file = e.target.files[0] || null;
+    setSelectedFile(file);
+    if (file) {
+      // Auto-start upload on selection
+      doUpload(file);
+      // Reset input so the same file can be re-selected later
+      e.target.value = '';
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!selectedFile) { setUploadError('Файл не выбран'); return; }
+    await doUpload(selectedFile);
+  };
+
+  const doUpload = async (file) => {
+    setUploadResult(null);
+    setUploadError(null);
+    setUploadProgress(0);
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      const xhr = new window.XMLHttpRequest();
+  xhr.open('POST', '/api/upload');
+      xhr.upload.onprogress = (event) => { if (event.lengthComputable) setUploadProgress(Math.round((event.loaded / event.total) * 100)); };
+      xhr.onload = () => {
+        const status = xhr.status;
+        const text = xhr.responseText || '';
+        let parsed = null;
+        try { parsed = text ? JSON.parse(text) : null; } catch {/* swallow */}
+        if (parsed) {
+          if (parsed.error) { setUploadError(parsed.error); setUploadResult(null); }
+          else { setUploadResult(parsed); }
+        } else {
+          if (status >= 200 && status < 300) {
+            // Unexpected non-JSON success
+            setUploadResult({ filename: file.name, size: file.size, raw: text || null, note: 'Non-JSON response' });
+          } else {
+            setUploadError(`Сервер вернул ${status}${text ? ': ' + text.slice(0,200) : ''}`);
+          }
+        }
+        setUploadProgress(null);
+      };
+      xhr.onerror = () => { setUploadError('Ошибка сети'); setUploadProgress(null); };
+      xhr.send(formData);
+    } catch (err) {
+      setUploadError(err.message);
+      setUploadProgress(null);
+    }
+  };
+
+  const handleExport = async () => {
+    setExportStatus(null);
+    setExportError(null);
+    try {
+  const response = await fetch('/api/export', { method: 'POST' });
+      const data = await response.json();
+      if (response.ok) setExportStatus(data.message); else setExportError(data.error || 'Ошибка запуска экспорта');
+    } catch (err) { setExportError(err?.message || 'Ошибка сети'); }
+  };
+
+  const handleEnsurePlugin = async () => {
+    setFixingPlugin(true);
+    try {
+      const res = await fetch('/api/plugin/ensure', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || data.status === 'needs_bundle') {
+        let msg = data.error || 'Ensure failed';
+        if (data.status === 'needs_bundle') {
+          msg = `Нужен bundle. ${data.hint || ''} ${data.expected_path ? 'Ожидаемый путь: ' + data.expected_path : ''}`;
+        }
+        pushToast({ tone: 'error', title: 'Ensure', message: msg.trim() });
+        throw new Error(msg.trim());
+      }
+      pushToast({ tone: 'success', title: 'Ensure', message: 'Плагин установлен и включен' });
+      setLastEnsureSuccessTs(Date.now());
+    } catch (e) {
+      setPlugin((s) => ({ ...s, error: e.message }));
+    } finally {
+      setFixingPlugin(false);
+      await refreshPluginStatus();
+    }
+  };
+  // Compute whether modal should be open (close shortly after a success if now healthy)
+  // healthy / modal logic already computed above
+
+  // Helper: render processed/total segments with optional parsed divergence
+  // (legacy renderPostImportLine removed – UI simplified)
+  
 
   return (
     <div className="app-shell">
@@ -51,9 +232,17 @@ function App() {
           <nav>
             <a href="#upload">Загрузка бэкапа</a>
             <a href="#stats">Статистика</a>
-            <a href="#plugin" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <a href="#plugin" style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
               <span>Плагин MM-Importer</span>
-              {plugin.data && (()=>{ const bad=!plugin.data.installed||!plugin.data.enabled; const warn=plugin.data.installed&&plugin.data.enabled&&(plugin.data.needs_update||!plugin.data.bundle_exists); const txt=bad?'✖':warn?'⚠':'OK'; const color=bad?'#f87171':warn?'#f59e0b':'#34d399'; return <span style={{fontSize:11,fontWeight:600,color,border:'1px solid var(--border)',padding:'2px 6px',borderRadius:6,background:'rgba(255,255,255,.04)'}}>{txt}</span>; })()}
+              {plugin.data && (
+                (() => {
+                  const bad = !plugin.data.installed || !plugin.data.enabled;
+                  const warn = plugin.data.installed && plugin.data.enabled && (plugin.data.needs_update || !plugin.data.bundle_exists);
+                  const txt = bad ? '✖' : warn ? '⚠' : 'OK';
+                  const color = bad ? '#f87171' : warn ? '#f59e0b' : '#34d399';
+                  return <span style={{fontSize:11, fontWeight:600, color, border:'1px solid var(--border)', padding:'2px 6px', borderRadius:6, background:'rgba(255,255,255,.04)'}}>{txt}</span>;
+                })()
+              )}
             </a>
             <a href="#export">Экспорт</a>
           </nav>
@@ -84,13 +273,18 @@ function App() {
                 {plugin.data && (
                   <div className="small" style={{lineHeight:1.8}}>
                     <div>Plugin ID: <b>{plugin.data.plugin_id}</b></div>
-                    <div>Ожидаемая версия: <b>{plugin.data.expected_version||'n/a'}</b></div>
-                    <div>Установлен: <b>{plugin.data.installed?'да':'нет'}</b></div>
-                    <div>Включен: <b style={{color: plugin.data.enabled? '#34d399':'#f59e0b'}}>{plugin.data.enabled?'да':'нет'}</b></div>
-                    <div>Текущая версия: <b>{plugin.data.installed_version||'n/a'}</b></div>
-                    <div>Нужен апдейт: <b style={{color: plugin.data.needs_update? '#f59e0b':undefined}}>{plugin.data.needs_update?'да':'нет'}</b></div>
-                    <div>Локальный bundle: <b style={{color: plugin.data.bundle_exists? '#34d399':'#f87171'}}>{plugin.data.bundle_exists?'есть':'нет'}</b></div>
-                    {plugin.data.bundle_exists && (<div>Hash: <span title={plugin.data.bundle_sha256||''}>{(plugin.data.bundle_sha256||'').slice(0,12)||'—'}</span> • возраст: {plugin.data.bundle_mtime? Math.max(0,Math.round((Date.now()/1000 - plugin.data.bundle_mtime)/60)):'—'} мин</div>)}
+                    <div>Ожидаемая версия: <b>{plugin.data.expected_version || 'n/a'}</b></div>
+                    <div>Установлен: <b>{plugin.data.installed ? 'да' : 'нет'}</b></div>
+                    <div>Включен: <b style={{color: plugin.data.enabled ? '#34d399' : '#f59e0b'}}>{plugin.data.enabled ? 'да' : 'нет'}</b></div>
+                    <div>Текущая версия: <b>{plugin.data.installed_version || 'n/a'}</b></div>
+                    <div>Нужен апдейт: <b style={{color: plugin.data.needs_update ? '#f59e0b' : undefined}}>{plugin.data.needs_update ? 'да' : 'нет'}</b></div>
+                    <div>Локальный bundle: <b style={{color: plugin.data.bundle_exists ? '#34d399' : '#f87171'}}>{plugin.data.bundle_exists ? 'есть' : 'нет'}</b></div>
+                    {plugin.data.bundle_exists && (
+                      <div>
+                        Hash: <span title={plugin.data.bundle_sha256 || ''}>{(plugin.data.bundle_sha256 || '').slice(0,12) || '—'}</span>
+                        {' '}• возраст: {plugin.data.bundle_mtime ? Math.max(0, Math.round((Date.now()/1000 - plugin.data.bundle_mtime)/60)) : '—'} мин
+                      </div>
+                    )}
                   </div>
                 )}
               </Card>

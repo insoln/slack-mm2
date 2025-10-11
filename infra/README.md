@@ -42,6 +42,13 @@ docker compose -f docker-compose.dev.yml up --build -d
 - Любые временные файлы (кэш оптимизации, timestamp конфигов) живут только в `/workspace` и исчезают после остановки контейнера.
 - Добавление зависимостей: редактировать `package.json` локально → `docker compose build frontend` → `docker compose up -d frontend --force-recreate`.
 
+#### Frontend: immutable + ephemeral deps
+- Каталог исходников фронтенда монтируется read-only (RO) внутрь контейнера (`../frontend:/app:ro`).
+- При старте контейнера создаётся внутренняя рабочая директория `/workspace`, выполняется `npm ci` и запускается `vite` из неё.
+- Симлинки `src` и `index.html` указывают на исходники в `/app`, что обеспечивает live reload без записи в RO слой.
+- Любые временные файлы (кэш оптимизации, timestamp конфигов) живут только в `/workspace` и исчезают после остановки контейнера.
+- Добавление зависимостей: редактировать `package.json` локально → `docker compose build frontend` → `docker compose up -d frontend --force-recreate`.
+
 ### Production (prod)
 - Запуск: backend, frontend, persistent Postgres (volume)
 - Mattermost не поднимается

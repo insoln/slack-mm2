@@ -1,0 +1,14 @@
+[
+  {
+    "type": "message",
+    "user": "U0001",
+    "text": "DM day2 follow",
+    "ts": "1735776000.001100"
+  },
+  {
+    "type": "message",
+    "user": "U0002",
+    "text": "DM day2 second",
+    "ts": "1735776100.001200"
+  }
+]

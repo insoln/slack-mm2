@@ -21,43 +21,28 @@
 ## Разработка
 - Приложение на Vite + React. Компоненты без сторонних библиотек, легко стилизуются.
 
-## Политика сборки (ВАЖНО)
-Локальная сборка через `npm run build` вне Docker НЕ поддерживается. Используем только `docker compose`
+### Dev окружение (Docker)
+Фронтенд запускается через Docker Compose (см. `infra/docker-compose.dev.yml`). При старте выполняется `npm ci`, затем запускается Vite dev server на порту 5173 (hot reload).
 
-## Эфемерная dev-среда (коротко)
-Dev контейнер каждый старт выполняет `npm ci` в рабочей директории (`/workspace`), исходники монтируются read‑only. Это гарантирует чистые зависимоcти и отсутствие «залипших» node_modules. Для добавления пакета: обновите `package.json` локально и пересоберите образ `frontend` через compose build.
-
-## TODO (возможные улучшения)
-- Добавить отдельный production compose профиль.
-- Вынести общие ENV (API base URL) в `.env` с примером.
-- Добавить e2e smoke тест (Playwright) в CI.
-- Кеш npm через buildkit cache mount.
-
-#### Обновление зависимостей
+Запуск (совместно с backend):
 ```bash
-npm update                # локально, затем rebuild
+docker compose -f infra/docker-compose.dev.yml up --build frontend backend
+```
+
+Обновление зависимостей после изменения package.json:
+```bash
 docker compose -f infra/docker-compose.dev.yml build frontend
 docker compose -f infra/docker-compose.dev.yml up -d frontend --force-recreate
 ```
 
-#### Ограничения
-- Старт медленнее (полный `npm ci` ~7–9s) — плата за чистоту и отсутствие кэша.
-- Нельзя писать в `/app` внутри контейнера (это ожидаемо). Любые ошибки `EROFS` означают, что что-то ещё пытается кэшироваться вне `/workspace`.
-
-#### Как понять что всё работает
-В логах контейнера `frontend` после старта:
+Production build (опционально):
+```bash
+docker build -t slack-mm2-frontend:prod -f frontend/Dockerfile .
 ```
-[entrypoint] Installing dependencies (ephemeral)
-...
-VITE vX.Y.Z  ready in N ms
-```
-Если видите повторяющийся цикл install → crash — проверьте, не добавлен ли флаг, не поддерживаемый текущей версией Vite.
+Дальше можно раздавать статический build через любой HTTP сервер.
 
-#### Добавление dev-only инструментов
-Просто добавьте их в `devDependencies`, пересоберите образ. Они попадут в слой, но устанавливаться всё равно будут заново при старте — если это критично по времени, можно рассмотреть многостадийный Dockerfile с кешированием (`--mount=type=cache,target=/root/.npm`). Пока сознательно упрощено.
-
-#### Возможные улучшения (отложено)
-- Кеш npm (`/root/.npm`) через buildkit cache mount.
-- Предварительная оптимизация Vite deps в образе (можно через `vite build --ssr config-only`).
-- Watch через polling отключить, если FS события надёжны у вашей платформы.
->>>>>>> 1c59c28 (frontend: ephemeral workspace dev env (RO bind + /workspace deps) + docs; add entrypoint refactor docs references)
+### Планируемые улучшения
+* Кеш npm (`/root/.npm`) через buildkit cache mount
+* E2E smoke тест (Playwright)
+* Вынос общих ENV (API base URL) в `.env`
+* Возможный многостадийный Dockerfile с кешем зависимостей

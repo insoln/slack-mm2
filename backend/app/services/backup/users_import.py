@@ -26,5 +26,8 @@ async def parse_users(extract_dir, job_id: Optional[int] = None):
         )
         user_objs.append(user)
     for u in user_objs:
-        await u.save_to_db()
+        try:
+            await u.save_to_db()
+        except Exception:  # pragma: no cover
+            pass
     return user_objs

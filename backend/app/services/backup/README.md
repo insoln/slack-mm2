@@ -4,19 +4,20 @@
 - `zip_utils.py` — распаковка архивов.
 - `file_storage.py` — временное и постоянное хранение загруженных архивов.
 - `messages_import.py` — единый высокопроизводительный импорт сообщений, реакций, вложений и кандидатов кастомных эмодзи.
-- `orchestrator.py` — координация полного импорта (users, channels, unified messages+related).
-- `progress_tracker.py` — унифицированные parsed/processed счётчики.
+ - `orchestrator.py` — координация полного импорта (users, channels, messages+related, export).
+ - (устар.) `attachments_import.py`, `reactions_import.py` — сохранены как заглушки/совместимость.
+ - Прогресс‑трекирование через прямые обновления JSONB меты (без progress_tracker).
 
-Специализированные частичные импортёры (attachments, reactions, custom emojis) удалены — всё консолидировано в единый поток `parse_messages_and_related`.
+## Упрощённый импорт (single-pass)
 
-## Упрощённый импорт
+Последовательность стадий:
+`extracting → users → channels → messages (сообщения + reactions + attachments + custom emoji usage) → exporting → done`
 
-Последовательность:
-1. Распаковка архива в рабочую директорию.
-2. Чтение структуры каналов (карта папка→channel).
-3. Однопроходный парсинг всех JSON файлов каналов.
-4. Пакетные вставки entities + пакетные вставки связей.
-5. Обновление прогресса через `ProgressTracker`.
+Особенности:
+* Нет отдельных стадий reactions / attachments / emojis.
+* Счётчики прогресса: `messages_processed` + дельты для других сущностей.
+* Итоговые totals агрегируются в конце стадии messages.
+* Конкурентность по каналам управляется `IMPORT_CHANNEL_CONCURRENCY` (по умолчанию 1).
 
 ## Пример (высокоуровневый вызов)
 ```python
@@ -30,12 +31,8 @@ await import_slack_backup(zip_path, job_id=job_id)
 ## Инварианты
 - Каждое импортированное сообщение имеет `posted_in` отношение (канал) — обеспечивается в момент вставки.
 
-## Производительность
-- Используются настраиваемые размеры батчей для сообщений/реакций/вложений и связей.
-- Конкурентность по каналам регулируется `IMPORT_CHANNEL_CONCURRENCY`.
-
 ## Прогресс
-- `*_parsed` и `*_processed` хранятся в JSONB `import_jobs.meta` с единым интервалом флеша (`IMPORT_PROGRESS_FLUSH_INTERVAL_SEC`).
+В `import_jobs.meta` обновляются ключи: `messages_processed`, `reactions_processed`, `attachments_processed`, `emojis_processed`, `json_files_processed`, `json_files_total`, `current_stage`, `stages`, `totals`, опционально `durations`.
 
 ## Тестовый минимальный архив
 Для интеграционного/локального тестирования добавлен небольшой искусственный экспорт Slack:

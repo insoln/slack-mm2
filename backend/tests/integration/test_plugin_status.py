@@ -14,8 +14,16 @@ def test_plugin_status_shape_no_mm_env(monkeypatch):
     data = r.json()
     # Basic expected keys
     for key in [
-        "plugin_id","expected_version","installed","enabled","installed_version",
-        "needs_update","bundle_exists","bundle_path","bundle_sha256","bundle_mtime"
+        "plugin_id",
+        "expected_version",
+        "installed",
+        "enabled",
+        "installed_version",
+        "needs_update",
+        "bundle_exists",
+        "bundle_path",
+        "bundle_sha256",
+        "bundle_mtime",
     ]:
         assert key in data
     assert data["installed"] is False
