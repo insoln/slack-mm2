@@ -3,6 +3,8 @@ import json
 from typing import Optional
 from app.services.entities.channel import Channel
 from app.logging_config import backend_logger
+
+
 async def parse_channels_and_chats(extract_dir, job_id: Optional[int] = None):
     """Parse channel-like entities (public channels, private groups, DMs, MPIMs).
 

@@ -4,7 +4,9 @@ from app.services.entities.attachment import Attachment
 from app.logging_config import backend_logger
 
 
-async def parse_attachments_from_messages(export_dir, message_entities):  # pragma: no cover - legacy
+async def parse_attachments_from_messages(
+    export_dir, message_entities
+):  # pragma: no cover - legacy
     """Previously used to extract Attachment entities from already imported messages.
 
     The unified importer now persists attachments inline; this function is kept only
@@ -45,7 +47,9 @@ async def parse_attachments_from_messages(export_dir, message_entities):  # prag
     return saved
 
 
-async def parse_attachments_from_export(*_args, **_kwargs):  # pragma: no cover - deprecated
+async def parse_attachments_from_export(
+    *_args, **_kwargs
+):  # pragma: no cover - deprecated
     backend_logger.warning(
         "parse_attachments_from_export deprecated: attachments handled in unified messages stage"
     )

@@ -26,7 +26,7 @@ from app.services.export.orchestrator import orchestrate_mm_export
 from app.services.entities.custom_emoji import get_slack_emoji_list
 
 from .users_import import parse_users
-from .channels_import import parse_channels_and_chats
+from .channels_import import parse_channels_and_chats, find_channel_for_folder
 from .messages_import import parse_messages_and_related
 
 
@@ -68,22 +68,147 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
                 meta = cast(Dict[str, Any], job.meta or {})
                 meta["extract_dir"] = extract_dir
                 meta["single_pass"] = True
-                meta.setdefault("durations", {} if record_durations else None)
-                meta["stages"] = [
-                    "extracting",
-                    "users",
-                    "channels",
-                    "messages",
-                    "exporting",
-                    "done",
-                ]
-                meta.setdefault(
-                    "totals",
-                    {"messages": 0, "reactions": 0, "attachments": 0, "emojis": 0},
-                )
+                if record_durations and "durations" not in meta:
+                    meta["durations"] = {}
+                setattr(job, "meta", meta)  # type: ignore[attr-defined]
+                await session.commit()
+    except Exception:  # pragma: no cover
+        pass
+
+    try:
+        # --- Extract ---
+        backend_logger.info(f"Распаковываю архив {zip_path} в {extract_dir}")
+        from app.services.backup.zip_utils import extract_zip
+
+        _stage_start = time.time()
+        await extract_zip(zip_path, extract_dir)
+        _dur = int((time.time() - _stage_start) * 1000)
+        if record_durations:
+            try:
+                async with SessionLocal() as session:
+                    job = await session.get(ImportJob, job_id)
+                    if job:
+                        meta = cast(Dict[str, Any], (job.meta or {}))
+                        durs = meta.get("durations", {}) or {}
+                        durs["extracting"] = _dur
+                        meta["durations"] = durs
+                        setattr(job, "meta", meta)  # type: ignore[attr-defined]
+                        await session.commit()
+            except Exception:  # pragma: no cover
+                pass
+
+        # Slack emoji list (for validity checks during messages stage)
+        emoji_list = await get_slack_emoji_list()
+
+        # Count JSON files for progress UI
+        def _json_files_count(base_dir: str) -> tuple[int, dict[str, bool]]:
+            top_files = [
+                "users.json",
+                "channels.json",
+                "groups.json",
+                "dms.json",
+                "mpims.json",
+            ]
+            presence: dict[str, bool] = {}
+            total = 0
+            for fname in top_files:
+                exists = os.path.exists(os.path.join(base_dir, fname))
+                presence[fname] = exists
+                if exists:
+                    total += 1
+            for entry in os.listdir(base_dir):
+                p = os.path.join(base_dir, entry)
+                if os.path.isdir(p):
+                    for _ in glob.glob(os.path.join(p, "*.json")):
+                        total += 1
+            return total, presence
+
+        json_total, json_presence = _json_files_count(extract_dir)
+        async with SessionLocal() as session:
+            job = await session.get(ImportJob, job_id)
+            if job:
+                meta = cast(Dict[str, Any], (job.meta or {}))
+                meta["json_files_total"] = int(json_total)
                 meta.setdefault("json_files_processed", 0)
                 setattr(job, "meta", meta)  # type: ignore[attr-defined]
                 await session.commit()
+
+        # --- Users ---
+        async with SessionLocal() as session:
+            job = await session.get(ImportJob, job_id)
+            if job:
+                setattr(job, "current_stage", "users")
+                await session.commit()
+        backend_logger.info("Архив распакован. Начинаю парсинг пользователей…")
+        _stage_start = time.time()
+        users = await parse_users(extract_dir, job_id=None)
+        _dur = int((time.time() - _stage_start) * 1000)
+        if record_durations:
+            try:
+                async with SessionLocal() as session:
+                    job = await session.get(ImportJob, job_id)
+                    if job:
+                        meta = cast(Dict[str, Any], (job.meta or {}))
+                        durs = meta.get("durations", {}) or {}
+                        durs["users"] = _dur
+                        meta["durations"] = durs
+                        setattr(job, "meta", meta)  # type: ignore[attr-defined]
+                        await session.commit()
+            except Exception:  # pragma: no cover
+                pass
+        backend_logger.info(
+            f"Импорт пользователей завершён. Всего обработано: {len(users) if users else 0}"
+        )
+        if json_presence.get("users.json"):
+            async with SessionLocal() as session:
+                job = await session.get(ImportJob, job_id)
+                if job:
+                    meta = cast(Dict[str, Any], (job.meta or {}))
+                    meta["json_files_processed"] = (
+                        int(meta.get("json_files_processed", 0)) + 1
+                    )
+                    setattr(job, "meta", meta)  # type: ignore[attr-defined]
+                    await session.commit()
+
+        # --- Channels ---
+        async with SessionLocal() as session:
+            job = await session.get(ImportJob, job_id)
+            if job:
+                setattr(job, "current_stage", "channels")
+                await session.commit()
+        _stage_start = time.time()
+        channels = await parse_channels_and_chats(extract_dir, job_id=None)
+        _dur = int((time.time() - _stage_start) * 1000)
+        if record_durations:
+            try:
+                async with SessionLocal() as session:
+                    job = await session.get(ImportJob, job_id)
+                    if job:
+                        meta = cast(Dict[str, Any], (job.meta or {}))
+                        durs = meta.get("durations", {}) or {}
+                        durs["channels"] = _dur
+                        meta["durations"] = durs
+                        setattr(job, "meta", meta)  # type: ignore[attr-defined]
+                        await session.commit()
+            except Exception:  # pragma: no cover
+                pass
+        backend_logger.info(
+            f"Импорт каналов завершён. Всего обработано: {len(channels) if channels else 0}"
+        )
+        top_channel_files = ["channels.json", "groups.json", "dms.json", "mpims.json"]
+        add = sum(1 for f in top_channel_files if json_presence.get(f))
+        if add:
+            async with SessionLocal() as session:
+                job = await session.get(ImportJob, job_id)
+                if job:
+                    meta = cast(Dict[str, Any], (job.meta or {}))
+                    meta["json_files_processed"] = (
+                        int(meta.get("json_files_processed", 0)) + add
+                    )
+                    setattr(job, "meta", meta)  # type: ignore[attr-defined]
+                    await session.commit()
+
+        # (Removed early folder_channel_map use; final mapping built later after channels stage)
     except Exception:  # pragma: no cover
         pass
 
@@ -263,9 +388,12 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
         # Best-effort cleanup of extraction dir and removal from meta
         try:
             shutil.rmtree(extract_dir)
-            backend_logger.debug(f"Удалена временная директория {extract_dir}")
-        except Exception as ce:  # noqa: BLE001
-            backend_logger.error(f"Не удалось удалить {extract_dir}: {ce}")
+            backend_logger.debug(f"Временная директория {extract_dir} удалена")
+        except Exception as e:  # noqa: BLE001
+            backend_logger.error(
+                f"Ошибка при удалении временной директории {extract_dir}: {e}"
+            )
+        # Remove extract_dir from meta
         try:
             async with SessionLocal() as session:
                 job_cleanup = await session.get(ImportJob, job_id)
@@ -376,27 +504,4 @@ async def _mark_failed(job_id: int, error_message: str):
         )
         await session.commit()
 
-
-def _json_files_count(base_dir: str):  # (total_files, presence_map)
-    top_files = [
-        "users.json",
-        "channels.json",
-        "groups.json",
-        "dms.json",
-        "mpims.json",
-    ]
-    presence: Dict[str, bool] = {}
-    total = 0
-    for fname in top_files:
-        exists = os.path.exists(os.path.join(base_dir, fname))
-        presence[fname] = exists
-        if exists:
-            total += 1
-    # Count per-channel message json files
-    for entry in os.listdir(base_dir):
-        p = os.path.join(base_dir, entry)
-        if os.path.isdir(p):
-            for _ in glob.glob(os.path.join(p, "*.json")):
-                total += 1
-    return total, presence
 

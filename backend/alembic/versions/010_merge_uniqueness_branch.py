@@ -9,6 +9,7 @@ Also normalise uniqueness indexes:
 Result: a single Alembic head so `alembic upgrade head` works without specifying branches.
 Future migrations MUST set down_revision = "010_merge_uniqueness_branch".
 """
+
 from alembic import op
 
 # Revision identifiers, used by Alembic.
