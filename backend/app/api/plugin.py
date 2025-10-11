@@ -184,19 +184,34 @@ async def _compute_status() -> dict:
             "bundle_hash_computed_at": bundle_hash_computed_at,
         }
 
-    resp = await mm_get("/api/v4/plugins")
-    if resp.status_code == 200:
-        data = resp.json()
-        active = data.get("active", [])
-        inactive = data.get("inactive", [])
-        for pl in active + inactive:
-            if pl.get("id") == expected_id:
-                installed = True
-                installed_version = pl.get("version")
-                enabled = pl in active
-                break
-    else:
-        backend_logger.error(f"Failed to fetch plugins: {resp.status_code} {resp.text}")
+    resp = None
+    mm_fetch_error: str | None = None
+    try:
+        resp = await mm_get("/api/v4/plugins")
+    except Exception as e:  # network / DNS / timeout
+        mm_fetch_error = f"mm_get_failed: {e}"  # logged below
+        backend_logger.error(f"Failed to fetch plugins (exception): {e}")
+
+    if resp is not None:
+        if resp.status_code == 200:
+            try:
+                data = resp.json()
+            except Exception as je:  # pragma: no cover
+                backend_logger.error(f"Failed to decode plugins JSON: {je}")
+                data = {}
+            active = data.get("active", [])
+            inactive = data.get("inactive", [])
+            for pl in active + inactive:
+                if pl.get("id") == expected_id:
+                    installed = True
+                    installed_version = pl.get("version")
+                    enabled = pl in active
+                    break
+        else:
+            mm_fetch_error = f"mm_status_{resp.status_code}"
+            backend_logger.error(
+                f"Failed to fetch plugins: {resp.status_code} {resp.text[:200]}"
+            )
 
     needs_update = False
     if expected_version and installed_version and expected_version != installed_version:
@@ -212,7 +227,7 @@ async def _compute_status() -> dict:
     if bundle_exists and bundle_path is not None:
         bundle_sha256, bundle_mtime, bundle_size, bundle_hash_computed_at = _get_cached_bundle_info(bundle_path)
 
-    return {
+    result = {
         "plugin_id": expected_id,
         "expected_version": expected_version,
         "installed": installed,
@@ -226,6 +241,9 @@ async def _compute_status() -> dict:
         "bundle_size": bundle_size,
         "bundle_hash_computed_at": bundle_hash_computed_at,
     }
+    if mm_fetch_error:
+        result["error"] = mm_fetch_error
+    return result
 
 
 async def _upload_bundle(bundle_path: Path) -> tuple[bool, str | None]:

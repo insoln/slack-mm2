@@ -48,10 +48,18 @@ function App() {
   const refreshPluginStatus = async () => {
     setPlugin(s => ({...s, loading: true, error: null}));
     try {
-      const r = await fetch('/api/plugin/status');
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || 'plugin status');
-      setPlugin({ loading: false, data: d, error: null });
+      const res = await fetch('/api/plugin/status');
+      const text = await res.text();
+      let data = null;
+      try { data = text ? JSON.parse(text) : null; } catch { /* swallow parse error */ }
+      if (!res.ok) {
+        const errMsg = (data && data.error) || text.slice(0,200) || 'Failed to get plugin status';
+        throw new Error(errMsg);
+      }
+      if (!data) {
+        throw new Error('Bad JSON plugin status response');
+      }
+      setPlugin({loading: false, data, error: null});
     } catch (e) {
       setPlugin({ loading: false, data: null, error: e.message });
     }
