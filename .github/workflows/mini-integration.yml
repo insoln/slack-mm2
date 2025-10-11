@@ -54,6 +54,28 @@ jobs:
           npm run lint
           npm run build
 
+      - name: Set up Go (for plugin build)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Cache Go build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('infra/plugin/go.sum') }}
+
+      - name: Build Mattermost plugin (dev script)
+        working-directory: infra/plugin
+        run: |
+          bash build-dev.sh
+          ls -l dist
+
+      - name: List plugin bundle artifact
+        run: ls -l infra/plugin/dist || (echo 'Missing plugin dist output' && exit 1)
+
       - name: Mini integration test
         env:
           # ensure non-TTY psql works
