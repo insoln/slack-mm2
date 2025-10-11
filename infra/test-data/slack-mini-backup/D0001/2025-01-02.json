@@ -2,13 +2,13 @@
   {
     "type": "message",
     "user": "U0001",
-    "text": "DM day2 follow",
-    "ts": "1735776000.001100"
+    "text": "DM day2 follow (dup variant)",
+    "ts": "1735776000.001101"
   },
   {
     "type": "message",
     "user": "U0002",
-    "text": "DM day2 second",
-    "ts": "1735776100.001200"
+    "text": "DM day2 second (dup variant)",
+    "ts": "1735776100.001201"
   }
 ]

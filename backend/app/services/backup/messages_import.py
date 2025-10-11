@@ -131,12 +131,29 @@ async def parse_channel_messages(
             return True
         return False
 
+    per_folder_stats = {}
+    seen_message_ids: Set[str] = set()
     for folder, channel in (folder_channel_map or {}).items():
         channel_id = channel.get("id") if isinstance(channel, dict) else None
+        folder_stats = {
+            "files": 0,
+            "raw_messages": 0,
+            "saved": 0,
+            "skipped_no_ts": 0,
+            "duplicates": 0,
+        }
         if not channel_id:
+            backend_logger.debug(
+                f"[DIAG][messages] Skip folder '{folder}' (no mapped channel)"
+            )
+            per_folder_stats[folder] = folder_stats
             continue
         folder_path = os.path.join(export_dir, folder)
         if not os.path.isdir(folder_path):
+            backend_logger.debug(
+                f"[DIAG][messages] Skip folder '{folder}' (not a directory)"
+            )
+            per_folder_stats[folder] = folder_stats
             continue
         json_files = sorted(glob.glob(os.path.join(folder_path, "*.json")))
         for msg_file in json_files:
@@ -367,11 +384,6 @@ async def parse_channel_messages(
 
             # Per-file final emission (so UI updates even for small files)
             await emit()
-            if file_progress:
-                try:
-                    await file_progress(1)
-                except Exception:  # pragma: no cover
-                    pass
 
     # Final forced emission to flush trailing counters
     await emit(force=True)

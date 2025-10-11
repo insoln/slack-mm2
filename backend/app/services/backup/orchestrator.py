@@ -516,28 +516,32 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
         except Exception:  # pragma: no cover
             pass
 
-        # --- Export ---
-        async with SessionLocal() as session:
-            job = await session.get(ImportJob, job_id)
-            if job:
-                setattr(job, "current_stage", "exporting")
-                await session.commit()
-        _stage_start = time.time()
-        await orchestrate_mm_export(job_id=job_id)
-        _dur = int((time.time() - _stage_start) * 1000)
-        if record_durations:
-            try:
-                async with SessionLocal() as session:
-                    job = await session.get(ImportJob, job_id)
-                    if job:
-                        meta = cast(Dict[str, Any], (job.meta or {}))
-                        durs = meta.get("durations", {}) or {}
-                        durs["exporting"] = _dur
-                        meta["durations"] = durs
-                        setattr(job, "meta", meta)  # type: ignore[attr-defined]
-                        await session.commit()
-            except Exception:  # pragma: no cover
-                pass
+        skip_export = os.environ.get("IMPORT_SKIP_EXPORT", "0").lower() in {"1","true","yes"}
+        if skip_export:
+            backend_logger.info("Пропускаю этап экспортирования (IMPORT_SKIP_EXPORT=1)")
+        else:
+            # --- Export ---
+            async with SessionLocal() as session:
+                job = await session.get(ImportJob, job_id)
+                if job:
+                    setattr(job, "current_stage", "exporting")
+                    await session.commit()
+            _stage_start = time.time()
+            await orchestrate_mm_export(job_id=job_id)
+            _dur = int((time.time() - _stage_start) * 1000)
+            if record_durations:
+                try:
+                    async with SessionLocal() as session:
+                        job = await session.get(ImportJob, job_id)
+                        if job:
+                            meta = cast(Dict[str, Any], (job.meta or {}))
+                            durs = meta.get("durations", {}) or {}
+                            durs["exporting"] = _dur
+                            meta["durations"] = durs
+                            setattr(job, "meta", meta)  # type: ignore[attr-defined]
+                            await session.commit()
+                except Exception:  # pragma: no cover
+                    pass
 
         # --- Done ---
         async with SessionLocal() as session:
