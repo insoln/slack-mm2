@@ -7,6 +7,10 @@ export default defineConfig({
   // Keep proxy to backend and allow serving symlinked /app path
   server: {
     host: true,
+    fs: {
+      // Allow serving files from both ephemeral workspace root and original read-only app dir
+      allow: ['/workspace', '/app']
+    },
     proxy: {
       // Proxy all backend API calls through Vite to avoid hardcoding host/port
       '/api': {
