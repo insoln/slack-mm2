@@ -206,34 +206,21 @@ echo "$FINAL_JOBS_JSON" | head -c 1200
 echo
 echo "[DIAG] Final counters: users=$F_USERS channels=$F_CHANNELS messages=$F_MESSAGES reactions=$F_REACTIONS attachments=$F_ATTACHMENTS"
 
-# Allow relaxed expectation mode (e.g., reactions stub) without failing the whole run, controlled via RELAXED_EXPECT=1
-RELAXED=${RELAXED_EXPECT:-0}
-FAIL=0
-
-assert_metric() {
-  local name=$1 actual=$2 expected=$3 allow_relaxed=$4
+strict_assert() {
+  local name=$1 actual=$2 expected=$3
   if [[ "$actual" -ne "$expected" ]]; then
-    echo "[ASSERT] MISMATCH $name: got $actual expected $expected" >&2
-    if [[ "$allow_relaxed" == "1" && "$RELAXED" == "1" ]]; then
-      echo "[ASSERT] RELAXED mode: not failing due to $name mismatch" >&2
-    else
-      FAIL=1
-    fi
-  else
-    echo "[ASSERT] OK $name=$actual"
+    echo "[ASSERT] FAIL $name: got $actual expected $expected" >&2
+    echo "[ASSERT] Aborting due to $name mismatch." >&2
+    exit 1
   fi
+  echo "[ASSERT] OK $name=$actual"
 }
 
-assert_metric users "$F_USERS" "$EXPECTED_USERS" 0
-assert_metric channels "$F_CHANNELS" "$EXPECTED_CHANNELS" 0
-assert_metric messages "$F_MESSAGES" "$EXPECTED_MESSAGES" 0
-assert_metric attachments "$F_ATTACHMENTS" "$EXPECTED_ATTACHMENTS" 0
-assert_metric reactions "$F_REACTIONS" "$EXPECTED_REACTIONS" 1
-
-if [[ $FAIL -ne 0 ]]; then
-  echo "[FAIL] One or more required metric assertions failed." >&2
-  exit 1
-fi
+strict_assert users "$F_USERS" "$EXPECTED_USERS"
+strict_assert channels "$F_CHANNELS" "$EXPECTED_CHANNELS"
+strict_assert messages "$F_MESSAGES" "$EXPECTED_MESSAGES"
+strict_assert attachments "$F_ATTACHMENTS" "$EXPECTED_ATTACHMENTS"
+strict_assert reactions "$F_REACTIONS" "$EXPECTED_REACTIONS"
 
 echo "[STEP] Log scanning for errors"
 docker compose -f "$COMPOSE_FILE" logs --no-color backend > "$LOG_CAPTURE" 2>&1 || true
