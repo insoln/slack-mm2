@@ -143,7 +143,8 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
                 await session.commit()
         backend_logger.info("Архив распакован. Начинаю парсинг пользователей…")
         _stage_start = time.time()
-        users = await parse_users(extract_dir, job_id=None)
+        # IMPORTANT: pass job_id so derived counters in /jobs (which filter by job_id) can see these entities.
+        users = await parse_users(extract_dir, job_id=job_id)
         # Persist users_processed counter (previous logic omitted incremental tracking)
         try:
             async with SessionLocal() as session:
@@ -153,6 +154,20 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
                     meta2["users_processed"] = int(len(users) if users else 0)
                     setattr(job2, "meta", meta2)  # type: ignore[attr-defined]
                     await session.commit()
+                    backend_logger.debug(
+                        f"[DIAG] After users stage (python commit) users_processed={meta2.get('users_processed')} meta_keys={list(meta2.keys())}"
+                    )
+        except Exception:  # pragma: no cover
+            pass
+        # Direct SQL snapshot right after python meta save
+        try:
+            async with SessionLocal() as s:
+                row = await s.execute(
+                    _text("SELECT meta::text FROM import_jobs WHERE id=:jid"),
+                    {"jid": job_id},
+                )
+                txt = row.scalar_one_or_none()
+                backend_logger.debug(f"[DIAG] DB meta snapshot post-users: {txt}")
         except Exception:  # pragma: no cover
             pass
         _dur = int((time.time() - _stage_start) * 1000)
@@ -213,7 +228,8 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
                 setattr(job, "current_stage", "channels")
                 await session.commit()
         _stage_start = time.time()
-        channels = await parse_channels_and_chats(extract_dir, job_id=None)
+        # IMPORTANT: pass job_id so channel entities are associated with this import job.
+        channels = await parse_channels_and_chats(extract_dir, job_id=job_id)
         # Persist channels_processed counter
         try:
             async with SessionLocal() as session:
@@ -223,6 +239,20 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
                     meta2["channels_processed"] = int(len(channels) if channels else 0)
                     setattr(job2, "meta", meta2)  # type: ignore[attr-defined]
                     await session.commit()
+                    backend_logger.debug(
+                        f"[DIAG] After channels stage (python commit) channels_processed={meta2.get('channels_processed')} meta_keys={list(meta2.keys())}"
+                    )
+        except Exception:  # pragma: no cover
+            pass
+        # Direct SQL snapshot after channels stage
+        try:
+            async with SessionLocal() as s:
+                row = await s.execute(
+                    _text("SELECT meta::text FROM import_jobs WHERE id=:jid"),
+                    {"jid": job_id},
+                )
+                txt = row.scalar_one_or_none()
+                backend_logger.debug(f"[DIAG] DB meta snapshot post-channels: {txt}")
         except Exception:  # pragma: no cover
             pass
         _dur = int((time.time() - _stage_start) * 1000)
@@ -336,6 +366,15 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
                     {"delta": int(delta or 0), "job_id": job_id},
                 )
                 await s.commit()
+                # Diagnostic snapshot every few messages (small dataset so always log)
+                if delta:
+                    snap = await s.execute(
+                        _text("SELECT (meta->>'messages_processed')::int FROM import_jobs WHERE id=:jid"),
+                        {"jid": job_id},
+                    )
+                    backend_logger.debug(
+                        f"[DIAG] messages_processed updated to {snap.scalar_one_or_none()}"
+                    )
 
         async def _progress_msg_files(delta_files: int):
             if not delta_files:
@@ -453,7 +492,7 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
             except Exception:  # pragma: no cover
                 pass
 
-        # Persist final totals based on processed counters (including users & channels)
+        # Persist final totals based on processed counters (including users & channels) without force fallback
         try:
             async with SessionLocal() as session:
                 job = await session.get(ImportJob, job_id)
