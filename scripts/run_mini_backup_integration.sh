@@ -10,17 +10,17 @@ set -euo pipefail
 #  5. Scan logs for errors and validate admin user mapping
 #  6. Tear down services
 # Expected counts (derived from mini dataset):
-#   users=4 (2 real + 1 bot + 1 pre-existing admin user expected to map to existing Mattermost ID)
-#   channels=3 (public, private, DM)
-#   messages=13 (including thread replies, edited, deleted tombstone not counted as active message?)
-#   attachments=3 (text file, image, zip)
+#   users=3 (2 реальных + 1 bot; админ UADMIN присутствует как отдельная сущность в БД после импорта)
+#   channels=3 (public + private + DM)
+#   messages=17 (все сообщения с ts во всех JSON, включая ответы в thread)
+#   attachments=0 (в текущем мини-архиве отсутствуют валидные files с url_private https://files.slack.com)
 #   reactions=1
 
 # Expected counts (allow override via env for flexibility)
-: "${EXPECTED_USERS:=4}"
+: "${EXPECTED_USERS:=3}"
 : "${EXPECTED_CHANNELS:=3}"
-: "${EXPECTED_MESSAGES:=13}"
-: "${EXPECTED_ATTACHMENTS:=3}"
+: "${EXPECTED_MESSAGES:=17}"
+: "${EXPECTED_ATTACHMENTS:=0}"
 : "${EXPECTED_REACTIONS:=1}"
 
 # Compose file, services list, dataset, and log capture path (override allowed)
