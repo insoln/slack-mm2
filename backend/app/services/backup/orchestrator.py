@@ -82,6 +82,11 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
 
         _stage_start = time.time()
         await extract_zip(zip_path, extract_dir)
+        # Strict validation: archive must have json/channel folders directly at root.
+        if not os.path.exists(os.path.join(extract_dir, "users.json")):
+            raise RuntimeError(
+                "Invalid archive format: users.json not found at root (no wrapper directories allowed)"
+            )
         _dur = int((time.time() - _stage_start) * 1000)
         if record_durations:
             try:
