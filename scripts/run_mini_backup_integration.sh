@@ -38,6 +38,16 @@ if [[ ! -f "$DATASET_FILE" ]]; then
   exit 1
 fi
 
+# Ensure infra/.env exists (CI runners won't have it by default). Provide dummy Slack tokens to satisfy docker compose env expectations.
+if [[ ! -f infra/.env ]]; then
+  echo "[INFO] Creating infra/.env with placeholder Slack tokens"
+  cat > infra/.env <<'ENVEOF'
+SLACK_VERIFICATION_TOKEN=dummy
+SLACK_BOT_TOKEN=dummy
+SLACK_SIGNING_SECRET=dummy
+ENVEOF
+fi
+
 teardown() {
   echo "[CLEANUP] docker compose down"
   docker compose -f "$COMPOSE_FILE" down -v || true
