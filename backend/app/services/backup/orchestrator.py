@@ -142,6 +142,17 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
         backend_logger.info("Архив распакован. Начинаю парсинг пользователей…")
         _stage_start = time.time()
         users = await parse_users(extract_dir, job_id=None)
+        # Persist users_processed counter (previous logic omitted incremental tracking)
+        try:
+            async with SessionLocal() as session:
+                job2 = await session.get(ImportJob, job_id)
+                if job2:
+                    meta2 = cast(Dict[str, Any], (job2.meta or {}))
+                    meta2["users_processed"] = int(len(users) if users else 0)
+                    setattr(job2, "meta", meta2)  # type: ignore[attr-defined]
+                    await session.commit()
+        except Exception:  # pragma: no cover
+            pass
         _dur = int((time.time() - _stage_start) * 1000)
         if record_durations:
             try:
@@ -178,6 +189,17 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
                 await session.commit()
         _stage_start = time.time()
         channels = await parse_channels_and_chats(extract_dir, job_id=None)
+        # Persist channels_processed counter
+        try:
+            async with SessionLocal() as session:
+                job2 = await session.get(ImportJob, job_id)
+                if job2:
+                    meta2 = cast(Dict[str, Any], (job2.meta or {}))
+                    meta2["channels_processed"] = int(len(channels) if channels else 0)
+                    setattr(job2, "meta", meta2)  # type: ignore[attr-defined]
+                    await session.commit()
+        except Exception:  # pragma: no cover
+            pass
         _dur = int((time.time() - _stage_start) * 1000)
         if record_durations:
             try:
@@ -358,13 +380,13 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
                 extract_dir,
                 {folder: ch},
                 emoji_list=emoji_list,
+                batch_log_every=1,  # ensure per-message progress for small datasets
                 progress_messages=_progress_messages,
                 file_progress=_file_progress,
                 job_id=job_id,
                 single_pass=True,
                 counters_callback=_counters,
             )
-
         if record_durations:
             await _record_stage_duration(job_id, "messages", int((time.time() - start) * 1000))
 
