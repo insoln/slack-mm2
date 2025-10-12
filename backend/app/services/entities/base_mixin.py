@@ -77,33 +77,43 @@ class BaseMapping:
                 return entity
             except IntegrityError as e:
                 await session.rollback()
-                # Повторно ищем запись: возможно, она уже появилась из другого потока
-                if self.job_id is None:
-                    query = await session.execute(
-                        select(Entity).where(
-                            (Entity.entity_type == self.entity_type)
-                            & (Entity.slack_id == self.slack_id)
-                            & (Entity.job_id.is_(None))
+                # Возможен гонок: другая корутина вставила запись между select и commit
+                # Делаем до 2 быстрых повторных проверок с короткой задержкой
+                for attempt in range(2):
+                    if self.job_id is None:
+                        query = await session.execute(
+                            select(Entity).where(
+                                (Entity.entity_type == self.entity_type)
+                                & (Entity.slack_id == self.slack_id)
+                                & (Entity.job_id.is_(None))
+                            )
                         )
-                    )
-                else:
-                    query = await session.execute(
-                        select(Entity).where(
-                            (Entity.entity_type == self.entity_type)
-                            & (Entity.slack_id == self.slack_id)
-                            & (Entity.job_id == self.job_id)
+                    else:
+                        query = await session.execute(
+                            select(Entity).where(
+                                (Entity.entity_type == self.entity_type)
+                                & (Entity.slack_id == self.slack_id)
+                                & (Entity.job_id == self.job_id)
+                            )
                         )
-                    )
-                existing = query.scalar_one_or_none()
-                if existing:
-                    # Зафиксируем ID чтобы последующие relation‑методы могли его использовать
-                    self.id = existing.id
-                    backend_logger.warning(
-                        f"IntegrityError (duplicate) для {self.entity_type} slack_id={self.slack_id}; использую существующую запись id={existing.id}. Ошибка: {e}"
-                    )
-                    return existing
+                    existing = query.scalar_one_or_none()
+                    if existing:
+                        self.id = existing.id
+                        backend_logger.info(
+                            f"[DUPLICATE] {self.entity_type} slack_id={self.slack_id} reuse id={existing.id} (attempt={attempt})"
+                        )
+                        return existing
+                    # micro sleep only if not last attempt
+                    if attempt == 0:
+                        try:
+                            import asyncio as _a
+
+                            await _a.sleep(0)
+                        except Exception:  # pragma: no cover
+                            pass
+                # Если после повторных проверок не нашли — это реальная ошибка
                 backend_logger.error(
-                    f"Ошибка при сохранении маппинга: {self.entity_type}, slack_id={self.slack_id}, mattermost_id={self.mattermost_id}, status={self.status}, ошибка: {e}"
+                    f"[DBERR] save_failed entity={self.entity_type} slack_id={self.slack_id} job_id={self.job_id} status={self.status} err={e}"
                 )
                 return None
 

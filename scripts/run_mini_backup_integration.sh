@@ -32,6 +32,15 @@ SERVICES="${COMPOSE_SERVICES:-db mattermost backend}"
 DATASET_FILE="${DATASET_FILE:-infra/test-data/slack-mini-backup.zip}"
 LOG_CAPTURE=${LOG_CAPTURE:-/tmp/backend_integration_logs.txt}
 
+# Timestamp (UTC RFC3339) used to scope log collection so prior run noise is excluded.
+# Can be disabled with LOG_SCOPE=0
+LOG_SCOPE=${LOG_SCOPE:-1}
+START_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+# If set, limit maximum seconds we wait overall (acts as guardrail) – mainly CI safety.
+MAX_TOTAL_SECONDS=${MAX_TOTAL_SECONDS:-900}
+SCRIPT_START_EPOCH=$(date +%s)
+
 echo "[INFO] Using compose file: $COMPOSE_FILE"
 echo "[INFO] Services: $SERVICES"
 echo "[INFO] Dataset file: $DATASET_FILE"
@@ -58,6 +67,12 @@ trap teardown EXIT
 
 echo "[STEP] Starting docker compose services"
 docker compose -f "$COMPOSE_FILE" up -d $SERVICES
+
+# Capture backend container ID after startup (used for precise log scoping if needed)
+BACKEND_CID=$(docker compose -f "$COMPOSE_FILE" ps -q backend || true)
+if [[ -z "$BACKEND_CID" ]]; then
+  echo "[WARN] Could not resolve backend container ID yet; will rely on compose logs" >&2
+fi
 
 echo "[STEP] Waiting for backend healthcheck"
 HEALTH_OK=0
@@ -192,7 +207,28 @@ PY
   if (( i > 120 )); then sleep 2; fi
   if (( i > 150 )); then sleep 3; fi
   if (( i > 170 )); then sleep 5; fi
-  docker compose -f "$COMPOSE_FILE" logs --no-color backend > "$LOG_CAPTURE" 2>&1 || true
+  # Periodically refresh scoped logs (helps diagnose stalls without mixing prior run data)
+  if [[ $(( i % 15 )) -eq 0 ]]; then
+    if [[ "${LOG_SCOPE}" -eq 1 ]]; then
+      # Prefer container-specific logs with --since if docker version supports it
+      if [[ -n "$BACKEND_CID" ]]; then
+        docker logs --since "$START_TS" "$BACKEND_CID" --tail=4000 --timestamps > "$LOG_CAPTURE" 2>/dev/null || \
+          docker compose -f "$COMPOSE_FILE" logs --no-color backend > "$LOG_CAPTURE" 2>&1 || true
+      else
+        docker compose -f "$COMPOSE_FILE" logs --no-color backend > "$LOG_CAPTURE" 2>&1 || true
+      fi
+    else
+      docker compose -f "$COMPOSE_FILE" logs --no-color backend > "$LOG_CAPTURE" 2>&1 || true
+    fi
+  fi
+
+  # Global timeout guard
+  NOW_EPOCH=$(date +%s)
+  if (( NOW_EPOCH - SCRIPT_START_EPOCH > MAX_TOTAL_SECONDS )); then
+    echo "[TIMEOUT] Script exceeded MAX_TOTAL_SECONDS=$MAX_TOTAL_SECONDS" >&2
+    docker compose -f "$COMPOSE_FILE" logs backend | tail -400 >&2 || true
+    exit 1
+  fi
 done
 
 if [[ $JOB_DONE -ne 1 ]]; then
@@ -240,19 +276,41 @@ strict_assert attachments "$F_ATTACHMENTS" "$EXPECTED_ATTACHMENTS"
 strict_assert reactions "$F_REACTIONS" "$EXPECTED_REACTIONS"
 
 echo "[STEP] Log scanning for errors"
-docker compose -f "$COMPOSE_FILE" logs --no-color backend > "$LOG_CAPTURE" 2>&1 || true
+if [[ "${LOG_SCOPE}" -eq 1 ]]; then
+  if [[ -n "$BACKEND_CID" ]]; then
+    docker logs --since "$START_TS" "$BACKEND_CID" --timestamps > "$LOG_CAPTURE" 2>/dev/null || \
+      docker compose -f "$COMPOSE_FILE" logs --no-color backend > "$LOG_CAPTURE" 2>&1 || true
+  else
+    docker compose -f "$COMPOSE_FILE" logs --no-color backend > "$LOG_CAPTURE" 2>&1 || true
+  fi
+else
+  docker compose -f "$COMPOSE_FILE" logs --no-color backend > "$LOG_CAPTURE" 2>&1 || true
+fi
+
+# Basic diagnostics counts (do not fail on grep miss)
+DUP_COUNT=$(grep -c "\[DUPLICATE\]" "$LOG_CAPTURE" 2>/dev/null || true)
+DBERR_COUNT=$(grep -c "\[DBERR\]" "$LOG_CAPTURE" 2>/dev/null || true)
+echo "[DIAG] Duplicate lines: $DUP_COUNT  DB error lines: $DBERR_COUNT"
+
 if grep -E "TRACEBACK|Traceback" -i "$LOG_CAPTURE" >/dev/null; then
   echo "Traceback found in backend logs" >&2
   grep -i -E "Traceback" -n "$LOG_CAPTURE" >&2
   exit 1
 fi
-if grep -E "ERROR" "$LOG_CAPTURE" \
+if grep -E "ERROR|CRITICAL" "$LOG_CAPTURE" \
+  | grep -v "\[DUPLICATE\]" \
+  | grep -vE "duplicate key value violates unique constraint \"idx_entities_type_slackid\"" \
   | grep -vE "HTTP \\w+ /upload -> 200" \
   | grep -vE "Ошибка создания (DM|GDM) через плагин: 404" \
   | grep -vE "Ошибка при создании канала: Extra data: .*404" \
   | grep -vE "Auto-ensure plugin failed:" >/dev/null; then
-  echo "ERROR lines found in backend logs (excluding benign upload access log)" >&2
-  grep -n "ERROR" "$LOG_CAPTURE" >&2
+  echo "ERROR/CRITICAL lines found in backend logs (excluding known benign patterns + [DUPLICATE] + unique-violation duplicates)" >&2
+  grep -nE "ERROR|CRITICAL" "$LOG_CAPTURE" | grep -v "\[DUPLICATE\]" | grep -vE "duplicate key value violates unique constraint \"idx_entities_type_slackid\"" >&2 || true
+  exit 1
+fi
+if (( DBERR_COUNT > 0 )); then
+  echo "[FAIL] Encountered one or more [DBERR] lines (database errors)" >&2
+  grep -n "\[DBERR\]" "$LOG_CAPTURE" >&2 || true
   exit 1
 fi
 
