@@ -1,7 +1,7 @@
 [
   {
     "type": "message",
-    "user": "U0002",
+  "user": "UADMIN",
     "text": "Private day2 with zip",
     "ts": "1735776000.000700",
     "files": [

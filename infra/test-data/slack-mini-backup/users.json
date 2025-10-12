@@ -9,11 +9,11 @@
     "deleted": false
   },
   {
-    "id": "U0002",
+    "id": "UADMIN",
     "team_id": "T0001",
-    "name": "bob",
-    "real_name": "Bob Example",
-    "profile": {"email": "bob@example.com"},
+    "name": "admin",
+    "real_name": "Admin User",
+    "profile": {"email": "is@careerum.com"},
     "is_bot": false,
     "deleted": false
   },

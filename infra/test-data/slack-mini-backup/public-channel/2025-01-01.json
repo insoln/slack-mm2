@@ -20,7 +20,7 @@
   },
   {
     "type": "message",
-    "user": "U0002",
+    "user": "UADMIN",
     "text": "Reply thread root public",
     "ts": "1735689700.000200",
     "thread_ts": "1735689700.000200",

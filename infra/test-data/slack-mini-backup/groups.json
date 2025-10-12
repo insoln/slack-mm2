@@ -7,9 +7,9 @@
     "is_private": true,
     "is_archived": false,
     "created": 1736467200,
-    "creator": "U0002",
-    "topic": {"value": "Private strategy", "creator": "U0002", "last_set": 1736467200},
-    "purpose": {"value": "Internal private channel", "creator": "U0002", "last_set": 1736467200},
-    "members": ["U0001", "U0002"]
+  "creator": "UADMIN",
+  "topic": {"value": "Private strategy", "creator": "UADMIN", "last_set": 1736467200},
+  "purpose": {"value": "Internal private channel", "creator": "UADMIN", "last_set": 1736467200},
+  "members": ["U0001", "UADMIN"]
   }
 ]
