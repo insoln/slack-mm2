@@ -96,8 +96,10 @@ class BaseMapping:
                     )
                 existing = query.scalar_one_or_none()
                 if existing:
-                    backend_logger.error(
-                        f"IntegrityError: {self.entity_type} already exists after IntegrityError: slack_id={self.slack_id}, ошибка: {e}"
+                    # Зафиксируем ID чтобы последующие relation‑методы могли его использовать
+                    self.id = existing.id
+                    backend_logger.warning(
+                        f"IntegrityError (duplicate) для {self.entity_type} slack_id={self.slack_id}; использую существующую запись id={existing.id}. Ошибка: {e}"
                     )
                     return existing
                 backend_logger.error(

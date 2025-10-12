@@ -90,6 +90,23 @@ class Reaction(BaseMapping):
             user_entity = query_user.scalar_one_or_none()
             if not user_entity:
                 return
+            if not getattr(self, "id", None):
+                # Attempt late bind: fetch reaction entity id
+                reaction_row = await session.execute(
+                    select(Entity).where(
+                        (Entity.entity_type == "reaction")
+                        & (Entity.slack_id == self.slack_id)
+                        & (
+                            (Entity.job_id == getattr(self, "job_id", None))
+                            | (Entity.job_id.is_(None))
+                        )
+                    )
+                )
+                reac = reaction_row.scalar_one_or_none()
+                if reac:
+                    self.id = reac.id
+                else:
+                    return
             # Check if relation already exists
             existing_rel = await session.execute(
                 select(EntityRelation).where(
@@ -107,8 +124,16 @@ class Reaction(BaseMapping):
                 raw_data=None,
                 job_id=getattr(self, "job_id", None),
             )
-            session.add(relation)
-            await session.commit()
+            try:
+                session.add(relation)
+                await session.commit()
+            except Exception as e:  # noqa: BLE001
+                await session.rollback()
+                from app.logging_config import backend_logger
+
+                backend_logger.error(
+                    f"Failed to create reacted_by relation reaction={self.slack_id} user={user_id}: {e}"
+                )
 
     async def create_reacted_to_relation(self):
         raw = self.raw_data or {}
@@ -140,6 +165,22 @@ class Reaction(BaseMapping):
             msg_entity = query_msg.scalar_one_or_none()
             if not msg_entity:
                 return
+            if not getattr(self, "id", None):
+                reaction_row = await session.execute(
+                    select(Entity).where(
+                        (Entity.entity_type == "reaction")
+                        & (Entity.slack_id == self.slack_id)
+                        & (
+                            (Entity.job_id == getattr(self, "job_id", None))
+                            | (Entity.job_id.is_(None))
+                        )
+                    )
+                )
+                reac = reaction_row.scalar_one_or_none()
+                if reac:
+                    self.id = reac.id
+                else:
+                    return
             # Check if relation already exists
             existing_rel = await session.execute(
                 select(EntityRelation).where(
@@ -157,5 +198,13 @@ class Reaction(BaseMapping):
                 raw_data=None,
                 job_id=getattr(self, "job_id", None),
             )
-            session.add(relation)
-            await session.commit()
+            try:
+                session.add(relation)
+                await session.commit()
+            except Exception as e:  # noqa: BLE001
+                await session.rollback()
+                from app.logging_config import backend_logger
+
+                backend_logger.error(
+                    f"Failed to create reacted_to relation reaction={self.slack_id} ts={ts}: {e}"
+                )

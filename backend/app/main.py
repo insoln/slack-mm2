@@ -15,6 +15,7 @@ from app.api.export import router as export_router
 from app.api.plugin import router as plugin_router
 from app.api.stats import router as stats_router
 from app.api.progress import router as progress_router
+from app.api.admin import router as admin_router
 from app.api.jobs import router as jobs_router
 from app.api import plugin as plugin_api
 from app.models.base import SessionLocal
@@ -115,6 +116,7 @@ app.include_router(plugin_router)
 app.include_router(stats_router)
 app.include_router(progress_router)
 app.include_router(jobs_router)
+app.include_router(admin_router)
 
 
 @app.get("/healthcheck")

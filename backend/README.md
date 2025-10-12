@@ -1,3 +1,33 @@
+## Import / Export Pipeline
+
+The importer runs in a single pass reading Slack export JSON files, creating entities (users, channels, messages, reactions, attachments, custom emoji) and their relations. The exporter then processes entities in dependency order.
+
+### Counter Semantics (Ingestion vs Export)
+
+To avoid misleading progress signals we distinguish two classes of counters recorded in `ImportJob.meta`:
+
+* `<type>_processed` — Monotonic ingestion counters. Incremented only when an entity of that type is successfully parsed & persisted (with required base invariants) during the import phase. These DO NOT decrease or reset when export begins.
+* `<type>_exported` — Dynamic export counters. Reflect how many entities of a type have transitioned out of `pending` (sum of success + skipped + failed). These can lag `processed` while entities wait in the export queue and advance as exporter workers complete.
+
+`meta.totals` is frozen after import stages complete (entering `exporting` or `done`) to keep denominators stable (prevents >100% progress scenarios). Frontend export progress bars should use the exported counters against the frozen totals. Ingestion progress displays (during import stages) can still reference processed counters for a monotonically increasing view of parsing throughput.
+
+### Reaction Integrity Guarantees
+
+Reactions require two relations to be considered fully ingested and eligible for successful export:
+
+1. `reacted_by`   (user -> reaction)
+2. `reacted_to`   (reaction -> message)
+
+The importer now:
+* Persists each reaction entity.
+* Attempts to create both relations with granular exception logging (no broad silent swallow).
+* Verifies both relations exist; reactions missing either relation are left out of the `reactions_processed` count (they remain `pending`).
+* A post-pass integrity check logs aggregate counts of reactions missing either relation (`[INTEGRITY][reaction] ...`).
+
+Exporter guards still protect Mattermost API calls; such incomplete reactions will be marked skipped with a clear reason if they reach export unchanged. A future repair utility can rebuild missing relations and reset affected reactions back to `pending` for a clean re-export.
+
+### Emoji Detection
+Emoji references detected in message text (using a lightweight `:name:` regex) are persisted as `custom_emoji` entities (if present in the provided emoji list) for later export sequencing before messages.
 # Backend (FastAPI)
 
 Backend реализует REST API для загрузки данных Slack (файл/вебхук), healthcheck и взаимодействия с базой данных.
@@ -134,6 +164,37 @@ extracting → users → channels → messages (включая reactions, attach
 ```
 Отдельных стадий `reactions`, `attachments`, `emojis` больше нет — всё создаётся внутри прохода сообщений.
 
+### Атомарные обновления метаданных / счётчиков
+Все прогресс-счётчики (`*_processed`) и сервисные поля в `ImportJob.meta` обновляются через единый SQL builder `merge_job_meta` (атомарный UPDATE JSONB). Это решает историческую проблему lost update при смешении ORM read-modify-write и отдельных UPDATE выражений.
+
+Поддерживаемые операции:
+* incr — атомарное увеличение числовых значений
+* max — монотонный максимум (страховка при конкурентных инкрементах)
+* set — установка точного значения (стадия, служебные флаги)
+* nested — слияние вложенных объектов (`totals`, `durations_ms`)
+* remove — удаление ключей (используется редко)
+
+Технические детали:
+* Все параметры сериализуются в ::jsonb, числовые инкременты приводятся к ::int.
+* Отсутствует промежуточное чтение meta перед записью.
+* Один SQL round‑trip на группу операций.
+* Исключён `IndeterminateDatatypeError` (явные касты типов).
+
+Инварианты детерминированности:
+1. Ни один *_processed не уменьшается.
+2. При входе в `exporting` выполняется консолидация финальных значений в `meta.totals`.
+3. Эндпоинт `/jobs` для стадий `exporting`/`done` возвращает максимум из live меты и totals.
+4. Мини-интеграционный сценарий видит финальные значения уже на раннем POLL (обычно 2-й) — это «ранний успех».
+ 5. Флаг `totals_frozen=true` появляется только после консолидации и сигнализирует фронту, что denominator стабильный.
+
+Если добавляете новый счётчик:
+1. Обновите логику инкремента в месте импорта.
+2. Добавьте поле в таблицу README (root и этот файл).
+3. Обновите mini-интеграционный скрипт с новым ожидаемым значением.
+
+### Ранний успех мини-набора
+CI / локальный скрипт прекращает опрос, когда стадия = `exporting` и все ожидаемые финальные счётчики совпали. Переход в `done` не обязателен для теста на корректность данных.
+
 ### Формат Slack архива (жёсткое требование)
 Импорт поддерживает только «плоский» формат: JSON-файлы верхнего уровня (`users.json`, `channels.json`, `groups.json`, `dms.json`, опц. `mpims.json`) и директории каналов/DM лежат непосредственно в корне архива zip. Любая дополнительная обёрточная папка (nested root) приводит к немедленной ошибке в стадии `extracting`.
 
@@ -143,6 +204,7 @@ extracting → users → channels → messages (включая reactions, attach
 * Прогресс сообщений обновляется простым счётчиком; реакции/аттачменты/эмодзи — через дельты.
 * `reactions_import.py` оставлен как stub для обратной совместимости (возвращает 0).
 * Frontend больше не отображает parsed/processed divergence — только фактический прогресс.
+* Счётчики обновляются атомарно; исчезли «скачки» вниз при смене стадий.
 
 ### Переменные окружения (актуальные)
 | Переменная | По умолчанию | Назначение |

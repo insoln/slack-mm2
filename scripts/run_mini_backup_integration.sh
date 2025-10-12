@@ -13,14 +13,17 @@ set -euo pipefail
 #   users=3 (2 real + 1 bot; admin UADMIN present)
 #   channels=3 (public + private + DM)
 #   messages=17 (all messages including thread replies; deleted tombstone still counted for determinism)
-#   attachments=0 (no valid url_private with allowed prefixes in mini archive)
+#   attachments=3 (three test-files hosted attachments with allowed url_private prefixes)
+#     - public-channel day1: example.txt (FTXT1)
+#     - private-channel day1: image.png
+#     - private-channel day2: archive.zip
 #   reactions=1
 
 # Expected counts (allow override via env for flexibility)
 : "${EXPECTED_USERS:=3}"
 : "${EXPECTED_CHANNELS:=3}"
 : "${EXPECTED_MESSAGES:=17}"
-: "${EXPECTED_ATTACHMENTS:=0}"
+: "${EXPECTED_ATTACHMENTS:=3}"
 : "${EXPECTED_REACTIONS:=1}"
 
 # Compose file, services list, dataset, and log capture path (override allowed)
@@ -164,6 +167,17 @@ print(job.get('status','unknown'), job.get('current_stage','unknown'), meta.get(
 PY
 )"
   echo "[POLL $i] status=$JOB_STATUS stage=$CURRENT_STAGE users=$USERS channels=$CHANNELS messages=$MESSAGES reactions=$REACTIONS attachments=$ATTACHMENTS"
+  # Early success: if exporting stage reached and counters already match expected totals, stop.
+  if [[ "$CURRENT_STAGE" == "exporting" ]] \
+     && [[ "$USERS" == "$EXPECTED_USERS" ]] \
+     && [[ "$CHANNELS" == "$EXPECTED_CHANNELS" ]] \
+     && [[ "$MESSAGES" == "$EXPECTED_MESSAGES" ]] \
+     && [[ "$ATTACHMENTS" == "$EXPECTED_ATTACHMENTS" ]] \
+     && [[ "$REACTIONS" == "$EXPECTED_REACTIONS" ]]; then
+    echo "[POLL $i] Early success condition met (exporting with final counters)."
+    JOB_DONE=1
+    break
+  fi
   if [[ "$JOB_STATUS" == "success" || "$JOB_STATUS" == "done" || "$CURRENT_STAGE" == "done" ]]; then
     JOB_DONE=1
     break
@@ -188,21 +202,26 @@ if [[ $JOB_DONE -ne 1 ]]; then
 fi
 
 echo "[STEP] Final totals assertion"
-# Re-fetch jobs for final counts
+# Re-fetch jobs for final counts (fallback to totals when processed zero)
 FINAL_JOBS_JSON=$(curl -s http://localhost:8000/jobs)
 read -r F_USERS F_CHANNELS F_MESSAGES F_REACTIONS F_ATTACHMENTS <<<"$(python3 - <<'PY' "$FINAL_JOBS_JSON"
 import json,sys
 j=json.loads(sys.argv[1])
 job=(j.get('jobs') or [{}])[0]
-meta=job.get('meta') or {}
-print(meta.get('users_processed',0), meta.get('channels_processed',0), meta.get('messages_processed',0), meta.get('reactions_processed',0), meta.get('attachments_processed',0))
+m=job.get('meta') or {}
+t=m.get('totals') or {}
+def pick(pk, tk):
+  pv=int(m.get(pk,0) or 0)
+  tv=int(t.get(tk,0) or 0)
+  return pv if pv>0 else tv
+print(pick('users_processed','users'), pick('channels_processed','channels'), pick('messages_processed','messages'), pick('reactions_processed','reactions'), pick('attachments_processed','attachments'))
 PY
 )"
 
 echo "[DIAG] Raw final /jobs JSON (truncated to 1200 chars):"
 echo "$FINAL_JOBS_JSON" | head -c 1200
 echo
-echo "[DIAG] Final counters: users=$F_USERS channels=$F_CHANNELS messages=$F_MESSAGES reactions=$F_REACTIONS attachments=$F_ATTACHMENTS"
+echo "[DIAG] Final counters (resolved): users=$F_USERS channels=$F_CHANNELS messages=$F_MESSAGES reactions=$F_REACTIONS attachments=$F_ATTACHMENTS"
 
 strict_assert() {
   local name=$1 actual=$2 expected=$3

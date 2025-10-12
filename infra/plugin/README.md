@@ -69,6 +69,9 @@ curl -X POST "http://localhost:8065/plugins/mm-importer/api/v1/import" \
   - `GET /plugin/status`, `POST /plugin/deploy`, `POST /plugin/enable`, `POST /plugin/ensure`
 - On backend startup, a best-effort auto-ensure runs to deploy/enable the plugin.
 
+### Взаимодействие с однопроходным импортом
+Backend завершает формирование полного набора данных ещё до стадии `exporting`. Мини-интеграционный сценарий считает ранним успехом момент, когда импорт перешёл в `exporting` и финальные счётчики достигли эталонных значений. Плагин в этот момент уже может принимать массовые вызовы создания постов/реакций — дополнительных стадий импорта не будет.
+
 For the original starter template documentation, see below.
 
 ---

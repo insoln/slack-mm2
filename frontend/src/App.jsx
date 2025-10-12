@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import './App.css';
 import { Header, Sidebar, Main, Card, Button, StatusBadge, Modal, FileButton, Toasts } from './components/UI';
 import './components/ui.css';
@@ -21,6 +21,10 @@ function App() {
   const [fixingPlugin, setFixingPlugin] = useState(false);
   const [lastEnsureSuccessTs, setLastEnsureSuccessTs] = useState(null);
   const [liveStats, setLiveStats] = useState(null);
+
+  // Export matrix ordering (kept consistent with backend exporter)
+  const exportOrder = ['user','custom_emoji','attachment','channel','message','reaction'];
+  const labelMap = { user:'user', custom_emoji:'custom_emoji', attachment:'attachment', channel:'channel', message:'message', reaction:'reaction' };
 
   // Toast helpers (deduplicated by tone+title+message within 5s)
   const pushToast = (t) => {
@@ -107,26 +111,64 @@ function App() {
     return () => es.close();
   }, []);
 
-  // Per-active-job stats refresh
+  // Throttled per-job mapping stats polling.
+  // Strategy:
+  //  - Maintain lastFetch ts per job.
+  //  - Running jobs: at most every 5s.
+  //  - Success jobs: one final fetch after success, then continue only if pending remain, capped every 10s.
+  // Interval-based scheduler for per-job stats (prevents render-triggered flooding)
+  const jobsRef = useRef([]);
+  const jobStatsRef = useRef({});
+  const lastFetchRef = useRef({}); // job_id -> timestamp
+  useEffect(() => { jobsRef.current = jobs.data || []; }, [jobs]);
+  useEffect(() => { jobStatsRef.current = jobStats; }, [jobStats]);
   useEffect(() => {
-    const active = (jobs.data || []).filter(j => !['success','failed'].includes(j.status));
-    if (active.length === 0) return;
-  let cancelled = false;
-    active.forEach(job => {
-      (async () => {
-        setJobStats(p => ({...p, [job.id]: { ...(p[job.id]||{}), updating: true, error: null }}));
-        try {
-          const r = await fetch(`/api/stats/mappings?job_id=${job.id}`);
-          const d = await r.json();
-          if (!r.ok) throw new Error(d.error || 'stat');
-          if (!cancelled) setJobStats(p => ({...p, [job.id]: { updating: false, data: d, error: null }}));
-        } catch (e) {
-          if (!cancelled) setJobStats(p => ({...p, [job.id]: { ...(p[job.id]||{}), updating: false, error: e.message }}));
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      const now = Date.now();
+      const list = jobsRef.current;
+      if (!list.length) return;
+      // Build candidate list with throttling rules
+      const candidates = [];
+      for (const j of list) {
+        if (j.status === 'failed') continue;
+        const last = lastFetchRef.current[j.id] || 0;
+        const age = now - last;
+  const snap = jobStatsRef.current[j.id]?.data;
+        const matrix = snap?.matrix || {};
+        const hasPending = Object.values(matrix).some(row => (row?.pending||0) > 0);
+        if (j.status === 'running') {
+          if (age >= 5000) candidates.push(j);
+        } else if (j.status === 'success') {
+          if (!snap) candidates.push(j); // first post-success snapshot
+          else if (hasPending && age >= 12000) candidates.push(j); // slower backoff
         }
-      })();
-    });
-    return () => { cancelled = true; };
-  }, [jobs]);
+      }
+      if (!candidates.length) return;
+      // Limit parallel fetches per tick to avoid spikes
+      const batch = candidates.slice(0, 2);
+      await Promise.all(batch.map(async (job) => {
+        try {
+          setJobStats(prev => ({ ...prev, [job.id]: { ...(prev[job.id]||{}), updating: true, error: null } }));
+          const res = await fetch(`/api/stats/mappings?job_id=${job.id}`);
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'stat error');
+          if (!cancelled) {
+            setJobStats(prev => ({ ...prev, [job.id]: { updating: false, data, error: null } }));
+          }
+        } catch (e) {
+          if (!cancelled) {
+            setJobStats(prev => ({ ...prev, [job.id]: { ...(prev[job.id]||{}), updating: false, error: e.message } }));
+          }
+        } finally {
+          lastFetchRef.current[job.id] = Date.now();
+        }
+      }));
+    };
+    const interval = setInterval(tick, 2000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
 
   const healthy = !!(plugin?.data && plugin.data.installed && plugin.data.enabled && !plugin.data.needs_update);
   const needsPluginFix = !!(plugin?.data && (!plugin.data.installed || plugin.data.needs_update || !plugin.data.enabled));
@@ -228,12 +270,7 @@ function App() {
   // Compute whether modal should be open (close shortly after a success if now healthy)
   // healthy / modal logic already computed above
 
-<<<<<<< HEAD
-  // Helper: render processed/total segments with optional parsed divergence
-  // (legacy renderPostImportLine removed – UI simplified)
-  
-=======
->>>>>>> 22fdfc8 (chore: format backend files and fix frontend lint (ignore backup node_modules, remove unused vars))
+  // Helper: (legacy detailed divergence UI removed – simplified progress)
 
   return (
     <div className="app-shell">
@@ -302,9 +339,6 @@ function App() {
             </div>
             <div id="stats" className="col" style={{gridColumn:'span 12'}}>
               <Card title="Статистика маппингов" actions={<Button onClick={refreshStats} variant="secondary">Обновить</Button>}>
-<<<<<<< HEAD
-                <JobsSection jobs={jobs} jobStats={jobStats} liveStats={liveStats} expandedJobs={expandedJobs} setExpandedJobs={setExpandedJobs} />
-=======
                 {/* Jobs list (all running/finished) */}
                 <div style={{marginBottom: 12}}>
                   <div className="small" style={{marginBottom: 6, color:'#9ca3af'}}>Активные и последние задачи</div>
@@ -325,6 +359,7 @@ function App() {
                           emojis: liveStats.by_type.custom_emoji || 0,
                         } : {};
                         const totals = meta.totals || fallbackTotals;
+                        const totalsFrozen = !!meta.totals_frozen;
                         const processed = {
                           messages: meta.messages_processed || 0,
                           emojis: meta.emojis_processed || 0,
@@ -341,13 +376,8 @@ function App() {
                         const inImport = importStages.includes(j.current_stage);
 
                         // Per-element weighting across all mapping items for exporting/done
-                        const keys = ['attachments','messages','reactions','emojis'];
-                        const totalsSum = keys.reduce((acc, k) => acc + (Number(totals[k]) || 0), 0);
-                        const processedSum = keys.reduce((acc, k) => {
-                          const t = Number(totals[k]) || 0;
-                          const p = Number(processed[k]) || 0;
-                          return acc + Math.min(p, t);
-                        }, 0);
+                        // keys list removed (no longer needed for percentage calc)
+                        // (totalsSum/processedSum removed – export phase now uses exporter matrix)
 
                         let pct = 0;
                         if (inImport) {
@@ -378,8 +408,29 @@ function App() {
                             }
                           }
                         } else {
-                          pct = totalsSum > 0 ? Math.round((processedSum / totalsSum) * 100) : 0;
-                          if (totalsSum === 0 && j.current_stage === 'exporting') pct = 1;
+                          // EXPORTING / DONE — use exporter status matrix for real progress
+                          const matrix = jobStats[j.id]?.data?.matrix || {};
+                          // Compute success / total(exportable) counts across exportOrder
+                          let successAll = 0; let totalAll = 0;
+                          exportOrder.forEach(t => {
+                            const row = matrix[t] || {};
+                            const succ = Number(row.success || 0);
+                            const pend = Number(row.pending || 0);
+                            const fail = Number(row.failed || 0);
+                            const skip = Number(row.skipped || 0);
+                            const localTotal = succ + pend + fail + skip;
+                            if (localTotal > 0) {
+                              successAll += succ;
+                              totalAll += localTotal;
+                            }
+                          });
+                          if (j.status === 'success') {
+                            pct = 100;
+                          } else if (totalAll > 0) {
+                            pct = Math.max(1, Math.min(100, Math.round((successAll / totalAll) * 100)));
+                          } else {
+                            pct = totalsFrozen ? 100 : 1;
+                          }
                         }
                         // Choose bar color: green for import stages, themed primary for export/done
                         const barBg = inImport
@@ -412,17 +463,17 @@ function App() {
                             </div>
                             <div className="small" style={{marginTop: 4, color:'#9ca3af'}}>
                               {inImport ? (
-                                // Unified single-pass import progress heuristic
                                 j.current_stage === 'messages' && (totals.messages || 0) > 0
                                   ? (<span>import msgs {processed.messages}/{totals.messages || 0}</span>)
                                   : (<span>{j.current_stage}…</span>)
-                              ) : (
-                                <span>
-                                  files {processed.attachments}/{totals.attachments || 0},
-                                  {' '}msgs {processed.messages}/{totals.messages || 0},
-                                  {' '}reactions {processed.reactions}/{totals.reactions || 0}
-                                </span>
-                              )}
+                              ) : (() => {
+                                const matrix = jobStats[j.id]?.data?.matrix || {};
+                                const rowMsg = matrix.message || {};
+                                const msgDone = Number(rowMsg.success || 0);
+                                const msgTotal = msgDone + Number(rowMsg.pending || 0) + Number(rowMsg.failed || 0) + Number(rowMsg.skipped || 0);
+                                const msgLabel = msgTotal > 0 ? `${msgDone}/${msgTotal}` : `${processed.messages}/${totals.messages || 0}`;
+                                return <span>export msgs {msgLabel}</span>;
+                              })()}
                             </div>
                             {expanded && (
                               <div style={{marginTop:10}}>
@@ -464,8 +515,6 @@ function App() {
                     </div>
                   )}
                 </div>
-                {/* Live SSE summary hidden to reduce confusion; SSE kept for fallback totals */}
->>>>>>> 22fdfc8 (chore: format backend files and fix frontend lint (ignore backup node_modules, remove unused vars))
                 {stats.loading && <div>Загрузка…</div>}
                 {stats.error && <div style={{color:'#f87171'}}>Ошибка: {stats.error}</div>}
                 {stats.data && (
