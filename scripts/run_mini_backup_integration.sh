@@ -153,13 +153,15 @@ if [[ $HELLO_OK -ne 1 ]]; then
 fi
 echo "[INFO] Plugin hello endpoint OK"
 echo "[STEP] Uploading dataset"
+# Ensure IMPORT_URL_PREFIXES allows the test-files service host used inside CI network.
+export IMPORT_URL_PREFIXES="https://files.slack.com,http://test-files:9000"
 UPLOAD_RESP=$(curl -s -S -w '%{http_code}' -o /tmp/upload_resp.json -F "file=@${DATASET_FILE}" http://localhost:8000/upload || true)
 if [[ "$UPLOAD_RESP" != "200" ]]; then
   echo "Upload failed (HTTP $UPLOAD_RESP)" >&2
   cat /tmp/upload_resp.json >&2 || true
   exit 1
 fi
-echo "[INFO] Upload succeeded"
+echo "[INFO] Upload succeeded (IMPORT_URL_PREFIXES=$IMPORT_URL_PREFIXES)"
 
 JOB_DONE=0
 echo "[STEP] Polling job status"
