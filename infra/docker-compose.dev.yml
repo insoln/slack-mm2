@@ -57,6 +57,8 @@ services:
       DB_POOL_TIMEOUT: 60
       # Attachment concurrency and limits
       ATTACHMENT_WORKERS: 2
+      # Allow attachments whose url_private begins with any of these prefixes (CSV). Include test-files fixture host for CI integration dataset.
+      IMPORT_URL_PREFIXES: "https://files.slack.com,http://test-files:9000"
       SLACK_VERIFICATION_TOKEN: ${SLACK_VERIFICATION_TOKEN}
       SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
       SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET}
