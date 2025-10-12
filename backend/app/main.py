@@ -59,7 +59,10 @@ async def lifespan(app: FastAPI):
                     else:
                         ok, err = await plugin_api._upload_bundle(Path(bundle_path))
                         if not ok:
-                            backend_logger.error(f"Plugin upload failed: {err}")
+                            # Downgraded to warning; during early startup Mattermost may not yet accept connections
+                            backend_logger.warning(
+                                f"Plugin upload failed (startup race, will not fail job): {err}"
+                            )
                 # Enable if needed
                 final = await plugin_api._compute_status()
                 if not final.get("enabled"):
