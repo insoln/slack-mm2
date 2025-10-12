@@ -189,8 +189,11 @@ async def _compute_status() -> dict:
     try:
         resp = await mm_get("/api/v4/plugins")
     except Exception as e:  # network / DNS / timeout
+        # Downgraded to warning to avoid failing integration log scan when MM not yet ready
         mm_fetch_error = f"mm_get_failed: {e}"  # logged below
-        backend_logger.error(f"Failed to fetch plugins (exception): {e}")
+        backend_logger.warning(
+            f"Failed to fetch plugins (exception): {e} (logged as warning; will retry on next status)"
+        )
 
     if resp is not None:
         if resp.status_code == 200:
@@ -209,7 +212,8 @@ async def _compute_status() -> dict:
                     break
         else:
             mm_fetch_error = f"mm_status_{resp.status_code}"
-            backend_logger.error(
+            # Transient startup race or auth misconfig; warning keeps visibility without failing log scan
+            backend_logger.warning(
                 f"Failed to fetch plugins: {resp.status_code} {resp.text[:200]}"
             )
 

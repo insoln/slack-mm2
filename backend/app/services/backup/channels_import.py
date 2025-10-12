@@ -68,7 +68,11 @@ def find_channel_for_folder(export_dir, _):
     channels_by_name = {c["name"]: c for c in all_channels if "name" in c}
     result = {}
     # Collect DM channel candidates (Slack DM ids start with 'D') for heuristic mapping
-    dm_candidates = [c for c in all_channels if isinstance(c, dict) and str(c.get("id",""))[:1] == "D"]
+    dm_candidates = [
+        c
+        for c in all_channels
+        if isinstance(c, dict) and str(c.get("id", ""))[:1] == "D"
+    ]
     backend_logger.debug(
         f"[DIAG][channels] Total channel-like records: {len(all_channels)}; dm_candidates={len(dm_candidates)}"
     )
@@ -76,7 +80,9 @@ def find_channel_for_folder(export_dir, _):
         channel = channels_by_id.get(folder) or channels_by_name.get(folder)
         if not channel:
             # Heuristic: map folders named like dm-<user>-<user> or dm_<...> to the single DM channel if only one exists
-            if (folder.startswith("dm-") or folder.startswith("dm_")) and len(dm_candidates) == 1:
+            if (folder.startswith("dm-") or folder.startswith("dm_")) and len(
+                dm_candidates
+            ) == 1:
                 channel = dm_candidates[0]
                 backend_logger.debug(
                     f"Heuristic DM folder mapping applied: folder '{folder}' -> DM id {channel.get('id')}"

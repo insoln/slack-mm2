@@ -65,7 +65,10 @@ async def lifespan(app: FastAPI):
                 if not final.get("enabled"):
                     await plugin_api.plugin_enable()
         except Exception as e:
-            backend_logger.error(f"Auto-ensure plugin failed: {e}")
+            # Startup races (Mattermost not yet accepting connections) are downgraded to warning
+            backend_logger.warning(
+                f"Auto-ensure plugin failed (will retry later via API calls): {e}"
+            )
 
     # Auto-resume export of unfinished jobs (FIFO) on startup
     if os.getenv("PYTEST_RUN", "0") not in ("1", "true", "TRUE"):

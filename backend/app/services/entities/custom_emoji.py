@@ -43,7 +43,10 @@ async def get_slack_emoji_list():
 
             data = resp.json()
             if not data.get("ok"):
-                backend_logger.error(f"Slack API ошибка: {data.get('error')}")
+                # invalid_auth and similar should not fail integration; downgrade to warning
+                backend_logger.warning(
+                    f"Slack API ошибка (получение эмодзи): {data.get('error')}"
+                )
                 return {}
 
             emoji_list = data.get("emoji", {})
