@@ -25,13 +25,11 @@ class Message(BaseMapping):
     async def create_posted_in_relation(self, channel_id):
         async with SessionLocal() as session:
             query = await session.execute(
+                # Cross-job reuse: pick ANY channel entity with this slack_id
+                # We intentionally drop job_id scoping so that a channel imported in a previous job
+                # can be referenced without re-creating a duplicate job-scoped record.
                 select(Entity).where(
-                    (Entity.entity_type == "channel")
-                    & (Entity.slack_id == channel_id)
-                    & (
-                        (Entity.job_id == getattr(self, "job_id", None))
-                        | (Entity.job_id.is_(None))
-                    )
+                    (Entity.entity_type == "channel") & (Entity.slack_id == channel_id)
                 )
             )
             channel_entity = query.scalar_one_or_none()
@@ -63,13 +61,9 @@ class Message(BaseMapping):
             return
         async with SessionLocal() as session:
             query = await session.execute(
+                # Cross-job reuse for users as well (users from previous jobs are valid references)
                 select(Entity).where(
-                    (Entity.entity_type == "user")
-                    & (Entity.slack_id == user_id)
-                    & (
-                        (Entity.job_id == getattr(self, "job_id", None))
-                        | (Entity.job_id.is_(None))
-                    )
+                    (Entity.entity_type == "user") & (Entity.slack_id == user_id)
                 )
             )
             user_entity = query.scalar_one_or_none()
@@ -138,10 +132,9 @@ class Message(BaseMapping):
         async with SessionLocal() as session:
             # Найти Entity.id родительского сообщения по thread_ts
             query_parent = await session.execute(
+                # Cross-job reuse: allow parent message from any job
                 select(Entity).where(
-                    (Entity.entity_type == "message")
-                    & (Entity.slack_id == thread_ts)
-                    & (Entity.job_id == getattr(self, "job_id", None))
+                    (Entity.entity_type == "message") & (Entity.slack_id == thread_ts)
                 )
             )
             parent_entity = query_parent.scalar_one_or_none()

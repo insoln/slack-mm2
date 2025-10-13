@@ -26,13 +26,10 @@ class Reaction(BaseMapping):
         async with SessionLocal() as session:
             # Найти Entity.id кастомного эмодзи по slack_id (emoji_name)
             query_emoji = await session.execute(
+                # Cross-job reuse for emojis
                 select(Entity).where(
                     (Entity.entity_type == "custom_emoji")
                     & (Entity.slack_id == emoji_name)
-                    & (
-                        (Entity.job_id == getattr(self, "job_id", None))
-                        | (Entity.job_id.is_(None))
-                    )
                 )
             )
             emoji_entity = query_emoji.scalar_one_or_none()
@@ -43,10 +40,6 @@ class Reaction(BaseMapping):
                 select(Entity).where(
                     (Entity.entity_type == "reaction")
                     & (Entity.slack_id == self.slack_id)
-                    & (
-                        (Entity.job_id == getattr(self, "job_id", None))
-                        | (Entity.job_id.is_(None))
-                    )
                 )
             )
             reaction_entity = query_reaction.scalar_one_or_none()
@@ -78,13 +71,9 @@ class Reaction(BaseMapping):
             return
         async with SessionLocal() as session:
             query_user = await session.execute(
+                # Cross-job reuse for users
                 select(Entity).where(
-                    (Entity.entity_type == "user")
-                    & (Entity.slack_id == user_id)
-                    & (
-                        (Entity.job_id == getattr(self, "job_id", None))
-                        | (Entity.job_id.is_(None))
-                    )
+                    (Entity.entity_type == "user") & (Entity.slack_id == user_id)
                 )
             )
             user_entity = query_user.scalar_one_or_none()
@@ -96,10 +85,6 @@ class Reaction(BaseMapping):
                     select(Entity).where(
                         (Entity.entity_type == "reaction")
                         & (Entity.slack_id == self.slack_id)
-                        & (
-                            (Entity.job_id == getattr(self, "job_id", None))
-                            | (Entity.job_id.is_(None))
-                        )
                     )
                 )
                 reac = reaction_row.scalar_one_or_none()
@@ -153,13 +138,9 @@ class Reaction(BaseMapping):
             return
         async with SessionLocal() as session:
             query_msg = await session.execute(
+                # Cross-job reuse for messages
                 select(Entity).where(
-                    (Entity.entity_type == "message")
-                    & (Entity.slack_id == ts)
-                    & (
-                        (Entity.job_id == getattr(self, "job_id", None))
-                        | (Entity.job_id.is_(None))
-                    )
+                    (Entity.entity_type == "message") & (Entity.slack_id == ts)
                 )
             )
             msg_entity = query_msg.scalar_one_or_none()
@@ -170,10 +151,6 @@ class Reaction(BaseMapping):
                     select(Entity).where(
                         (Entity.entity_type == "reaction")
                         & (Entity.slack_id == self.slack_id)
-                        & (
-                            (Entity.job_id == getattr(self, "job_id", None))
-                            | (Entity.job_id.is_(None))
-                        )
                     )
                 )
                 reac = reaction_row.scalar_one_or_none()
