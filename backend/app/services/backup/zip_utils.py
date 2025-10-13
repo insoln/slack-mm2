@@ -25,6 +25,8 @@ async def extract_zip(path_to_zip, extract_to):
                 )
                 raise RuntimeError(f"unzip failed: {result.stderr}")
             backend_logger.debug(f"PARSE: архив успешно распакован: {extract_to}")
+            # НИЧЕГО не «расплющиваем»: формат архива контрактно должен иметь файлы на верхнем уровне.
+            # Любые отклонения должны диагностироваться выше по стеку.
         except Exception as e:
             backend_logger.error(f"Ошибка при распаковке {path_to_zip}: {e}")
             raise

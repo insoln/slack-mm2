@@ -1,37 +1,85 @@
 # backup/
 
-Работа с файлами бэкапа Slack:
-- zip_utils.py — работа с архивами (zip, подпапки)
-- file_storage.py — временное и постоянное хранение файлов
-- slack_parser.py — парсинг структур Slack, orchestrator импорта
-- ... (другие сущности и обработчики)
+Подсистема работы с исходным Slack экспортом:
+- `zip_utils.py` — распаковка архивов.
+- `file_storage.py` — временное и постоянное хранение загруженных архивов.
+- `messages_import.py` — единый высокопроизводительный импорт сообщений, реакций, вложений и кандидатов кастомных эмодзи.
+- `orchestrator.py` — координация полного импорта (users, channels, unified messages+related, export).
+- `progress_tracker.py` — унифицированные parsed/processed счётчики (используется там, где ещё нужно), при этом основная мета обновляется прямыми JSONB апдейтами.
+- (legacy) `attachments_import.py` и `custom_emojis_import.py` — оставлены для совместимости внешнего кода; логика инлайна теперь в `messages_import.py`.
+- Удалён `reactions_import.py` (реакции обрабатываются внутри единого прохода сообщений).
 
-В этом модуле не должно быть логики импорта/экспорта — только работа с файлами и парсинг.
+## Упрощённый импорт (single-pass)
 
-## Импорт Slack-экспорта
+Последовательность стадий:
+`extracting → users → channels → messages (сообщения + reactions + attachments + custom emoji usage) → exporting → done`
 
-- Для импорта используется функция `orchestrate_slack_import(zip_path)` из slack_parser.py.
-- Пайплайн: распаковка архива → поиск users.json → парсинг пользователей → автосохранение маппингов User → очистка временных файлов.
-- На данный момент поддерживается только импорт пользователей (users.json), остальные типы маппингов игнорируются.
-- Все этапы логируются.
+Особенности:
+* Нет отдельных стадий reactions / attachments / emojis.
+* Счётчики прогресса: `messages_processed` + дельты для других сущностей.
+* Итоговые totals агрегируются в конце стадии messages.
+* Конкурентность по каналам управляется `IMPORT_CHANNEL_CONCURRENCY` (по умолчанию 1).
 
-### Пример:
+## Пример (высокоуровневый вызов)
 ```python
-await orchestrate_slack_import("/tmp/slack-backup-xxxx.zip")
+from app.services.backup.orchestrator import import_slack_backup
+await import_slack_backup(zip_path, job_id=job_id)
 ```
 
-## Пример использования
+## Архивы
+- Для корректной работы с кириллическими именами архива Slack рекомендуется утилита `unzip -O UTF-8` (реализовано в `zip_utils.py`).
 
-```python
-from app.services.backup.file_storage import save_temp_file
-save_temp_file(upload_file)
+## Инварианты
+- Каждое импортированное сообщение имеет `posted_in` отношение (канал) — обеспечивается в момент вставки.
+
+## Прогресс
+В `import_jobs.meta` обновляются ключи: `messages_processed`, `reactions_processed`, `attachments_processed`, `emojis_processed`, `json_files_processed`, `json_files_total`, `current_stage`, `stages`, `totals`, опционально `durations`. В наследованных местах ещё могут использоваться промежуточные `*_parsed` / `*_processed` счётчики через вспомогательный `progress_tracker`, но основной поток обновляет JSONB атомарными SQL.
+
+## Тестовый минимальный архив
+Для интеграционного/локального тестирования добавлен небольшой искусственный экспорт Slack:
+
+`infra/test-data/slack-mini-backup.zip` (распакованная версия: `infra/test-data/slack-mini-backup/`)
+
+Содержит:
+1. Три сущности пользователя в экспорте: два обычных (`U0001`, `UADMIN` — админ) и один бот (`B0001`).
+2. Публичный канал (`public-channel` / `C0001`).
+3. Приватный канал (`private-channel` / `G0001`).
+4. Личный диалог (DM `D0001`).
+5. По два дня активности (2025-01-01, 2025-01-02) в каждом канале/DM.
+6. В каждый день по два сообщения (вариации): одно с вложением (чередуются файлы text/plain, image/png, application/zip), одно без.
+7. Пример треда (reply через `thread_ts`).
+8. Пример реакции (`thumbsup`) без кастомных эмодзи.
+9. Сообщение бота (`subtype=bot_message`, `bot_id=B0001`).
+10. Отредактированное сообщение (`edited`).
+11. Тумбстоун удалённого сообщения (`subtype=message_deleted`, `hidden=true`).
+
+Цели покрытия:
+* Проверка отношений `posted_in`, `posted_by`, `thread_reply`, `reacted_by`, `reacted_to`, `attached_to`.
+* Дополнительно: ветки для `bot_message`, обработка `edited`, игнор/тумбстоун `message_deleted`.
+- Валидация пакетных вставок для сообщений/реакций/вложений на маленьком объёме.
+- Отсутствие зависимостей от Slack API (нет кастомных emoji URL, только стандартные реакционные имена).
+
+Пересборка zip без системной `zip` утилиты:
+```
+python infra/test-data/build_mini_backup_zip.py
 ```
 
-## Особенности распаковки архивов
+Использование в тестах: укажите путь к zip при создании `ImportJob` или через API загрузки.
 
-- Для корректной работы с кириллическими именами файлов и папок архив Slack-экспорта всегда распаковывается через утилиту `unzip` с указанием кодировки UTF-8:
-  ```bash
-  unzip -O UTF-8 <архив.zip> -d <папка>
-  ```
-- Это реализовано в функции `extract_zip` (см. zip_utils.py). Если архив был создан в другой кодировке, используйте соответствующий параметр (`-O CP1251` и т.д.).
-- Если распаковывать стандартным Python zipfile, имена папок с кириллицей могут быть повреждены (кракозябры), и такие сообщения не будут импортированы. 
+### Локальные тестовые вложения (service `test-files`)
+В dev `docker-compose.dev.yml` добавлен сервис `test-files` (порт 9000), который отдаёт содержимое директории `infra/test-data/` через простой Python HTTP сервер. 
+
+В тестовом архиве `url_private` указывает на ссылки вида:
+```
+http://test-files:9000/slack-mini-backup/files/example.txt
+```
+Импортер допускает несколько префиксов URL, задаваемых переменной окружения `IMPORT_URL_PREFIXES` (CSV). Значение по умолчанию:
+```
+IMPORT_URL_PREFIXES="https://files.slack.com,http://test-files:9000/"
+```
+Это позволяет без модификации кода принимать как реальные Slack ссылки, так и локальные тестовые.
+
+Если нужно добавить ещё один источник (например `http://minio:9001/`), просто расширьте переменную:
+```
+IMPORT_URL_PREFIXES="https://files.slack.com,http://test-files:9000/,http://minio:9001/"
+```

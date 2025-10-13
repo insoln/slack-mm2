@@ -1,0 +1,29 @@
+[
+  {
+    "id": "U0001",
+    "team_id": "T0001",
+    "name": "alice",
+    "real_name": "Alice Example",
+    "profile": {"email": "alice@example.com"},
+    "is_bot": false,
+    "deleted": false
+  },
+  {
+    "id": "UADMIN",
+    "team_id": "T0001",
+    "name": "admin",
+    "real_name": "Admin User",
+    "profile": {"email": "is@careerum.com"},
+    "is_bot": false,
+    "deleted": false
+  },
+  {
+    "id": "B0001",
+    "team_id": "T0001",
+    "name": "mini-bot",
+    "real_name": "Mini Bot",
+    "profile": {"email": "mini-bot@example.com"},
+    "is_bot": true,
+    "deleted": false
+  }
+]

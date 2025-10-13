@@ -1,0 +1,35 @@
+[
+  {
+    "type": "message",
+    "user": "UADMIN",
+    "text": "Private day2 with zip",
+    "ts": "1735776000.000700",
+    "files": [
+      {
+        "id": "FZIP1",
+        "created": 1735776001,
+        "timestamp": 1735776001,
+        "name": "archive.zip",
+        "title": "Archive Zip",
+        "mimetype": "application/zip",
+        "filetype": "zip",
+  "url_private": "http://test-files:9000/slack-mini-backup/files/archive.zip",
+        "size": 4567
+      }
+    ]
+  },
+  {
+    "type": "message",
+    "user": "U0001",
+    "text": "Private day2 plain (edited)",
+    "ts": "1735776100.000800",
+    "edited": {"user": "U0001", "ts": "1735776110.000801"}
+  },
+  {
+    "type": "message",
+    "subtype": "message_deleted",
+    "hidden": true,
+    "deleted_ts": "1735776100.000800",
+    "ts": "1735776120.000900"
+  }
+]

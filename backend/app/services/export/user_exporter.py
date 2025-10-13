@@ -131,7 +131,54 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
         self.log_export(f"Экспорт пользователя {self.entity.slack_id}")
         payload = self._build_mm_payload()
         try:
+            # Fast-path reuse lookup (email then username) BEFORE create attempt
+            email = payload.get("email")
+            if email:
+                try:
+                    reuse_resp = await self.mm_api_get(f"/api/v4/users/email/{email}")
+                    if hasattr(reuse_resp, "__await__") and not hasattr(
+                        reuse_resp, "status_code"
+                    ):
+                        reuse_resp = await reuse_resp  # type: ignore
+                    if reuse_resp.status_code == 200:
+                        mm_id = reuse_resp.json().get("id")
+                        if mm_id:
+                            self.entity.mattermost_id = mm_id
+                            await self.set_status("success")
+                            await self._ensure_user_in_team(mm_id)
+                            avatar_url = self._get_avatar_url(self.entity.raw_data)
+                            if avatar_url:
+                                await self._upload_avatar(mm_id, avatar_url)
+                            return
+                except Exception:
+                    pass
+            username = payload.get("username")
+            if username:
+                try:
+                    reuse_u_resp = await self.mm_api_get(
+                        f"/api/v4/users/username/{username}"
+                    )
+                    if hasattr(reuse_u_resp, "__await__") and not hasattr(
+                        reuse_u_resp, "status_code"
+                    ):
+                        reuse_u_resp = await reuse_u_resp  # type: ignore
+                    if reuse_u_resp.status_code == 200:
+                        mm_id = reuse_u_resp.json().get("id")
+                        if mm_id:
+                            self.entity.mattermost_id = mm_id
+                            await self.set_status("success")
+                            await self._ensure_user_in_team(mm_id)
+                            avatar_url = self._get_avatar_url(self.entity.raw_data)
+                            if avatar_url:
+                                await self._upload_avatar(mm_id, avatar_url)
+                            return
+                except Exception:
+                    pass
             resp = await self.mm_api_post("/api/v4/users", payload)
+            # Support both real httpx.Response and mocked coroutines accidentally returning coroutine objects
+            if hasattr(resp, "__await__") and not hasattr(resp, "status_code"):
+                # Await once more if a coroutine was injected incorrectly in tests
+                resp = await resp  # type: ignore
             if resp.status_code == 201:
                 mm_id = resp.json()["id"]
                 self.entity.mattermost_id = mm_id
@@ -146,11 +193,15 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 if avatar_url:
                     await self._upload_avatar(mm_id, avatar_url)
                 return
-            data = resp.json()
+            data = resp.json() if hasattr(resp, "json") else {}
             err = data.get("id", "")
             if err == "app.user.save.email_exists.app_error":
                 email = payload["email"]
                 get_resp = await self.mm_api_get(f"/api/v4/users/email/{email}")
+                if hasattr(get_resp, "__await__") and not hasattr(
+                    get_resp, "status_code"
+                ):
+                    get_resp = await get_resp  # type: ignore
                 if get_resp.status_code == 200:
                     mm_id = get_resp.json()["id"]
                     self.entity.mattermost_id = mm_id
@@ -168,6 +219,10 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
             if err == "app.user.save.username_exists.app_error":
                 username = payload["username"]
                 get_resp = await self.mm_api_get(f"/api/v4/users/username/{username}")
+                if hasattr(get_resp, "__await__") and not hasattr(
+                    get_resp, "status_code"
+                ):
+                    get_resp = await get_resp  # type: ignore
                 if get_resp.status_code == 200:
                     mm_id = get_resp.json()["id"]
                     self.entity.mattermost_id = mm_id

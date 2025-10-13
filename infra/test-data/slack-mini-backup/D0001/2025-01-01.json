@@ -1,0 +1,14 @@
+[
+  {
+    "type": "message",
+    "user": "U0001",
+    "text": "DM day1 hi (dup variant)",
+    "ts": "1735689600.000901"
+  },
+  {
+    "type": "message",
+    "user": "UADMIN",
+    "text": "DM day1 response (dup variant)",
+    "ts": "1735689700.001001"
+  }
+]

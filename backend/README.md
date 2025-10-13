@@ -1,3 +1,33 @@
+## Import / Export Pipeline
+
+The importer runs in a single pass reading Slack export JSON files, creating entities (users, channels, messages, reactions, attachments, custom emoji) and their relations. The exporter then processes entities in dependency order.
+
+### Counter Semantics (Ingestion vs Export)
+
+To avoid misleading progress signals we distinguish two classes of counters recorded in `ImportJob.meta`:
+
+* `<type>_processed` — Monotonic ingestion counters. Incremented only when an entity of that type is successfully parsed & persisted (with required base invariants) during the import phase. These DO NOT decrease or reset when export begins.
+* `<type>_exported` — Dynamic export counters. Reflect how many entities of a type have transitioned out of `pending` (sum of success + skipped + failed). These can lag `processed` while entities wait in the export queue and advance as exporter workers complete.
+
+`meta.totals` is frozen after import stages complete (entering `exporting` or `done`) to keep denominators stable (prevents >100% progress scenarios). Frontend export progress bars should use the exported counters against the frozen totals. Ingestion progress displays (during import stages) can still reference processed counters for a monotonically increasing view of parsing throughput.
+
+### Reaction Integrity Guarantees
+
+Reactions require two relations to be considered fully ingested and eligible for successful export:
+
+1. `reacted_by`   (user -> reaction)
+2. `reacted_to`   (reaction -> message)
+
+The importer now:
+* Persists each reaction entity.
+* Attempts to create both relations with granular exception logging (no broad silent swallow).
+* Verifies both relations exist; reactions missing either relation are left out of the `reactions_processed` count (they remain `pending`).
+* A post-pass integrity check logs aggregate counts of reactions missing either relation (`[INTEGRITY][reaction] ...`).
+
+Exporter guards still protect Mattermost API calls; such incomplete reactions will be marked skipped with a clear reason if they reach export unchanged. A future repair utility can rebuild missing relations and reset affected reactions back to `pending` for a clean re-export.
+
+### Emoji Detection
+Emoji references detected in message text (using a lightweight `:name:` regex) are persisted as `custom_emoji` entities (if present in the provided emoji list) for later export sequencing before messages.
 # Backend (FastAPI)
 
 Backend реализует REST API для загрузки данных Slack (файл/вебхук), healthcheck и взаимодействия с базой данных.
@@ -73,16 +103,20 @@ Backend реализует REST API для загрузки данных Slack (
 
 ## Экспорт данных в Mattermost
 
-### Архитектура
-- Экспорт реализован через оркестратор (services/export/orchestrator.py), который обрабатывает сущности по очереди: user, custom_emoji, attachment, channel, message, reaction.
-- Для каждого типа сущности используется отдельный экспортер (например, UserExporter), реализующий бизнес-логику экспорта.
-- HTTP-запросы к Mattermost вынесены в MMApiMixin (services/export/mm_api_mixin.py), что позволяет легко переключаться между штатным API и плагином.
+Полная детализация вынесена в `app/services/export/README.md` (единственный источник правды по порядку типов и правилам). Ниже сводка.
+
+### Архитектура (сводка)
+- Оркестратор (`services/export/orchestrator.py`) обрабатывает сущности с глобальным барьером типо́в в порядке:
+  `user → custom_emoji → channel → attachment → message → reaction`.
+  (Ранее в документации ошибочно фигурировал порядок с attachment перед channel — исправлено.)
+- Для каждого типа сущности — свой экспортер (UserExporter, ChannelExporter, AttachmentExporter, MessageExporter, ReactionExporter и т.д.).
+- HTTP-взаимодействие с Mattermost (ядро + плагин) инкапсулировано в `MMApiMixin`.
 
 ### Управление статусами
-- Все экспортеры наследуют `ExporterBase` с методом `set_status(status, error=None)`
-- Статусы обновляются в БД через SQL UPDATE для корректного отслеживания прогресса
-- Поддерживаемые статусы: `pending`, `success`, `failed`, `skipped`
-- При ошибке сохраняется `error_message` для диагностики
+- Все экспортеры наследуют `ExporterBase` с методом `set_status(status, error=None)`.
+- Статусы обновляются через `UPDATE` (не оставляя «подвешенных» pending на ошибках).
+- Поддерживаемые статусы: `pending`, `success`, `failed`, `skipped`.
+- При ошибке текст фиксируется в `error_message`.
 
 ### Экспорт пользователей
 - Все поля для Mattermost заполняются по максимуму из raw_data Slack.
@@ -97,16 +131,16 @@ Backend реализует REST API для загрузки данных Slack (
 - Имена эмодзи должны быть 1-64 символа, только строчные буквы и цифры
 - URL эмодзи из Slack могут требовать аутентификации
 
-### Переменные окружения
-- MM_URL — адрес Mattermost (например, http://mattermost:8065)
-- MM_TOKEN — токен администратора Mattermost
-- EXPORT_WORKERS — количество параллельных воркеров экспорта (по умолчанию 5)
+### Переменные окружения (экспорт)
+- `MM_URL` — базовый URL Mattermost (например, http://mattermost:8065)
+- `MM_TOKEN` — админский (или системный) токен
+- `EXPORT_WORKERS` — число воркеров для глобальных и job-scoped типов
 
 #### Производительность / Тюнинг
-- ATTACHMENT_WORKERS — воркеры загрузки файлов (по умолчанию = EXPORT_WORKERS)
-- EXPORT_CHANNEL_CONCURRENCY — параллельных каналов для экспорта сообщений (по умолчанию = EXPORT_WORKERS)
-- MM_MAX_KEEPALIVE, MM_MAX_CONNECTIONS, MM_HTTP2 — настройки HTTP пула клиентов
-- DB_POOL_SIZE, DB_MAX_OVERFLOW, DB_POOL_TIMEOUT — настройки пула подключений к БД
+- `ATTACHMENT_WORKERS` — воркеры загрузки файлов (если не задан, используется значение `EXPORT_WORKERS`).
+- `EXPORT_CHANNEL_CONCURRENCY` — максимальное число каналов, экспортируемых параллельно при публикации сообщений (по умолчанию равно `EXPORT_WORKERS`, либо может переопределяться).
+- `MM_MAX_KEEPALIVE`, `MM_MAX_CONNECTIONS`, `MM_HTTP2` — параметры HTTP пула.
+- `DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_POOL_TIMEOUT` — параметры пула соединений БД.
 
 ### Логирование
 - Все логи экспорта и ошибок централизованы через backend_logger.
@@ -122,113 +156,92 @@ Backend реализует REST API для загрузки данных Slack (
 - Для других сущностей (каналы, сообщения, реакции и т.д.) архитектура аналогична: реализуется экспортер, добавляется from_entity, используется MMApiMixin.
 - Если экспортер требует дополнительные параметры (как `mm_user_id` для эмодзи), они передаются через конструктор. 
 
-## Импорт Slack: производительность и настройки
+## Импорт Slack (текущая упрощённая модель)
 
-Импорт Slack реализован как поэтапный конвейер (extracting → users → channels → messages → (emojis → reactions → attachments) → exporting → done). 
-В режиме single-pass (включается переменной `IMPORT_SINGLE_PASS=1`) реакции, аттачменты и эмодзи обрабатываются во время прохода сообщений и последующие стадии пропускаются.
-
-### Новые переменные окружения (тюнинг)
-
-| Переменная | Значение по умолчанию | Назначение |
-|------------|------------------------|-----------|
-| IMPORT_SINGLE_PASS | 0 | Включает объединённый проход сообщений (со встроенной обработкой реакций, аттачментов и эмодзи) |
-| IMPORT_BATCH_SIZE | 500 | Размер батча вставки для сообщений / реакций / аттачментов (если >1 включает батчевую вставку) |
-| IMPORT_META_UPDATE_INTERVAL_SEC | 2 | Минимальный интервал (сек) между обновлениями прогресса в БД (throttling) |
-| IMPORT_META_UPDATE_EVERY | IMPORT_BATCH_SIZE | Альтернатива интервалу: форсировать обновление после N сообщений |
-| IMPORT_ORJSON_THRESHOLD_KB | 0 | Если >0 и установлен пакет `orjson`, файлы ≤ этого размера (КБ) читаются целиком быстрой веткой |
-| IMPORT_RECORD_STAGE_DURATIONS | 1 | Сохранять длительность (мс) каждой стадии импорта в meta.durations |
-| IMPORT_CHANNEL_CONCURRENCY | 1 | Количество каналов (папок) обрабатываемых параллельно на стадии messages |
-
-### Что даёт batching
-После commit создаём отношения (posted_in, reacted_to, attached_to) отдельными короткими операциями.
-
-#### Уникальный индекс и bulk вставка
-Добавлен уникальный индекс `uq_entities_type_slack_job (entity_type, slack_id, job_id)`.
-
-Использование:
-* В режиме single-pass сообщения + связанные реакции и аттачменты формируют один общий батч.
-* В много‑проходном режиме (когда single-pass выключен) теперь и отдельные стадии `reactions_import` и `attachments_import` используют тот же механизм bulk вставки.
-
-Все эти пути выполняют одну SQL-инструкцию вида:
+Импорт теперь всегда идёт по единому single-pass сценарию:
 ```
-INSERT INTO entities (...)
-VALUES (...), (...), ...
-ON CONFLICT (entity_type, slack_id, job_id) DO NOTHING;
+extracting → users → channels → messages (включая reactions, attachments, custom emojis) → exporting → done
 ```
-Что даёт:
-* Отсутствие предварительных SELECT для проверки существования;
-* Идемпотентность под конкурентной обработкой каналов;
-* Сокращение round-trips (одна транзакция на батч);
-* Простую деградацию: при ошибке bulk блок кода логирует её и откатывается к построчному пути (fallback).
+Отдельных стадий `reactions`, `attachments`, `emojis` больше нет — всё создаётся внутри прохода сообщений.
 
-Fallback: если bulk вставка падает (ошибка структуры или несовместимый драйвер), код откатывается к построчному сохранению без прерывания импорта.
-До батчинга каждая сущность (сообщение/реакция/аттачмент) выполняла отдельный commit. Теперь мы:
-1. Накапливаем сущности в памяти до `IMPORT_BATCH_SIZE`.
-2. Вставляем их одной транзакцией (минимизируя round-trips).
-3. После commit создаём отношения (posted_in, reacted_to, attached_to) отдельными короткими операциями.
+### Атомарные обновления метаданных / счётчиков
+Все прогресс-счётчики (`*_processed`) и сервисные поля в `ImportJob.meta` обновляются через единый SQL builder `merge_job_meta` (атомарный UPDATE JSONB). Это решает историческую проблему lost update при смешении ORM read-modify-write и отдельных UPDATE выражений.
 
-Если база недоступна (например в unit-тесте с моками) — автоматически используется fallback путь с per-entity `save_to_db`, чтобы не ломать существующие тесты.
+Поддерживаемые операции:
+* incr — атомарное увеличение числовых значений
+* max — монотонный максимум (страховка при конкурентных инкрементах)
+* set — установка точного значения (стадия, служебные флаги)
+* nested — слияние вложенных объектов (`totals`, `durations_ms`)
+* remove — удаление ключей (используется редко)
 
-Метрики (к внедрению): `import_batch_rows`, `import_batch_ms`, `import_conflict_skipped` — позволят точнее настраивать размер батча и concurrency.
+Технические детали:
+* Все параметры сериализуются в ::jsonb, числовые инкременты приводятся к ::int.
+* Отсутствует промежуточное чтение meta перед записью.
+* Один SQL round‑trip на группу операций.
+* Исключён `IndeterminateDatatypeError` (явные касты типов).
 
-### Throttling прогресса
-Чтобы не засорять БД частыми UPDATE, прогресс сообщений обновляется не чаще, чем раз в `IMPORT_META_UPDATE_INTERVAL_SEC` или при достижении `IMPORT_META_UPDATE_EVERY` накопленных сообщений — что наступит раньше.
+Инварианты детерминированности:
+1. Ни один *_processed не уменьшается.
+2. При входе в `exporting` выполняется консолидация финальных значений в `meta.totals`.
+3. Эндпоинт `/jobs` для стадий `exporting`/`done` возвращает максимум из live меты и totals.
+4. Мини-интеграционный сценарий видит финальные значения уже на раннем POLL (обычно 2-й) — это «ранний успех».
+ 5. Флаг `totals_frozen=true` появляется только после консолидации и сигнализирует фронту, что denominator стабильный.
 
-### Замер длительностей стадий
-Если `IMPORT_RECORD_STAGE_DURATIONS=1` (по умолчанию включено), в `job.meta.durations` пишутся значения в миллисекундах: `extracting`, `users`, `channels`, `messages`, `emojis`, `reactions`, `attachments`, `exporting`. Это можно использовать на фронте для расчёта ETA или анализа узких мест.
+Если добавляете новый счётчик:
+1. Обновите логику инкремента в месте импорта.
+2. Добавьте поле в таблицу README (root и этот файл).
+3. Обновите mini-интеграционный скрипт с новым ожидаемым значением.
 
-### Fast path через orjson
-Для очень маленьких дневных файлов (до `IMPORT_ORJSON_THRESHOLD_KB`) можно полностью загрузить JSON-массив сообщений в память и распарсить через `orjson`, что быстрее, чем потоковый `ijson`. Для больших файлов по-прежнему используется streaming.
+### Ранний успех мини-набора
+CI / локальный скрипт прекращает опрос, когда стадия = `exporting` и все ожидаемые финальные счётчики совпали. Переход в `done` не обязателен для теста на корректность данных.
 
-`orjson` опционален: если пакет не установлен, код тихо откатывается на стандартный потоковый парсер.
+### Формат Slack архива (жёсткое требование)
+Импорт поддерживает только «плоский» формат: JSON-файлы верхнего уровня (`users.json`, `channels.json`, `groups.json`, `dms.json`, опц. `mpims.json`) и директории каналов/DM лежат непосредственно в корне архива zip. Любая дополнительная обёрточная папка (nested root) приводит к немедленной ошибке в стадии `extracting`.
 
-### Рекомендуемые значения
-| Объём экспорта | Режим | IMPORT_BATCH_SIZE | IMPORT_ORJSON_THRESHOLD_KB |
-|----------------|-------|-------------------|-----------------------------|
-| < 50 MB | single-pass | 500 | 128 |
-| 50–300 MB | single-pass | 1000 | 64 |
-| > 300 MB | single-pass | 1500–3000 | 32 |
+### Ключевые отличия от предыдущей версии
+* Удалены разделённые parsed vs processed счётчики.
+* Удалён сложный batching и потоковый ijson/"fast-path" через orjson.
+* Прогресс сообщений обновляется простым счётчиком; реакции/аттачменты/эмодзи — через дельты.
+* `reactions_import.py` оставлен как stub для обратной совместимости (возвращает 0).
+* Frontend больше не отображает parsed/processed divergence — только фактический прогресс.
+* Счётчики обновляются атомарно; исчезли «скачки» вниз при смене стадий.
 
-Точный подбор зависит от latency БД и доступной памяти. Батч 1000 сообщений обычно занимает < 10MB RAM.
+### Переменные окружения (актуальные)
+| Переменная | По умолчанию | Назначение |
+|------------|--------------|-----------|
+| IMPORT_RECORD_STAGE_DURATIONS | 1 | Сохранять длительность стадий импорта в `job.meta.durations`. |
+| IMPORT_CHANNEL_CONCURRENCY | 1 | (Опционально) параллельная обработка папок каналов. При 1 – последовательная. |
+| IMPORT_META_UPDATE_INTERVAL_SEC | 2 | Минимальный интервал между обновлениями счётчиков прогресса (messages_processed). |
+| IMPORT_META_UPDATE_EVERY | 0 | Если >0 – форсирует обновление меты каждые N сообщений (перекрывает интервал). |
 
-### Возможные дальнейшие оптимизации (не реализованы)
-- COPY (протокол PostgreSQL) поверх текущих multi-row INSERT для очень крупных батчей (>50k строк).
-- Adaptive batch size (динамическая корректировка IMPORT_BATCH_SIZE по времени commit).
-- Предварительная нормализация полей для уменьшения размера JSON в `raw_data`.
-- Инкрементальные повторные импорты с семантикой upsert для частичных обновлений.
-- Асинхронная отложенная загрузка binary файлов Slack (файлы → очередь → воркеры).
-- Adaptive channel concurrency (динамическое изменение IMPORT_CHANNEL_CONCURRENCY).
+Неиспользуемые ранее переменные (batch/orjson) очищены из кода. Если они присутствуют в окружении – игнорируются.
 
-### Параллельная обработка каналов (experimental)
-Установите `IMPORT_CHANNEL_CONCURRENCY > 1`, чтобы включить параллельную обработку папок каналов на стадии `messages`.
+### Что делать при обновлении инсталляции
+1. Обновить код до текущей версии.
+2. Удостовериться, что сторонние скрипты / мониторинг не зависят от parsed_* ключей в `job.meta`.
+3. Проверить UI: прогресс теперь показывает только `messages_processed` и агрегированные счётчики для reactions / attachments / emojis.
 
-Механика:
-* Каждая папка канала обрабатывается независимой задачей под управлением `asyncio.Semaphore(concurrency)`.
-* Внутри задачи сохраняются преимущества batching (`IMPORT_BATCH_SIZE`).
-* Callbacks `_progress_messages` и `_counters` используют атомарные SQL `UPDATE ... jsonb_build_object(...)` для агрегации.
-* Сообщения инкрементируют счётчик через отдельный UPDATE; реакции/аттачменты — дельтами; эмодзи — значением «текущих уникальных» с использованием `GREATEST()`.
+### Возможные будущие улучшения (не реализованы)
+* Реинтродукция адаптивного batching (multi-row INSERT) с метриками.
+* COPY протокол для крупных импортов.
+* Ленивая/отложенная загрузка бинарных файлов Slack.
+* Улучшенный ETA с учётом обработанного объёма.
 
-Рекомендации:
-| Каналов | Рекомендуемый IMPORT_CHANNEL_CONCURRENCY |
-|---------|-----------------------------------------|
-| 1–5     | 1 (параллелизм не даст выигрыша)        |
-| 6–30    | 2–4                                     |
-| 30–100  | 4–8                                     |
-| >100    | 8–12 (тестируйте, следите за I/O)       |
+### Минимальный контракт `parse_messages_and_related`
+Возвращает словарь:
+```json
+{"messages": <int>, "reactions": <int>, "attachments": <int>, "emojis": <int>}
+```
+Все значения – суммарно созданные (или уникальные для эмодзи). Ошибки внутри отдельных сущностей логируются и не прерывают процесс.
 
-Наблюдайте:
-* Время транзакций БД (не должно резко расти).
-* `iostat` / нагрузка на диск (слишком много мелких файлов ⇒ ограничить concurrency).
-* Память процесса (batch * concurrency * средний размер сообщения).
+### Диагностика
+* Лог начала / завершения стадии сообщений содержит агрегаты: `Imported messages=X reactions=Y attachments=Z emojis(unique)=K`.
+* Для расследования узких мест включите `IMPORT_RECORD_STAGE_DURATIONS=1` и смотрите `job.meta.durations`.
 
-Откат: установите `IMPORT_CHANNEL_CONCURRENCY=1` — включится исходный последовательный путь.
+### Ограничения текущей упрощённой реализации
+* Нет агрессивной оптимизации по round-trips к БД (каждая сущность вставляется отдельно).
+* Нет потокового ijson – большие файлы читаются целиком через стандартный `json.load`.
+* Возможное увеличение времени импорта на очень больших архивах (это осознанный компромисс ради упрощения и устойчивости после merge-конфликтов).
 
-Ограничения текущей реализации:
-* Нет динамического backpressure (ошибка в одном канале не снижает concurrency для остальных).
-* ETA не учитывает параллелизм — просто суммирует processed.
-* Нет приоритезации «маленьких» каналов (может иметь смысл для сокращения хвоста).
-
-Будущие улучшения (кандидаты):
-* Adaptive concurrency на базе времени обработки батчей.
-* Предзагрузка списка файлов и сортировка каналов по приблизительному объёму (мелкие сначала).
-* Отложенная пост-обработка отношений вне горячего цикла батча.
+### Когда стоит оптимизировать
+Если объём Slack экспорта > ~300MB и import заметно медленнее приемлемого SLA – стоит рассмотреть возврат batching под feature-флагом (см. список будущих улучшений).

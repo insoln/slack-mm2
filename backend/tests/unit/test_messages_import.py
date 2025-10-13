@@ -1,5 +1,4 @@
 import pytest
-import asyncio
 from unittest.mock import patch, MagicMock, mock_open, AsyncMock
 from app.services.backup import messages_import
 
@@ -39,7 +38,7 @@ async def test_parse_channel_messages_creates_entities(monkeypatch):
                 result = await messages_import.parse_channel_messages(
                     export_dir, folder_channel_map
                 )
-                # Проверки: теперь функция возвращает словарь счётчиков
+                # Проверки: функция возвращает словарь счётчиков
                 assert isinstance(result, dict)
                 assert result.get("messages") == 2
                 assert MockMessage.call_count == 2

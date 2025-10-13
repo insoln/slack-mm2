@@ -1,0 +1,17 @@
+[
+  {
+    "type": "message",
+    "user": "U0001",
+    "text": "Follow-up day2 public (reply)",
+    "ts": "1735776000.000300",
+    "thread_ts": "1735689700.000200"
+  },
+  {
+    "type": "message",
+    "subtype": "bot_message",
+    "bot_id": "B0001",
+    "username": "mini-bot",
+    "text": "Public bot announcement day2",
+    "ts": "1735776100.000400"
+  }
+]

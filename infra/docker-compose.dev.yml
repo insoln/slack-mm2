@@ -57,6 +57,8 @@ services:
       DB_POOL_TIMEOUT: 60
       # Attachment concurrency and limits
       ATTACHMENT_WORKERS: 2
+      # Allow attachments whose url_private begins with any of these prefixes (CSV). Include test-files fixture host for CI integration dataset.
+      IMPORT_URL_PREFIXES: "https://files.slack.com,http://test-files:9000"
       SLACK_VERIFICATION_TOKEN: ${SLACK_VERIFICATION_TOKEN}
       SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
       SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET}
@@ -76,8 +78,8 @@ services:
     build:
       context: ../frontend
       dockerfile: Dockerfile
-    # Устанавливаем зависимости перед запуском Vite; кэшируем node_modules в volume
-    command: ["sh", "-lc", "npm ci && npx vite --host"]
+    # Install deps each start (ensures clean, deterministic dev env) then start Vite
+    command: ["sh", "-lc", "npm ci && npx vite --host 0.0.0.0"]
     init: true
     stop_signal: SIGTERM
     stop_grace_period: 5s
@@ -102,16 +104,24 @@ services:
       - backend
     restart: unless-stopped
 
+  test-files:
+    image: python:3.12-slim
+    command: ["python", "-m", "http.server", "9000"]
+    working_dir: /data
+    volumes:
+      - ../infra/test-data:/data:ro
+    ports:
+      - "9000:9000"
+    restart: unless-stopped
+
   mattermost:
     image: mattermost/mattermost-team-edition:release-10.11
     restart: unless-stopped
     init: true
     stop_signal: SIGTERM
     stop_grace_period: 10s
-    # Предотвращение осиротевших процессов
     security_opt:
       - no-new-privileges:true
-    # Принудительное завершение при остановке
     deploy:
       restart_policy:
         condition: on-failure

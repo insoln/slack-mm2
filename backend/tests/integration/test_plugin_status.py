@@ -14,8 +14,16 @@ def test_plugin_status_shape_no_mm_env(monkeypatch):
     data = r.json()
     # Basic expected keys
     for key in [
-        "plugin_id","expected_version","installed","enabled","installed_version",
-        "needs_update","bundle_exists","bundle_path","bundle_sha256","bundle_mtime"
+        "plugin_id",
+        "expected_version",
+        "installed",
+        "enabled",
+        "installed_version",
+        "needs_update",
+        "bundle_exists",
+        "bundle_path",
+        "bundle_sha256",
+        "bundle_mtime",
     ]:
         assert key in data
     assert data["installed"] is False
@@ -26,7 +34,9 @@ def test_plugin_status_shape_no_mm_env(monkeypatch):
 
 def test_plugin_status_with_fake_mm_env(monkeypatch):
     # Provide fake env so compute_status tries to call remote; we monkeypatch network layer if needed.
-    monkeypatch.setenv("MM_URL", "http://localhost:65500")  # unlikely port to avoid real server
+    monkeypatch.setenv(
+        "MM_URL", "http://localhost:65500"
+    )  # unlikely port to avoid real server
     monkeypatch.setenv("MM_TOKEN", "dummy")
     r = client.get("/plugin/status")
     # Even if Mattermost unreachable, endpoint should not crash

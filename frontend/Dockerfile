@@ -1,15 +1,12 @@
 FROM node:20-slim
 
-# Установка tini для корректного управления процессами
-RUN apt-get update && apt-get install -y tini && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
+# Только package.json для кеша слоёв. Полная установка будет в entrypoint при запуске (быстрее при разработке с изменениями).
 COPY package*.json ./
-RUN npm install
 
 COPY . .
 
-# Использование tini для запуска процесса
-ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["npm", "run", "dev", "--", "--host"] 
+RUN chmod +x docker-entrypoint.sh
+
+ENTRYPOINT ["/app/docker-entrypoint.sh"]

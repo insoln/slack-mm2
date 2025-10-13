@@ -1,0 +1,31 @@
+[
+  {
+    "type": "message",
+    "user": "U0001",
+    "text": "Hello world public day1",
+    "ts": "1735689600.000100",
+    "files": [
+      {
+        "id": "FTXT1",
+        "created": 1735689601,
+        "timestamp": 1735689601,
+        "name": "example.txt",
+        "title": "Example Text",
+        "mimetype": "text/plain",
+  "filetype": "text",
+  "url_private": "http://test-files:9000/slack-mini-backup/files/example.txt",
+        "size": 20
+      }
+    ]
+  },
+  {
+    "type": "message",
+    "user": "UADMIN",
+    "text": "Reply thread root public",
+    "ts": "1735689700.000200",
+    "thread_ts": "1735689700.000200",
+    "reactions": [
+      {"name": "thumbsup", "users": ["U0001"], "count": 1}
+    ]
+  }
+]

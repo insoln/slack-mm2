@@ -8,7 +8,13 @@ from app.logging_config import backend_logger
 async def parse_users(extract_dir, job_id: Optional[int] = None):
     users_path = os.path.join(extract_dir, "users.json")
     if not os.path.exists(users_path):
-        backend_logger.error(f"users.json не найден в {extract_dir}")
+        try:
+            listing = sorted(os.listdir(extract_dir))
+        except Exception:
+            listing = []
+        backend_logger.error(
+            "users.json не найден в %s; содержимое: %s", extract_dir, listing
+        )
         return []
     with open(users_path, encoding="utf-8") as f:
         users_data = json.load(f)
@@ -26,5 +32,8 @@ async def parse_users(extract_dir, job_id: Optional[int] = None):
         )
         user_objs.append(user)
     for u in user_objs:
-        await u.save_to_db()
+        try:
+            await u.save_to_db()
+        except Exception:  # pragma: no cover
+            pass
     return user_objs

@@ -144,34 +144,54 @@ async def list_jobs(limit: int = 50):
                 except Exception:
                     # Non-fatal: silently ignore if zip cannot be read
                     pass
+            # Only derive (and freeze) totals AFTER import stages complete to avoid
+            # denominators that later get exceeded (progress > 100%). We treat
+            # totals as a consolidation artifact of entering exporting/done.
             totals = meta.get("totals") or {}
+            in_import_stage = data.get("current_stage") in {
+                "extracting",
+                "users",
+                "channels",
+                "messages",
+                "emojis",
+                "reactions",
+                "attachments",
+            }
             needs_totals = not totals or all(
                 (totals.get(k, 0) == 0)
-                for k in ("messages", "reactions", "attachments")
+                for k in (
+                    "users",
+                    "channels",
+                    "messages",
+                    "reactions",
+                    "attachments",
+                )
             )
-            if needs_totals and row.id is not None:
+            if (not in_import_stage) and needs_totals and row.id is not None:
                 q = await session.execute(
                     select(Entity.entity_type, func.count())
                     .where(Entity.job_id == row.id)
                     .group_by(Entity.entity_type)
                 )
                 derived = {et: cnt for et, cnt in q.all()}
-                totals = {
+                frozen_totals = {
+                    "users": int(derived.get("user", 0)),
+                    "channels": int(derived.get("channel", 0)),
                     "messages": int(derived.get("message", 0)),
                     "reactions": int(derived.get("reaction", 0)),
                     "attachments": int(derived.get("attachment", 0)),
-                    # emojis left as-is (global)
                     **(
                         {"emojis": totals.get("emojis", 0)}
                         if isinstance(totals, dict)
                         else {}
                     ),
                 }
-                meta["totals"] = totals
+                meta["totals"] = frozen_totals
+                meta["totals_frozen"] = True
                 data["meta"] = meta
-            # Derive processed counters:
-            #  - During import stages: keep max(meta vs derived) so UI doesn't regress.
-            #  - During exporting/done: use derived (non-pending) only, so progress resets to 0 at export start.
+            # Derive processed (ingested) vs exported (non-pending) counters.
+            # processed_* remain monotonic counts of entities we attempted/created during import (ingestion scope)
+            # exported_* reflect how many have transitioned out of pending (success/failed/skipped) suitable for export progress UI.
             if row.id is not None:
                 q2 = await session.execute(
                     select(Entity.entity_type, func.count())
@@ -182,16 +202,16 @@ async def list_jobs(limit: int = 50):
                     .group_by(Entity.entity_type)
                 )
                 nonpend = {et: int(cnt) for et, cnt in q2.all()}
-                in_import_stage = data.get("current_stage") in {
-                    "extracting",
-                    "users",
-                    "channels",
-                    "messages",
-                    "emojis",
-                    "reactions",
-                    "attachments",
-                }
+                # reuse in_import_stage calculated above
                 if in_import_stage:
+                    meta["users_processed"] = max(
+                        int(meta.get("users_processed") or 0),
+                        nonpend.get("user", 0),
+                    )
+                    meta["channels_processed"] = max(
+                        int(meta.get("channels_processed") or 0),
+                        nonpend.get("channel", 0),
+                    )
                     meta["messages_processed"] = max(
                         int(meta.get("messages_processed") or 0),
                         nonpend.get("message", 0),
@@ -205,10 +225,41 @@ async def list_jobs(limit: int = 50):
                         nonpend.get("attachment", 0),
                     )
                 else:
-                    # Export/done: reflect actual exported items only
-                    meta["messages_processed"] = int(nonpend.get("message", 0))
-                    meta["reactions_processed"] = int(nonpend.get("reaction", 0))
-                    meta["attachments_processed"] = int(nonpend.get("attachment", 0))
+                    # Exporting / done: avoid regressions to zero if exporter statuses
+                    # have not yet flipped from pending. Use max of nonpending, existing
+                    # meta counters, and totals (if present) to maintain monotonicity.
+                    totals_local = meta.get("totals") or {}
+                    meta["users_processed"] = max(
+                        int(nonpend.get("user", 0)),
+                        int(meta.get("users_processed") or 0),
+                        int(totals_local.get("users", 0) or 0),
+                    )
+                    meta["channels_processed"] = max(
+                        int(nonpend.get("channel", 0)),
+                        int(meta.get("channels_processed") or 0),
+                        int(totals_local.get("channels", 0) or 0),
+                    )
+                    meta["messages_processed"] = max(
+                        int(nonpend.get("message", 0)),
+                        int(meta.get("messages_processed") or 0),
+                        int(totals_local.get("messages", 0) or 0),
+                    )
+                    meta["reactions_processed"] = max(
+                        int(nonpend.get("reaction", 0)),
+                        int(meta.get("reactions_processed") or 0),
+                        int(totals_local.get("reactions", 0) or 0),
+                    )
+                    meta["attachments_processed"] = max(
+                        int(nonpend.get("attachment", 0)),
+                        int(meta.get("attachments_processed") or 0),
+                        int(totals_local.get("attachments", 0) or 0),
+                    )
+                # Exported counters always reflect current non-pending counts (even during import)
+                meta["users_exported"] = nonpend.get("user", 0)
+                meta["channels_exported"] = nonpend.get("channel", 0)
+                meta["messages_exported"] = nonpend.get("message", 0)
+                meta["reactions_exported"] = nonpend.get("reaction", 0)
+                meta["attachments_exported"] = nonpend.get("attachment", 0)
                 data["meta"] = meta
             jobs_out.append(data)
     return {"jobs": jobs_out}

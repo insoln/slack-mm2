@@ -1,0 +1,92 @@
+name: Mini Integration
+
+on:
+  push:
+    branches: [ feature/**, fix/**, chore/** ]
+  pull_request:
+    branches: [ master ]
+
+concurrency:
+  group: mini-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mini-backup-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('backend/requirements.txt') }}
+
+      - name: Install backend deps
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Backend unit tests
+        working-directory: backend
+        run: |
+          black --check app alembic tests
+          pytest --cov=app --cov-report=term-missing
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Frontend lint & build
+        working-directory: frontend
+        run: |
+          npm run lint
+          npm run build
+      - name: Set up Go (for plugin build)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Cache Go build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('infra/plugin/go.sum') }}
+
+      - name: Build Mattermost plugin (dev script)
+        working-directory: infra/plugin
+        run: |
+          bash build-dev.sh
+          ls -l dist
+
+      - name: List plugin bundle artifact
+        run: ls -l infra/plugin/dist || (echo 'Missing plugin dist output' && exit 1)
+      - name: Mini integration test
+        env:
+          # ensure non-TTY psql works
+          COMPOSE_PROJECT_NAME: ci-mini
+        run: bash scripts/run_mini_backup_integration.sh
+
+      - name: Upload backend logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-logs
+          path: /tmp/backend_integration_logs.txt
+
+      - name: Show docker ps (debug)
+        if: failure()
+        run: docker ps -a

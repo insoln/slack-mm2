@@ -1,0 +1,49 @@
+name: Integration Mini Backup
+
+on:
+  push:
+    branches: [ master, feature/**, fix/**, chore/** ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  mini-backup-import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Show disk usage before
+        run: df -h
+
+      - name: Build images (backend + frontend + plugin base) & start services
+        run: |
+          docker compose -f infra/docker-compose.dev.yml build db backend mattermost test-files
+
+      - name: Build plugin (standalone) prior to integration script
+        run: |
+          pushd infra/plugin >/dev/null
+          bash build-dev.sh
+          ls -l dist || (echo 'Plugin dist missing after build' && exit 1)
+          popd >/dev/null
+
+      - name: Run mini backup integration script
+        run: |
+          chmod +x scripts/run_mini_backup_integration.sh
+          ./scripts/run_mini_backup_integration.sh
+
+      - name: Upload backend logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-logs
+          path: tmp/integration_backend.log
+          if-no-files-found: warn
+
+      - name: Show disk usage after
+        if: always()
+        run: df -h

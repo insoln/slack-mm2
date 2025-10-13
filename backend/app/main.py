@@ -15,6 +15,7 @@ from app.api.export import router as export_router
 from app.api.plugin import router as plugin_router
 from app.api.stats import router as stats_router
 from app.api.progress import router as progress_router
+from app.api.admin import router as admin_router
 from app.api.jobs import router as jobs_router
 from app.api import plugin as plugin_api
 from app.models.base import SessionLocal
@@ -59,13 +60,19 @@ async def lifespan(app: FastAPI):
                     else:
                         ok, err = await plugin_api._upload_bundle(Path(bundle_path))
                         if not ok:
-                            backend_logger.error(f"Plugin upload failed: {err}")
+                            # Downgraded to warning; during early startup Mattermost may not yet accept connections
+                            backend_logger.warning(
+                                f"Plugin upload failed (startup race, will not fail job): {err}"
+                            )
                 # Enable if needed
                 final = await plugin_api._compute_status()
                 if not final.get("enabled"):
                     await plugin_api.plugin_enable()
         except Exception as e:
-            backend_logger.error(f"Auto-ensure plugin failed: {e}")
+            # Startup races (Mattermost not yet accepting connections) are downgraded to warning
+            backend_logger.warning(
+                f"Auto-ensure plugin failed (will retry later via API calls): {e}"
+            )
 
     # Auto-resume export of unfinished jobs (FIFO) on startup
     if os.getenv("PYTEST_RUN", "0") not in ("1", "true", "TRUE"):
@@ -109,6 +116,7 @@ app.include_router(plugin_router)
 app.include_router(stats_router)
 app.include_router(progress_router)
 app.include_router(jobs_router)
+app.include_router(admin_router)
 
 
 @app.get("/healthcheck")
