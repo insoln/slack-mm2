@@ -20,7 +20,10 @@ PLUGIN_DEFAULT_ID = "mm-importer"
 _bundle_cache: dict[str, dict] = {}
 _BUNDLE_CACHE_TTL = 30  # seconds
 
-def _get_cached_bundle_info(path: Path | None) -> tuple[str | None, int | None, int | None, int | None]:
+
+def _get_cached_bundle_info(
+    path: Path | None,
+) -> tuple[str | None, int | None, int | None, int | None]:
     """Return (sha256, mtime_epoch, size_bytes, computed_at_epoch).
 
     Cache key includes file mtime ns + size so new build invalidates automatically.
@@ -166,7 +169,9 @@ async def _compute_status() -> dict:
     bundle_size = None
     bundle_hash_computed_at = None
     if bundle_exists and bundle_path is not None:
-        bundle_sha256, bundle_mtime, bundle_size, bundle_hash_computed_at = _get_cached_bundle_info(bundle_path)
+        bundle_sha256, bundle_mtime, bundle_size, bundle_hash_computed_at = (
+            _get_cached_bundle_info(bundle_path)
+        )
     if not MM_URL or not MM_TOKEN:
         return {
             "plugin_id": expected_id,
@@ -229,7 +234,9 @@ async def _compute_status() -> dict:
     bundle_size = None
     bundle_hash_computed_at = None
     if bundle_exists and bundle_path is not None:
-        bundle_sha256, bundle_mtime, bundle_size, bundle_hash_computed_at = _get_cached_bundle_info(bundle_path)
+        bundle_sha256, bundle_mtime, bundle_size, bundle_hash_computed_at = (
+            _get_cached_bundle_info(bundle_path)
+        )
 
     result = {
         "plugin_id": expected_id,

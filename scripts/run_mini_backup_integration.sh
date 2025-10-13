@@ -46,9 +46,10 @@ echo "[INFO] Services: $SERVICES"
 echo "[INFO] Dataset file: $DATASET_FILE"
 
 if [[ ! -f "$DATASET_FILE" ]]; then
-  echo "Dataset file not found: $DATASET_FILE" >&2
-  exit 1
-fi
+    echo "Dataset file not found: $DATASET_FILE" >&2
+    echo "This script expects the mini backup zip to be committed to the repository." >&2
+    exit 1
+  fi
 
 # Ensure infra/.env exists (CI runners won't have it by default). Provide dummy Slack tokens to satisfy docker compose env expectations.
 if [[ ! -f infra/.env ]]; then

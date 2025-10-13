@@ -236,112 +236,112 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
         if incr or max_keys:
             await merge_job_meta(job_id, incr=incr, max_keys=max_keys)
 
-        _stage_start = time.time()
+    # Run the messages import once (was incorrectly nested inside _counters)
+    _stage_start = time.time()
+    concurrency = 1
+    try:
+        concurrency = int(os.environ.get("IMPORT_CHANNEL_CONCURRENCY", "1") or 1)
+    except Exception:  # pragma: no cover
         concurrency = 1
-        try:
-            concurrency = int(os.environ.get("IMPORT_CHANNEL_CONCURRENCY", "1") or 1)
-        except Exception:  # pragma: no cover
-            concurrency = 1
 
-        if concurrency <= 1:
-            await parse_messages_and_related(
-                extract_dir,
-                folder_channel_map,
-                emoji_list=emoji_list,
-                batch_log_every=1,  # ensure per-message progress for small datasets
-                progress_messages=_progress_messages,
-                file_progress=_progress_msg_files,
-                job_id=job_id,
-                single_pass=single_pass,
-                counters_callback=_counters,
-            )
-        else:
-            backend_logger.info(
-                f"Messages import concurrency enabled (IMPORT_CHANNEL_CONCURRENCY={concurrency}) for {len(folder_channel_map)} folders"
-            )
-            sem = asyncio.Semaphore(concurrency)
-
-            async def _channel_task(folder: str, ch: dict):
-                async with sem:
-                    try:
-                        await parse_messages_and_related(
-                            extract_dir,
-                            {folder: ch},
-                            emoji_list=emoji_list,
-                            batch_log_every=1,
-                            progress_messages=_progress_messages,
-                            file_progress=_progress_msg_files,
-                            job_id=job_id,
-                            single_pass=single_pass,
-                            counters_callback=_counters,
-                        )
-                    except Exception as e:  # pragma: no cover
-                        backend_logger.error(
-                            f"Channel import failed for folder={folder}: {e}"
-                        )
-
-            tasks = [
-                asyncio.create_task(_channel_task(folder, ch))
-                for folder, ch in folder_channel_map.items()
-                if ch
-            ]
-            await asyncio.gather(*tasks)
-
-        _dur = int((time.time() - _stage_start) * 1000)
-        if record_durations:
-            await merge_job_meta(job_id, nested={"durations": {"messages": _dur}})
-
-        # Persist final totals based on processed counters (including users & channels) without force fallback
-        # Consolidate totals from *_processed counts atomically
-        totals_sql = _text(
-            """
-            UPDATE import_jobs
-            SET meta = (
-              SELECT meta || jsonb_build_object(
-                'totals', jsonb_build_object(
-                  'users', COALESCE((meta->>'users_processed')::int,0),
-                  'channels', COALESCE((meta->>'channels_processed')::int,0),
-                  'messages', COALESCE((meta->>'messages_processed')::int,0),
-                  'reactions', COALESCE((meta->>'reactions_processed')::int,0),
-                  'attachments', COALESCE((meta->>'attachments_processed')::int,0),
-                  'emojis', COALESCE((meta->>'emojis_processed')::int,0)
-                )
-              ) FROM import_jobs WHERE id=:jid
-            ) WHERE id=:jid
-            """
+    if concurrency <= 1:
+        await parse_messages_and_related(
+            extract_dir,
+            folder_channel_map,
+            emoji_list=emoji_list,
+            batch_log_every=1,  # ensure per-message progress for small datasets
+            progress_messages=_progress_messages,
+            file_progress=_progress_msg_files,
+            job_id=job_id,
+            single_pass=single_pass,
+            counters_callback=_counters,
         )
-        try:
-            async with SessionLocal() as s:
-                await s.execute(totals_sql, {"jid": job_id})
-                await s.commit()
-        except Exception:  # pragma: no cover
-            pass
+    else:
+        backend_logger.info(
+            f"Messages import concurrency enabled (IMPORT_CHANNEL_CONCURRENCY={concurrency}) for {len(folder_channel_map)} folders"
+        )
+        sem = asyncio.Semaphore(concurrency)
 
-        # --- Export --- (always executed; skip-export flag removed as per request)
-        async with SessionLocal() as session:
-            job = await session.get(ImportJob, job_id)
-            if job:
-                setattr(job, "current_stage", "exporting")
-                await session.commit()
-        await merge_job_meta(job_id, set={"current_stage": "exporting"})
-        _stage_start = time.time()
-        await orchestrate_mm_export(job_id=job_id)
-        _dur = int((time.time() - _stage_start) * 1000)
-        if record_durations:
-            await merge_job_meta(job_id, nested={"durations": {"exporting": _dur}})
+        async def _channel_task(folder: str, ch: dict):
+            async with sem:
+                try:
+                    await parse_messages_and_related(
+                        extract_dir,
+                        {folder: ch},
+                        emoji_list=emoji_list,
+                        batch_log_every=1,
+                        progress_messages=_progress_messages,
+                        file_progress=_progress_msg_files,
+                        job_id=job_id,
+                        single_pass=single_pass,
+                        counters_callback=_counters,
+                    )
+                except Exception as e:  # pragma: no cover
+                    backend_logger.error(
+                        f"Channel import failed for folder={folder}: {e}"
+                    )
 
-        # --- Done ---
-        async with SessionLocal() as session:
-            from sqlalchemy import update
+        tasks = [
+            asyncio.create_task(_channel_task(folder, ch))
+            for folder, ch in folder_channel_map.items()
+            if ch
+        ]
+        await asyncio.gather(*tasks)
 
-            await session.execute(
-                update(ImportJob)
-                .where(ImportJob.id == job_id)
-                .values(current_stage="done", status=JobStatus.success)
+    _dur = int((time.time() - _stage_start) * 1000)
+    if record_durations:
+        await merge_job_meta(job_id, nested={"durations": {"messages": _dur}})
+
+    # Persist final totals based on processed counters (including users & channels)
+    totals_sql = _text(
+        """
+        UPDATE import_jobs
+        SET meta = (
+          SELECT meta || jsonb_build_object(
+            'totals', jsonb_build_object(
+              'users', COALESCE((meta->>'users_processed')::int,0),
+              'channels', COALESCE((meta->>'channels_processed')::int,0),
+              'messages', COALESCE((meta->>'messages_processed')::int,0),
+              'reactions', COALESCE((meta->>'reactions_processed')::int,0),
+              'attachments', COALESCE((meta->>'attachments_processed')::int,0),
+              'emojis', COALESCE((meta->>'emojis_processed')::int,0)
             )
-            await session.commit()
+          ) FROM import_jobs WHERE id=:jid
+        ) WHERE id=:jid
+        """
+    )
+    try:
+        async with SessionLocal() as s:
+            await s.execute(totals_sql, {"jid": job_id})
+            await s.commit()
+    except Exception:  # pragma: no cover
+        pass
 
-    # Cleanup temp dir (on success path)
+    # --- Export ---
+    async with SessionLocal() as session:
+        job = await session.get(ImportJob, job_id)
+        if job:
+            setattr(job, "current_stage", "exporting")
+            await session.commit()
+    await merge_job_meta(job_id, set={"current_stage": "exporting"})
+    _stage_start = time.time()
+    await orchestrate_mm_export(job_id=job_id)
+    _dur = int((time.time() - _stage_start) * 1000)
+    if record_durations:
+        await merge_job_meta(job_id, nested={"durations": {"exporting": _dur}})
+
+    # --- Done ---
+    async with SessionLocal() as session:
+        from sqlalchemy import update
+
+        await session.execute(
+            update(ImportJob)
+            .where(ImportJob.id == job_id)
+            .values(current_stage="done", status=JobStatus.success)
+        )
+        await session.commit()
+
+    # Cleanup temp dir (on success path) AFTER all stages
     try:
         shutil.rmtree(extract_dir)
         backend_logger.debug(f"Временная директория {extract_dir} удалена")

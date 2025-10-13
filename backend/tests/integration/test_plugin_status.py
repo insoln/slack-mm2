@@ -34,7 +34,9 @@ def test_plugin_status_shape_no_mm_env(monkeypatch):
 
 def test_plugin_status_with_fake_mm_env(monkeypatch):
     # Provide fake env so compute_status tries to call remote; we monkeypatch network layer if needed.
-    monkeypatch.setenv("MM_URL", "http://localhost:65500")  # unlikely port to avoid real server
+    monkeypatch.setenv(
+        "MM_URL", "http://localhost:65500"
+    )  # unlikely port to avoid real server
     monkeypatch.setenv("MM_TOKEN", "dummy")
     r = client.get("/plugin/status")
     # Even if Mattermost unreachable, endpoint should not crash

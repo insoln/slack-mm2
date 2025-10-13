@@ -180,6 +180,7 @@ async def parse_custom_emojis_from_export(
                             iterator = []
                     else:  # fallback full load if streaming not available
                         import json as _json
+
                         try:
                             iterator = _json.load(f) or []
                         except Exception:
@@ -187,7 +188,9 @@ async def parse_custom_emojis_from_export(
                     for msg in iterator:  # type: ignore
                         raw_msg = msg or {}
                         wanted |= set(EMOJI_PATTERN.findall(raw_msg.get("text") or ""))
-                        wanted |= _collect_emoji_from_blocks(raw_msg.get("blocks") or [])
+                        wanted |= _collect_emoji_from_blocks(
+                            raw_msg.get("blocks") or []
+                        )
                         for a in raw_msg.get("attachments", []) or []:
                             for key in ("pretext", "title", "text", "fallback"):
                                 val = a.get(key)

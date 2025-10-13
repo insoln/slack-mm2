@@ -22,7 +22,9 @@ async def progress_stream(interval: float = 2.0, jobs_limit: int = 25):
                 # Fetch multiple recent jobs (reuse minimal subset of list_jobs logic inline to avoid import cycle)
                 async with SessionLocal() as session:
                     res = await session.execute(
-                        select(ImportJob).order_by(ImportJob.id.desc()).limit(jobs_limit)
+                        select(ImportJob)
+                        .order_by(ImportJob.id.desc())
+                        .limit(jobs_limit)
                     )
                     rows = res.scalars().all()
                 jobs_payload = []
@@ -39,7 +41,12 @@ async def progress_stream(interval: float = 2.0, jobs_limit: int = 25):
                         latest_job = job_obj
                     jobs_payload.append(job_obj)
                 # Backward compatible field 'job' plus new 'jobs' and 'latest_job'
-                payload_dict = {**stats, "job": latest_job, "latest_job": latest_job, "jobs": jobs_payload}
+                payload_dict = {
+                    **stats,
+                    "job": latest_job,
+                    "latest_job": latest_job,
+                    "jobs": jobs_payload,
+                }
                 payload = json.dumps(payload_dict, ensure_ascii=False)
                 yield f"event: stats\ndata: {payload}\n\n"
             except Exception as e:
