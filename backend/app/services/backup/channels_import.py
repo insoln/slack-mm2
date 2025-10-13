@@ -40,16 +40,21 @@ async def parse_channels_and_chats(extract_dir, job_id: Optional[int] = None):
     # Batch save all channels
     if channel_objs:
         from app.services.entities.base_mixin import BaseMapping
+
         try:
             # Check if we're dealing with real mappings or mocks (test environment)
-            if hasattr(channel_objs[0], 'entity_type') and not callable(getattr(channel_objs[0], 'entity_type', None)):
+            if hasattr(channel_objs[0], "entity_type") and not callable(
+                getattr(channel_objs[0], "entity_type", None)
+            ):
                 result = await BaseMapping.batch_save_to_db(channel_objs)
                 backend_logger.debug(f"Batch saved {result.get('saved', 0)} channels")
             else:
                 # Test environment with mocks - use individual saves
                 raise Exception("Mock detected, using fallback")
         except Exception as e:
-            backend_logger.debug(f"Batch save failed for channels, using individual saves: {e}")
+            backend_logger.debug(
+                f"Batch save failed for channels, using individual saves: {e}"
+            )
             # Fallback to individual saves
             for channel in channel_objs:
                 try:

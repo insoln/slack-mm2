@@ -199,7 +199,7 @@ async def parse_channel_messages(
                             if isinstance(m.raw_data, dict):
                                 m.raw_data.setdefault("channel_id", channel_id)
                             # Collect for batch save instead of immediate save
-                            file_mappings.append(('message', m, channel_id))
+                            file_mappings.append(("message", m, channel_id))
                             messages_count += 1
                             processed_in_file += 1
 
@@ -240,7 +240,7 @@ async def parse_channel_messages(
                                             job_id=job_id,
                                         )
                                         # Collect for batch save instead of immediate save
-                                        file_mappings.append(('reaction', r_ent, None))
+                                        file_mappings.append(("reaction", r_ent, None))
                                         reactions_count += 1
                                 # Attachments
                                 for file_obj in (msg or {}).get("files") or []:
@@ -264,7 +264,9 @@ async def parse_channel_messages(
                                         job_id=job_id,
                                     )
                                     # Collect for batch save instead of immediate save
-                                    file_mappings.append(('attachment', a_ent, slack_id))
+                                    file_mappings.append(
+                                        ("attachment", a_ent, slack_id)
+                                    )
                                     attachments_count += 1
                                 # Emoji discovery
                                 if emoji_list:
@@ -354,7 +356,7 @@ async def parse_channel_messages(
                             if isinstance(m.raw_data, dict):
                                 m.raw_data.setdefault("channel_id", channel_id)
                             # Collect for batch save instead of immediate save
-                            file_mappings.append(('message', m, channel_id))
+                            file_mappings.append(("message", m, channel_id))
                             messages_count += 1
                             processed_in_file += 1
 
@@ -389,7 +391,7 @@ async def parse_channel_messages(
                                             job_id=job_id,
                                         )
                                         # Collect for batch save instead of immediate save
-                                        file_mappings.append(('reaction', r_ent, None))
+                                        file_mappings.append(("reaction", r_ent, None))
                                         reactions_count += 1
                                 for file_obj in (msg or {}).get("files") or []:
                                     fid = file_obj.get("id")
@@ -412,7 +414,9 @@ async def parse_channel_messages(
                                         job_id=job_id,
                                     )
                                     # Collect for batch save instead of immediate save
-                                    file_mappings.append(('attachment', a_ent, slack_id))
+                                    file_mappings.append(
+                                        ("attachment", a_ent, slack_id)
+                                    )
                                     attachments_count += 1
                                 if emoji_list:
                                     text_val = (msg or {}).get("text") or ""
@@ -427,83 +431,113 @@ async def parse_channel_messages(
             # Batch save all mappings collected from this file
             if file_mappings:
                 from app.services.entities.base_mixin import BaseMapping
-                
+
                 # Separate mappings by type for batch save
-                messages = [mapping for mapping_type, mapping, _ in file_mappings if mapping_type == 'message']
-                reactions = [mapping for mapping_type, mapping, _ in file_mappings if mapping_type == 'reaction']
-                attachments = [mapping for mapping_type, mapping, _ in file_mappings if mapping_type == 'attachment']
-                
+                messages = [
+                    mapping
+                    for mapping_type, mapping, _ in file_mappings
+                    if mapping_type == "message"
+                ]
+                reactions = [
+                    mapping
+                    for mapping_type, mapping, _ in file_mappings
+                    if mapping_type == "reaction"
+                ]
+                attachments = [
+                    mapping
+                    for mapping_type, mapping, _ in file_mappings
+                    if mapping_type == "attachment"
+                ]
+
                 try:
                     # Batch save messages first (other entities may depend on them)
                     if messages:
                         # Check if we're dealing with real mappings or mocks (test environment)
-                        if hasattr(messages[0], 'entity_type') and not callable(getattr(messages[0], 'entity_type', None)):
+                        if hasattr(messages[0], "entity_type") and not callable(
+                            getattr(messages[0], "entity_type", None)
+                        ):
                             await BaseMapping.batch_save_to_db(messages)
                         else:
                             # Test environment with mocks - use individual saves
                             raise Exception("Mock detected, using fallback")
                         # Create relations for messages
                         for mapping in messages:
-                            if hasattr(mapping, 'id') and mapping.id:
+                            if hasattr(mapping, "id") and mapping.id:
                                 try:
-                                    channel_id = mapping.raw_data.get('channel_id') if isinstance(mapping.raw_data, dict) else None
+                                    channel_id = (
+                                        mapping.raw_data.get("channel_id")
+                                        if isinstance(mapping.raw_data, dict)
+                                        else None
+                                    )
                                     if channel_id:
-                                        await mapping.create_posted_in_relation(channel_id)
+                                        await mapping.create_posted_in_relation(
+                                            channel_id
+                                        )
                                     await mapping.create_posted_by_relation()
                                     await mapping.create_thread_relation()
                                 except Exception:  # pragma: no cover
                                     pass
-                    
+
                     # Batch save reactions
                     if reactions:
                         # Check if we're dealing with real mappings or mocks (test environment)
-                        if hasattr(reactions[0], 'entity_type') and not callable(getattr(reactions[0], 'entity_type', None)):
+                        if hasattr(reactions[0], "entity_type") and not callable(
+                            getattr(reactions[0], "entity_type", None)
+                        ):
                             await BaseMapping.batch_save_to_db(reactions)
                         else:
                             # Test environment with mocks - use individual saves
                             raise Exception("Mock detected, using fallback")
                         # Create relations for reactions
                         for mapping in reactions:
-                            if hasattr(mapping, 'id') and mapping.id:
+                            if hasattr(mapping, "id") and mapping.id:
                                 try:
                                     await mapping.create_reacted_by_relation()
                                     await mapping.create_reacted_to_relation()
                                 except Exception:  # pragma: no cover
                                     pass
-                    
+
                     # Batch save attachments
                     if attachments:
                         # Check if we're dealing with real mappings or mocks (test environment)
-                        if hasattr(attachments[0], 'entity_type') and not callable(getattr(attachments[0], 'entity_type', None)):
+                        if hasattr(attachments[0], "entity_type") and not callable(
+                            getattr(attachments[0], "entity_type", None)
+                        ):
                             await BaseMapping.batch_save_to_db(attachments)
                         else:
                             # Test environment with mocks - use individual saves
                             raise Exception("Mock detected, using fallback")
                         # Create relations for attachments
                         for mapping_type, mapping, slack_id in file_mappings:
-                            if mapping_type == 'attachment' and hasattr(mapping, 'id') and mapping.id:
+                            if (
+                                mapping_type == "attachment"
+                                and hasattr(mapping, "id")
+                                and mapping.id
+                            ):
                                 try:
                                     await mapping.create_attached_to_relation(slack_id)
                                 except Exception:  # pragma: no cover
                                     pass
-                    
-                    backend_logger.debug(f"Batch saved from file {msg_file}: {len(messages)} messages, {len(reactions)} reactions, {len(attachments)} attachments")
-                
+
+                    backend_logger.debug(
+                        f"Batch saved from file {msg_file}: {len(messages)} messages, {len(reactions)} reactions, {len(attachments)} attachments"
+                    )
+
                 except Exception as e:
                     backend_logger.error(f"Batch save failed for file {msg_file}: {e}")
                     # Fallback to individual saves if batch fails
                     for mapping_type, mapping, extra_param in file_mappings:
                         try:
-                            if mapping_type == 'message' and extra_param:
+                            if mapping_type == "message" and extra_param:
                                 await mapping.save_to_db(extra_param)
                                 await mapping.create_posted_in_relation(extra_param)
                                 await mapping.create_posted_by_relation()
                                 await mapping.create_thread_relation()
-                            elif mapping_type == 'reaction':
+                            elif mapping_type == "reaction":
                                 await mapping.save_to_db()
                                 await mapping.create_reacted_by_relation()
                                 await mapping.create_reacted_to_relation()
-                            elif mapping_type == 'attachment' and extra_param:
+                            elif mapping_type == "attachment" and extra_param:
                                 await mapping.save_to_db()
                                 await mapping.create_attached_to_relation(extra_param)
                         except Exception:  # pragma: no cover

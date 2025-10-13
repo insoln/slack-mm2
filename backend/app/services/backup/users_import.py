@@ -34,16 +34,21 @@ async def parse_users(extract_dir, job_id: Optional[int] = None):
     # Batch save all users
     if user_objs:
         from app.services.entities.base_mixin import BaseMapping
+
         try:
-            # Check if we're dealing with real mappings or mocks (test environment) 
-            if hasattr(user_objs[0], 'entity_type') and not callable(getattr(user_objs[0], 'entity_type', None)):
+            # Check if we're dealing with real mappings or mocks (test environment)
+            if hasattr(user_objs[0], "entity_type") and not callable(
+                getattr(user_objs[0], "entity_type", None)
+            ):
                 result = await BaseMapping.batch_save_to_db(user_objs)
                 backend_logger.debug(f"Batch saved {result.get('saved', 0)} users")
             else:
                 # Test environment with mocks - use individual saves
                 raise Exception("Mock detected, using fallback")
         except Exception as e:
-            backend_logger.debug(f"Batch save failed for users, using individual saves: {e}")
+            backend_logger.debug(
+                f"Batch save failed for users, using individual saves: {e}"
+            )
             # Fallback to individual saves
             for u in user_objs:
                 try:
