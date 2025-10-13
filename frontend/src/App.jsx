@@ -463,8 +463,8 @@ function App() {
                             </div>
                             <div className="small" style={{marginTop: 4, color:'#9ca3af'}}>
                               {inImport ? (
-                                j.current_stage === 'messages' && (totals.messages || 0) > 0
-                                  ? (<span>import msgs {processed.messages}/{totals.messages || 0}</span>)
+                                jsonTotal > 0
+                                  ? (<span>import files {jsonDone}/{jsonTotal}</span>)
                                   : (<span>{j.current_stage}…</span>)
                               ) : (() => {
                                 const matrix = jobStats[j.id]?.data?.matrix || {};
@@ -583,7 +583,7 @@ function JobsSection({ jobs, jobStats, liveStats, expandedJobs, setExpandedJobs 
                 </div>
                 <div className="small" style={{marginTop:4,color:'#9ca3af'}}>
                   {inImport ? (
-                    jsonTotal>0 ? <span>import files {jsonDone}/{jsonTotal}</span> : ((totals.messages||0)>0 ? <span>import msgs {processed.messages}/{totals.messages||0}</span> : <span>import scanning…</span>)
+                    jsonTotal>0 ? <span>import files {jsonDone}/{jsonTotal}</span> : <span>import scanning…</span>
                   ) : (
                     <span>files {processed.attachments}/{totals.attachments||0}, msgs {processed.messages}/{totals.messages||0}, reactions {processed.reactions}/{totals.reactions||0}</span>
                   )}
