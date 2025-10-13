@@ -396,7 +396,7 @@ async def parse_channel_messages(
                                         ):
                                             emojis_seen.add(rname)
                                     except Exception:
-                                        pass
+                                        backend_logger.exception("Error processing reaction:")
                                     for user_id in reaction.get("users") or []:
                                         reaction_data = dict(reaction)
                                         reaction_data["user"] = user_id
