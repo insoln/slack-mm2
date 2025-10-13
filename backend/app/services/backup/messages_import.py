@@ -212,6 +212,20 @@ async def parse_channel_messages(
                                     rname = reaction.get("name")
                                     if not rname:
                                         continue
+                                    # Capture emoji names from reactions too so that custom emojis
+                                    # used ONLY in reactions (and never in message text) still get
+                                    # persisted by _create_emojis. We only add if:
+                                    #  - emoji_list is empty (fallback: include all) OR
+                                    #  - rname present in emoji_list (confirms it's a custom emoji per Slack API)
+                                    try:
+                                        if (emoji_list and emoji_list.get(rname)) or (
+                                            not emoji_list
+                                        ):
+                                            emojis_seen.add(rname)
+                                    except Exception as e:
+                                        backend_logger.exception(
+                                            f"Error processing reaction emoji name '{rname}': {e}"
+                                        )
                                     for user_id in reaction.get("users") or []:
                                         reaction_data = dict(reaction)
                                         reaction_data["user"] = user_id
@@ -378,6 +392,15 @@ async def parse_channel_messages(
                                     rname = reaction.get("name")
                                     if not rname:
                                         continue
+                                    try:
+                                        if (emoji_list and emoji_list.get(rname)) or (
+                                            not emoji_list
+                                        ):
+                                            emojis_seen.add(rname)
+                                    except Exception:
+                                        backend_logger.exception(
+                                            "Error processing reaction:"
+                                        )
                                     for user_id in reaction.get("users") or []:
                                         reaction_data = dict(reaction)
                                         reaction_data["user"] = user_id
@@ -428,9 +451,14 @@ async def parse_channel_messages(
                                         auto_save=False,
                                         job_id=job_id,
                                     )
+                                    saved_ok = False
                                     try:
                                         if hasattr(a_ent, "save_to_db"):
-                                            await a_ent.save_to_db()
+                                            ent = await a_ent.save_to_db()
+                                            if ent is not None and getattr(
+                                                ent, "id", None
+                                            ):
+                                                saved_ok = True
                                         if hasattr(
                                             a_ent, "create_attached_to_relation"
                                         ):
@@ -439,7 +467,8 @@ async def parse_channel_messages(
                                             )
                                     except Exception:  # pragma: no cover
                                         pass
-                                    attachments_count += 1
+                                    if saved_ok:
+                                        attachments_count += 1
                                 if emoji_list:
                                     text_val = (msg or {}).get("text") or ""
                                     for name in EMOJI_PATTERN.findall(text_val):

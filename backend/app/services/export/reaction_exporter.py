@@ -151,15 +151,39 @@ class ReactionExporter(ExporterBase, LoggingMixin, MMApiMixin):
 
     def _emoji_candidates(self, original: str) -> list[str]:
         base = self._normalize_standard_emoji(original)
+        # High-frequency Slack-only or alias names we observed that MM doesn't resolve directly.
+        # Strategy: first attempt original, then progressively more standard fallbacks.
+        # Only include semantically close substitutes; avoid forcing misleading emoji.
+        # Only keep fallback expansions for names that are NOT present in the Slack custom emoji list
+        # (we resolve custom emojis directly now; these are Unicode additions MM may not yet support)
+        alias_expansions: dict[str, list[str]] = {
+            "heart_on_fire": ["heart", "fire"],
+            "melting_face": ["sweat_smile", "hot_face"],  # hot_face may also be missing
+            "saluting_face": ["face_with_hand_over_mouth", "raised_hands"],
+            "face_in_clouds": ["thought_balloon", "fog"],
+            "heart_hands": ["heart"],
+        }
         # Provide alternates for thumbs up/down across ecosystems
         alt_map = {
             "thumbs_up": ["thumbs_up", "thumbsup", "+1"],
             "thumbs_down": ["thumbs_down", "thumbsdown", "-1"],
         }
+        candidates: list[str] = []
+
+        def _add(name: str):
+            if name and name not in candidates:
+                candidates.append(name)
+
+        _add(base)
+        # Expand thumbs variants
         if base in alt_map:
-            return alt_map[base]
-        # Default to single candidate
-        return [base]
+            for v in alt_map[base]:
+                _add(v)
+        # Expand observed alias fallbacks
+        if base in alias_expansions:
+            for v in alias_expansions[base]:
+                _add(v)
+        return candidates
 
     async def _resolve_target_post_and_channel(
         self,
