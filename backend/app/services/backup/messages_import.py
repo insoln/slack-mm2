@@ -452,7 +452,7 @@ async def parse_channel_messages(
                                         if hasattr(a_ent, "save_to_db"):
                                             ent = await a_ent.save_to_db()
                                             if ent is not None and getattr(
-                                                a_ent, "id", None
+                                                ent, "id", None
                                             ):
                                                 saved_ok = True
                                         if hasattr(
