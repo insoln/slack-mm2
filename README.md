@@ -314,9 +314,28 @@ reactions=1
   ```
 
 ## Линтинг и покрытие
-- Для проверки стиля используйте black: `black app alembic tests`
-- Для запуска тестов с покрытием: `pytest --cov=app --cov-report=term-missing`
-- В CI эти проверки выполняются автоматически (см. .github/workflows/backend-ci.yml) 
+
+### Git Hooks (Formatting Enforcement)
+
+This repo provides an optional pre-commit hook that enforces Python code formatting using `black`.
+
+Enable it (one-time):
+
+```bash
+git config core.hooksPath .githooks
+chmod +x .githooks/pre-commit
+```
+
+Behavior:
+* Runs `black --check` on `backend/app`, `backend/alembic`, and `backend/tests`.
+* If formatting issues are found, it auto-formats, aborts the commit, and asks you to review & re-stage.
+* Keeps CI green by preventing unformatted code from landing.
+
+Disable (if needed):
+
+```bash
+git config --unset core.hooksPath
+```
 
 ## Pre-commit хуки
 

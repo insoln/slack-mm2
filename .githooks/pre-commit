@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Pre-commit hook for slack-mm2
+# Ensures Python formatting (black) is clean before allowing a commit.
+
+set -euo pipefail
+
+if [ -d ".venv" ]; then
+  source .venv/bin/activate || true
+fi
+
+echo "[pre-commit] Running black check..."
+black --version >/dev/null 2>&1 || { echo "black not installed. Run: pip install -r backend/requirements.txt"; exit 1; }
+
+black --check backend/app backend/alembic backend/tests || {
+  echo "\n[pre-commit] Formatting issues detected. Auto-fixing..."
+  black backend/app backend/alembic backend/tests
+  echo "[pre-commit] Files were reformatted. Please review 'git diff' and re-stage if acceptable."
+  echo "[pre-commit] Rejecting commit to enforce explicit acknowledgement after format." >&2
+  exit 1
+}
+
+echo "[pre-commit] Formatting OK."
+exit 0
