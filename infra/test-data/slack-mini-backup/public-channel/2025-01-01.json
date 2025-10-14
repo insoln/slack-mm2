@@ -23,9 +23,6 @@
     "user": "UADMIN",
     "text": "Reply thread root public",
     "ts": "1735689700.000200",
-    "thread_ts": "1735689700.000200",
-    "reactions": [
-      {"name": "thumbsup", "users": ["U0001"], "count": 1}
-    ]
+    "thread_ts": "1735689700.000200"
   }
 ]
