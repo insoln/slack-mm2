@@ -26,11 +26,16 @@ set -euo pipefail
 : "${EXPECTED_ATTACHMENTS:=3}"
 : "${EXPECTED_REACTIONS:=0}"
 
-# Compose file, services list, dataset, and log capture path (override allowed)
+# Compose file, services list, dataset, and log capture paths (override allowed)
 : "${COMPOSE_FILE:=infra/docker-compose.dev.yml}"
 SERVICES="${COMPOSE_SERVICES:-db mattermost backend test-files}"
 DATASET_FILE="${DATASET_FILE:-infra/test-data/slack-mini-backup.zip}"
 LOG_CAPTURE=${LOG_CAPTURE:-/tmp/backend_integration_logs.txt}
+
+# Collect full logs for all services (toggle via COLLECT_ALL_LOGS=0)
+: "${COLLECT_ALL_LOGS:=1}"
+# Directory to store per-service logs
+: "${ALL_LOGS_DIR:=/tmp/mm_integration_logs}"
 
 # Timestamp (UTC RFC3339) used to scope log collection so prior run noise is excluded.
 # Can be disabled with LOG_SCOPE=0
@@ -61,6 +66,24 @@ SLACK_SIGNING_SECRET=dummy
 ENVEOF
 fi
 teardown() {
+  # Capture logs before tearing down if requested
+  if [[ "${COLLECT_ALL_LOGS}" == "1" ]]; then
+    echo "[LOGS] Collecting all service logs into $ALL_LOGS_DIR"
+    mkdir -p "$ALL_LOGS_DIR" || true
+    # Attempt to list running services (may fail late in teardown)
+    RUN_SVCS=$(docker compose -f "$COMPOSE_FILE" ps --services 2>/dev/null || echo "$SERVICES")
+    for svc in $RUN_SVCS mm-plugin-build; do
+      # Skip duplicates / non-existent quietly
+      docker compose -f "$COMPOSE_FILE" logs --no-color "$svc" >"$ALL_LOGS_DIR/${svc}.log" 2>&1 || true
+    done
+    # Copy focused backend log capture if exists
+    if [[ -f "$LOG_CAPTURE" ]]; then
+      cp -f "$LOG_CAPTURE" "$ALL_LOGS_DIR/backend_scoped.log" 2>/dev/null || true
+    fi
+    # Basic summary index
+    (echo "Collected logs:"; ls -1 "$ALL_LOGS_DIR") > "$ALL_LOGS_DIR/INDEX.txt" 2>/dev/null || true
+    echo "[LOGS] Collected logs stored at $ALL_LOGS_DIR" 
+  fi
   echo "[CLEANUP] docker compose down"
   docker compose -f "$COMPOSE_FILE" down -v || true
 }
@@ -123,6 +146,30 @@ PY
     echo "[INFO] Plugin ensured and enabled (attempt $i)"
     PLUGIN_OK=1
     break
+  fi
+  # If bundle missing and we haven't tried building yet in this loop, trigger build service
+  if [[ "$STATUS" == "needs_bundle" ]]; then
+    BUNDLE_PATH=$(python3 - <<'PY'
+import json
+try:
+    d=json.load(open('/tmp/plugin_status.json'))
+    print(d.get('bundle_path') or '')
+except Exception:
+    print('')
+PY
+)
+    echo "[INFO] Plugin bundle missing. Expected: $BUNDLE_PATH. Triggering one-off build (attempt $i)." >&2
+    # Run builder (will create dist/<id>-<version>.tar.gz). Ignore errors first time.
+    BUILD_START=$(date +%s)
+    docker compose -f "$COMPOSE_FILE" up --build --exit-code-from mm-plugin-build --no-deps mm-plugin-build || true
+    BUILD_END=$(date +%s)
+    if [[ -n "$BUNDLE_PATH" && -f "$BUNDLE_PATH" ]]; then
+      BUNDLE_SIZE=$(stat -c '%s' "$BUNDLE_PATH" 2>/dev/null || echo 0)
+      echo "[INFO] Plugin build completed in $((BUILD_END-BUILD_START))s size=${BUNDLE_SIZE}B path=$BUNDLE_PATH" >&2
+    else
+      echo "[WARN] Plugin build finished but bundle still missing (path=$BUNDLE_PATH)" >&2
+    fi
+    # After build, re-loop (next iteration tries ensure again)
   fi
   if (( i % 4 == 0 )); then
     echo "[WAIT] plugin ensure attempt=$i code=$RESP status=$STATUS enabled=$ENABLED body=$(echo "$BODY" | head -c 160)" >&2

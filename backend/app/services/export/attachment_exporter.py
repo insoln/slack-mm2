@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import os
 from typing import Optional
 import asyncio
@@ -15,10 +14,11 @@ from app.models.entity import Entity
 
 class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
     """
-    Uploads a Slack attachment to Mattermost via plugin and stores returned file_id.
+    Exports a Slack attachment to Mattermost via plugin direct download and stores returned file_id.
     - Reads Slack file info from entity.raw_data (expects id, url_private, name/filename)
     - Resolves target channel from the message relation (posted_in) or raw_data['channel_id']
-    - Downloads content from Slack using SLACK_BOT_TOKEN and POSTs to /plugins/mm-importer/api/v1/attachment
+    - Sends file URL and auth token to plugin via /plugins/mm-importer/api/v1/attachment_from_url
+    - Plugin downloads content from Slack directly and uploads to Mattermost
     - On success sets entity.mattermost_id and marks status=success
     """
 
@@ -57,128 +57,32 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
             await self.set_status("failed", error="No target channel for attachment")
             return
 
-        # Prefer streaming multipart upload to avoid base64 overhead
-        prefer_multipart = os.environ.get("ATTACHMENT_MULTIPART", "1") not in (
-            "0",
-            "false",
-            "False",
-        )
-
-        # Obtain content as base64, with retry/backoff for robustness
-        async def _retry_download(url, headers, attempts=3, base_delay=1.0):
-            last_exc = None
-            for i in range(attempts):
-                try:
-                    resp = await self.download_file(url, headers=headers)
-                    if getattr(resp, "status_code", 0) == 200:
-                        return resp
-                    else:
-                        last_exc = Exception(f"HTTP {getattr(resp, 'status_code', 0)}")
-                except Exception as e:  # noqa: BLE001
-                    last_exc = e
-                await asyncio.sleep(base_delay * (2**i))
-            raise last_exc or Exception("download failed")
-
-        content_b64: Optional[str] = raw.get("content_base64")
-        if not content_b64:
-            url = raw.get("url_private") or raw.get("url_private_download")
-            if not url:
-                await self.set_status(
-                    "failed",
-                    error="No content source: neither content_base64 nor url_private",
-                )
-                return
-            slack_token = os.environ.get("SLACK_BOT_TOKEN") or os.environ.get(
-                "SLACK_TOKEN"
+        # Get file URL and auth header
+        url = raw.get("url_private") or raw.get("url_private_download")
+        if not url:
+            await self.set_status(
+                "failed",
+                error="No content source: neither url_private nor url_private_download",
             )
-            headers = {"Authorization": f"Bearer {slack_token}"} if slack_token else {}
-            try:
-                resp = await _retry_download(url, headers=headers)
-            except Exception as e:  # noqa: BLE001
-                await self.set_status(
-                    "failed", error=f"Failed to download from Slack: {e}"
-                )
-                return
-            if prefer_multipart:
-                # Write to a temp file and stream as multipart file (auto-cleanup)
-                import tempfile
+            return
 
-                fields = {"channel_id": channel_id, "filename": filename}
-                files = None
-                with tempfile.NamedTemporaryFile(
-                    prefix="att-", suffix=".bin", delete=True
-                ) as tf:
-                    try:
-                        tf.write(resp.content)
-                        tf.flush()
-                    except Exception as e:  # noqa: BLE001
-                        await self.set_status(
-                            "failed", error=f"Temp file write failed: {e}"
-                        )
-                        return
-                    try:
-                        files = {
-                            "file": (
-                                filename,
-                                open(tf.name, "rb"),
-                                "application/octet-stream",
-                            )
-                        }
-                        resp2 = await self.mm_api_post_files(
-                            "/plugins/mm-importer/api/v1/attachment_multipart",
-                            fields,
-                            files,
-                        )
-                    finally:
-                        try:
-                            if files is not None:
-                                fh = files.get("file")
-                                if (
-                                    isinstance(fh, (tuple, list))
-                                    and len(fh) >= 2
-                                    and hasattr(fh[1], "close")
-                                ):
-                                    fh[1].close()
-                        except Exception:
-                            pass
-                if resp2.status_code not in (200, 201):
-                    try:
-                        data = resp2.json()
-                        err = data.get("error") or data
-                    except Exception:
-                        err = resp2.text
-                    await self.set_status(
-                        "failed",
-                        error=f"Plugin upload failed: {resp2.status_code} {err}",
-                    )
-                    return
-                data = resp2.json()
-                file_id = data.get("file_id")
-                if not file_id:
-                    await self.set_status(
-                        "failed", error=f"No file_id in plugin response: {data}"
-                    )
-                    return
-                self.entity.mattermost_id = file_id
-                await self.set_status("success")
-                backend_logger.debug(f"Attachment uploaded, file_id={file_id}")
-                return
-            else:
-                content = resp.content  # httpx.Response
-                content_b64 = base64.b64encode(content).decode("ascii")
+        slack_token = os.environ.get("SLACK_BOT_TOKEN") or os.environ.get("SLACK_TOKEN")
+        if not slack_token:
+            await self.set_status("failed", error="No Slack token available")
+            return
 
-        payload = {
-            "channel_id": channel_id,
-            "filename": filename,
-            "content_base64": content_b64,
-        }
+        auth_header = f"Bearer {slack_token}"
 
+        # Try to resolve the actual user who uploaded the attachment
+        user_id = await self._resolve_mm_user_id_for_attachment()
+
+        # Send URL to plugin for direct download and upload
         async def _retry_plugin_post(attempts=3, base_delay=1.0):
             last_err = None
             for i in range(attempts):
                 try:
-                    resp = await self.mm_api_post(
-                        "/plugins/mm-importer/api/v1/attachment", payload
+                    resp = await self.mm_api_post_attachment_from_url(
+                        channel_id, filename, url, auth_header, user_id
                     )
                     # retry on 5xx/429; accept 2xx
                     if 200 <= resp.status_code < 300:
@@ -215,7 +119,7 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 return
             self.entity.mattermost_id = file_id
             await self.set_status("success")
-            backend_logger.debug(f"Attachment uploaded, file_id={file_id}")
+            backend_logger.debug(f"Attachment uploaded via URL, file_id={file_id}")
         except Exception as e:  # noqa: BLE001
             await self.set_status("failed", error=str(e))
 
@@ -276,4 +180,43 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
                         if isinstance(mmid2, str) and mmid2:
                             return mmid2
 
+        return None
+
+    async def _resolve_mm_user_id_for_attachment(self) -> Optional[str]:
+        """Find the Mattermost user id who uploaded this attachment.
+        Strategy: traverse attached_to -> message and get the user from that message.
+        """
+        async with SessionLocal() as session:
+            # Find message entity via attached_to relation
+            from app.models.entity_relation import (
+                EntityRelation,
+            )  # local import to avoid cycles
+
+            q_att = await session.execute(
+                select(EntityRelation, Entity)
+                .join(Entity, Entity.id == EntityRelation.to_entity_id)
+                .where(
+                    (EntityRelation.from_entity_id == self.entity.id)
+                    & (EntityRelation.relation_type == "attached_to")
+                )
+            )
+            row = q_att.first()
+            if row:
+                _, msg_entity = row
+                msg_raw = msg_entity.raw_data or {}
+                slack_uid = msg_raw.get("user") or msg_raw.get("bot_id")
+
+                if slack_uid:
+                    # Look up user entity by slack_id to get mattermost_id
+                    q_user = await session.execute(
+                        select(Entity).where(
+                            (Entity.entity_type == "user")
+                            & (Entity.slack_id == slack_uid)
+                        )
+                    )
+                    user_entity = q_user.scalar_one_or_none()
+                    if user_entity is not None:
+                        mmid = getattr(user_entity, "mattermost_id", None)
+                        if isinstance(mmid, str) and mmid:
+                            return mmid
         return None

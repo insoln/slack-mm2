@@ -35,6 +35,7 @@ func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Req
 	apiRouter.HandleFunc("/reaction", p.ImportReaction).Methods(http.MethodPost)
 	apiRouter.HandleFunc("/attachment", p.UploadAttachment).Methods(http.MethodPost)
 	apiRouter.HandleFunc("/attachment_multipart", p.UploadAttachmentMultipart).Methods(http.MethodPost)
+	apiRouter.HandleFunc("/attachment_from_url", p.UploadAttachmentFromURL).Methods(http.MethodPost)
 
 	// Channel helpers
 	apiRouter.HandleFunc("/channel", p.CreateOrGetChannel).Methods(http.MethodPost)
@@ -280,6 +281,181 @@ func (p *Plugin) UploadAttachmentMultipart(w http.ResponseWriter, r *http.Reques
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: appErr.Error()})
 		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{FileID: fi.Id})
+}
+
+type UploadAttachmentFromURLRequest struct {
+	ChannelID  string `json:"channel_id"`
+	Filename   string `json:"filename"`
+	FileURL    string `json:"file_url"`
+	AuthHeader string `json:"auth_header"`
+	UserID     string `json:"user_id,omitempty"`
+}
+
+// UploadAttachmentFromURL downloads a file from the specified URL and uploads it to Mattermost
+func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Failed to read body"})
+		return
+	}
+	var req UploadAttachmentFromURLRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Invalid JSON"})
+		return
+	}
+	if req.ChannelID == "" || req.Filename == "" || req.FileURL == "" || req.AuthHeader == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "channel_id, filename, file_url and auth_header are required"})
+		return
+	}
+
+	// Use the shared plugin HTTP client to download the file
+	httpReq, err := http.NewRequest("GET", req.FileURL, nil)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Invalid file URL"})
+		return
+	}
+	httpReq.Header.Set("Authorization", req.AuthHeader)
+
+	resp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Failed to download file"})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "File download failed"})
+		return
+	}
+
+	// Get content length for upload session
+	contentLength := resp.ContentLength
+	if contentLength <= 0 {
+		// If content length is not provided, we need to fall back to reading all data
+		data, err := io.ReadAll(resp.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Failed to read downloaded file"})
+			return
+		}
+		// Upload file to Mattermost using legacy method
+		fi, appErr := p.API.UploadFile(data, req.ChannelID, req.Filename)
+		if appErr != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: appErr.Error()})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{FileID: fi.Id})
+		return
+	}
+
+	// Create upload session for streaming
+	// Use provided user ID if available, otherwise fallback to system user ID
+	userId := req.UserID
+	if userId == "" {
+		userId = model.UploadNoUserID
+	}
+
+	// Validate that the user exists in Mattermost if it's not the system user
+	if userId != model.UploadNoUserID && userId != "" {
+		if p.API != nil {
+			user, appErr := p.API.GetUser(userId)
+			if appErr != nil || user == nil {
+				// User doesn't exist or API call failed, fallback to system user
+				if p.API != nil {
+					p.API.LogWarn("User validation failed for attachment upload, using system user", "userId", userId, "error", appErr)
+				}
+				userId = model.UploadNoUserID
+			}
+		} else {
+			// API not available, use system user
+			userId = model.UploadNoUserID
+		}
+	} else {
+		// Empty or already system user, ensure it's properly set
+		userId = model.UploadNoUserID
+	}
+
+	uploadSession := &model.UploadSession{
+		Type:      model.UploadTypeAttachment,
+		UserId:    userId,
+		ChannelId: req.ChannelID,
+		Filename:  req.Filename,
+		FileSize:  contentLength,
+	}
+
+	// Validate channel exists
+	if p.API != nil {
+		channel, appErr := p.API.GetChannel(req.ChannelID)
+		if appErr != nil || channel == nil {
+			p.API.LogError("Channel validation failed for attachment upload", "channelId", req.ChannelID, "error", appErr)
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Invalid channel ID"})
+			return
+		}
+		p.API.LogDebug("Creating upload session", "userId", userId, "channelId", req.ChannelID, "filename", req.Filename, "fileSize", contentLength, "originalUserId", req.UserID)
+	}
+
+	us, err := p.API.CreateUploadSession(uploadSession)
+	if err != nil {
+		// Fallback: read entire body and use legacy UploadFile path so we don't fail the whole attachment.
+		if p.API != nil {
+			p.API.LogWarn("CreateUploadSession failed, falling back to legacy UploadFile", "error", err.Error(), "channelId", req.ChannelID, "filename", req.Filename, "fileSize", contentLength, "userIdEffective", userId, "userIdRequested", req.UserID)
+		}
+		data, rerr := io.ReadAll(resp.Body)
+		if rerr != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Failed to read downloaded file (fallback)"})
+			return
+		}
+		fi, appErr := p.API.UploadFile(data, req.ChannelID, req.Filename)
+		if appErr != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: appErr.Error()})
+			return
+		}
+		if p.API != nil {
+			p.API.LogInfo("Fallback UploadFile succeeded", "channelId", req.ChannelID, "filename", req.Filename, "bytes", len(data), "fileId", fi.Id)
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{FileID: fi.Id})
+		return
+	}
+
+	// Stream file data to Mattermost (happy path)
+	fi, err := p.API.UploadData(us, resp.Body)
+	if err != nil {
+		// On streaming error, attempt one-time fallback to legacy read+UploadFile if body still readable
+		data, rerr := io.ReadAll(resp.Body)
+		if rerr == nil && len(data) > 0 {
+			if p.API != nil {
+				p.API.LogWarn("Streaming UploadData failed; retrying with legacy UploadFile", "error", err.Error(), "channelId", req.ChannelID, "filename", req.Filename, "bytes", len(data))
+			}
+			if fi2, appErr := p.API.UploadFile(data, req.ChannelID, req.Filename); appErr == nil {
+				if p.API != nil {
+					p.API.LogInfo("Fallback after stream succeeded", "channelId", req.ChannelID, "filename", req.Filename, "fileId", fi2.Id)
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{FileID: fi2.Id})
+				return
+			}
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: err.Error()})
+		return
+	}
+	if p.API != nil {
+		p.API.LogDebug("Streaming upload succeeded", "channelId", req.ChannelID, "filename", req.Filename, "fileId", fi.Id)
 	}
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{FileID: fi.Id})
