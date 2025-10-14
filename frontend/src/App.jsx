@@ -135,12 +135,12 @@ function App() {
         const d = await r.json();
         if (!active) return;
         if (!r.ok) throw new Error(d.error || 'jobs');
-        setJobs({ loading: false, data: d.jobs || [], error: null });
+        setJobs(s => ({ ...s, loading: false, data: d.jobs || [], error: null }));
         handleNetworkSuccess();
       } catch (e) {
         if (active) {
           const friendlyError = handleNetworkError(e, 'задачи');
-          setJobs({ loading: false, data: [], error: friendlyError });
+          setJobs(s => ({ ...s, loading: false, data: [], error: friendlyError }));
         }
       }
     };
