@@ -42,6 +42,7 @@ export const StatusBadge = ({ status }) => {
     pending: { text: 'Pending', tone: 'warning' },
     error: { text: 'Error', tone: 'danger' },
     connected: { text: 'Online', tone: 'success' },
+    offline: { text: 'Нет связи', tone: 'danger' },
   };
   const v = map[status] || { text: status, tone: 'neutral' };
   return <span className={`badge badge--${v.tone}`}>{v.text}</span>;
