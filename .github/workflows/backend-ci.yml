@@ -1,10 +1,6 @@
 name: Backend CI (Lint & Unit Tests)
 
 on:
-  push:
-    paths:
-      - 'backend/**'
-      - '.github/workflows/backend-ci.yml'
   pull_request:
     paths:
       - 'backend/**'
