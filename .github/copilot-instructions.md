@@ -115,9 +115,6 @@ EOF
   - Mattermost: http://localhost:8065
   - PostgreSQL: localhost:5432 (user/pass/db: slack-mm)
 
-#### Network Issues
-Docker builds may fail with SSL certificate errors when downloading Python packages or Node modules. This is a known limitation in some network environments. Individual component builds work correctly outside Docker.
-
 #### Default Credentials (Development)
 - **Mattermost admin user**: `admin` / `P@ssw0rd`
 - **Mattermost admin token**: `5x7rr788c7gwdnkdr9imb49ffo`
@@ -129,6 +126,13 @@ Docker builds may fail with SSL certificate errors when downloading Python packa
 - **Migration path**: `backend/alembic/` (relative to project root)  
 - **Configuration**: `alembic.ini` in project root
 - **Connection**: Uses DATABASE_URL environment variable
+
+### Debugging Tips
+- Use something like `docker compose -f infra/docker-compose.dev.yml exec db psql -U slack-mm -d slack-mm -P pager=off -c "select * from entities limit 100;"` to troubleshoot database entities.
+
+### Legacy features
+- If you encounter legacy code or features, document them and consider refactoring or removing them in future updates.
+- If you make a feture legacy, please document it clearly in the code comments.
 
 ## Validation and Testing
 
@@ -167,7 +171,7 @@ When you finished your work, and especially before committing, ALWAYS run:
 - Docker development environment: 15+ minutes first time (timeout: 30+ minutes)
 
 ### CLI commands
-- Always use reasonable timeouts
+- Set reasonable timeouts when running commands if possible.
 - Always limit expected output by mumber of lines as output may be large. Try to limit to 20 lines or less where possible, but it depends on the command. Try to filter output to only what is necessary where possible.
 
 ## File Locations
