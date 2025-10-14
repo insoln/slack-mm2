@@ -69,7 +69,7 @@ async def parse_channel_messages(
       - emojis: unique custom emoji names referenced (persisted at end)
 
     counters_callback (if provided) receives deltas: {messages,reactions,attachments,emojis(unique_total)}.
-    Emission policy: every batch_size messages OR time interval IMPORT_META_UPDATE_INTERVAL_SEC OR explicit flush at file end.
+    Emission policy: every batch_size messages OR time interval of 2 seconds OR explicit flush at file end.
     """
     if single_pass is None:
         single_pass = os.environ.get("IMPORT_SINGLE_PASS", "0") in ("1", "true", "TRUE")
@@ -81,12 +81,9 @@ async def parse_channel_messages(
             batch_size = env_batch
     except Exception:
         pass
-    meta_interval_sec = float(os.environ.get("IMPORT_META_UPDATE_INTERVAL_SEC", "2"))
-    # If IMPORT_META_UPDATE_EVERY set, override batch trigger count for emissions
-    try:
-        meta_every = int(os.environ.get("IMPORT_META_UPDATE_EVERY", str(batch_size)))
-    except Exception:
-        meta_every = batch_size
+    # Fixed reasonable constants for metadata update frequency
+    meta_interval_sec = 2.0  # Update progress every 2 seconds
+    meta_every = batch_size  # Update progress every batch_size messages
 
     allowed_prefixes_env = os.environ.get(
         "IMPORT_URL_PREFIXES", "https://files.slack.com,http://test-files:9000"

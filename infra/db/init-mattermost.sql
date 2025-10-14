@@ -160,7 +160,7 @@ SELECT 'b7u9rycm43nip86mdiuqsxdcbe', 'o6b98rc1tpnfmy7ajxiadygmzy', '', 0, true, 
 WHERE NOT EXISTS (SELECT 1 FROM public.teammembers WHERE teamid = 'b7u9rycm43nip86mdiuqsxdcbe' AND userid = 'o6b98rc1tpnfmy7ajxiadygmzy'); 
 
 INSERT INTO public.channels (id, createat, updateat, deleteat, teamid, type, displayname, name, header, purpose, lastpostat, totalmsgcount, extraupdateat, creatorid, schemeid, groupconstrained, shared, totalmsgcountroot, lastrootpostat, bannerinfo, defaultcategoryname)
-SELECT '8q3dynerq7nzzmxo8dfckcfdnr', 1750986828119, 1750986828119, 0, 'b7u9rycm43nip86mdiuqsxdcbe', 'O', 'Test Channel 1', 'test-channel-1', '', 'Channel for integration testing', 1750986828128, 0, 0, 'o6b98rc1tpnfmy7ajxiadygmzy', NULL, NULL, NULL, 0, 1750986828128, NULL, ''
+SELECT '8q3dynerq7nzzmxo8dfckcfdnr', 1750986828119, 1750986828119, 0, 'b7u9rycm43nip86mdiuqsxdcbe', 'O', 'Town Square', 'town-square', '', 'Добро пожаловать в Mattermost!', 1750986828128, 0, 0, 'o6b98rc1tpnfmy7ajxiadygmzy', NULL, NULL, NULL, 0, 1750986828128, NULL, ''
 WHERE NOT EXISTS (
     SELECT 1 FROM public.channels WHERE id = '8q3dynerq7nzzmxo8dfckcfdnr'
 );
