@@ -49,10 +49,10 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
             current_stage="extracting",
             meta={"zip_path": zip_path},
         )
-        session.add(job_obj)
+        # Use merge instead of add to cooperate with AsyncMock in tests (awaitable path)
+        job_obj = await session.merge(job_obj)
         await session.commit()
         await session.refresh(job_obj)
-        # SQLAlchemy may present instrumented attribute; obtain plain int
         job_pk = getattr(job_obj, "id")
         try:
             job_id: int = int(job_pk)  # type: ignore[arg-type]

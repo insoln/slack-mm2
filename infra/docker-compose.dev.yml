@@ -46,6 +46,8 @@ services:
       MM_URL: http://mattermost:8065
       MM_TOKEN: 5x7rr788c7gwdnkdr9imb49ffo
       MM_TEAM: test
+      # Remote bundle fetch (dev): point to latest published tarball served by test-files
+      PLUGIN_BUNDLE_URL: http://test-files:9000/plugin-bundles/latest.tar.gz
       EXPORT_WORKERS: 5
       # HTTP client pooling
       MM_MAX_KEEPALIVE: 50
@@ -65,6 +67,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      plugin-autobuild:
+        condition: service_completed_successfully
     ports:
       - "8000:8000"
     volumes:
@@ -72,6 +76,8 @@ services:
       - ../backend/app:/app/app
       - ../backend/alembic:/app/backend/alembic
       - ./plugin:/app/infra/plugin:ro
+      # Separate mount for built bundles (do not override source dist directory)
+      - ./test-data/plugin-bundles:/plugin-bundles:ro
     restart: unless-stopped
 
   frontend:
@@ -109,10 +115,27 @@ services:
     command: ["python", "-m", "http.server", "9000"]
     working_dir: /data
     volumes:
-      - ../infra/test-data:/data:ro
+      - ./test-data:/data:ro
+      - ./test-data/plugin-bundles:/data/plugin-bundles:ro
     ports:
       - "9000:9000"
     restart: unless-stopped
+
+  # Автосборка плагина только если артефакт отсутствует в plugin-bundles.
+  plugin-autobuild:
+    # Use golang base (smaller total installs: go preinstalled; add node only if webapp present)
+    image: golang:1.22-alpine
+    working_dir: /repo
+    # Direct command invocation (no nested login shell) to avoid swallowing the script execution
+    command: ["/bin/sh", "-c", "sh infra/plugin/build-if-missing.sh"]
+    volumes:
+      # Mount project root (compose file is in infra/, so .. is repo root)
+      - ..:/repo:ro
+      # Writable output directory served by test-files
+      - ./test-data/plugin-bundles:/out
+    depends_on:
+      - test-files
+    restart: "no"
 
   mattermost:
     image: mattermost/mattermost-team-edition:release-10.12
@@ -150,16 +173,6 @@ services:
       - ./mattermost/mm_config.json:/seed/mm_config.json:ro
     restart: "no"
 
-  # Одноразовая сборка плагина (создаёт dist/<id>-<version>.tar.gz в infra/plugin)
-  mm-plugin-build:
-    image: golang:1.22-bookworm
-    working_dir: /src
-    # Используем единый скрипт сборки
-    command: ["bash", "-lc", "set -e; apt-get update; apt-get install -y --no-install-recommends nodejs npm ca-certificates; npm config set fund false; npm config set audit false; export GOFLAGS='-buildvcs=false'; bash build-dev.sh"]
-    volumes:
-      - ./plugin:/src
-    # Останавливается после сборки
-    restart: "no"
 
 volumes:
   frontend_node_modules:

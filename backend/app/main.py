@@ -41,38 +41,6 @@ async def lifespan(app: FastAPI):
                 ["alembic", "-c", ALEMBIC_INI, "upgrade", "head"], check=True
             )
     backend_logger.info(f"Backend available at: http://{BACKEND_HOST}:{BACKEND_PORT}")
-    # Auto-ensure Mattermost importer plugin on startup (best-effort)
-    if os.getenv("PYTEST_RUN", "0") not in ("1", "true", "TRUE"):
-        try:
-            status = await plugin_api._compute_status()
-            if (
-                (not status.get("installed"))
-                or status.get("needs_update")
-                or (not status.get("enabled"))
-            ):
-                backend_logger.info("Ensuring Mattermost importer plugin at startup…")
-                # Try deploy if missing/outdated
-                if (not status.get("installed")) or status.get("needs_update"):
-                    bundle_path = status.get("bundle_path")
-                    if not status.get("bundle_exists") or not bundle_path:
-                        # This will attempt a build if bundle missing
-                        await plugin_api.plugin_deploy()
-                    else:
-                        ok, err = await plugin_api._upload_bundle(Path(bundle_path))
-                        if not ok:
-                            # Downgraded to warning; during early startup Mattermost may not yet accept connections
-                            backend_logger.warning(
-                                f"Plugin upload failed (startup race, will not fail job): {err}"
-                            )
-                # Enable if needed
-                final = await plugin_api._compute_status()
-                if not final.get("enabled"):
-                    await plugin_api.plugin_enable()
-        except Exception as e:
-            # Startup races (Mattermost not yet accepting connections) are downgraded to warning
-            backend_logger.warning(
-                f"Auto-ensure plugin failed (will retry later via API calls): {e}"
-            )
 
     # Auto-resume export of unfinished jobs (FIFO) on startup
     if os.getenv("PYTEST_RUN", "0") not in ("1", "true", "TRUE"):
@@ -120,6 +88,7 @@ app.include_router(admin_router)
 
 
 @app.get("/healthcheck")
+@app.get("/api/healthcheck")
 async def healthcheck():
     backend_logger.info("HEALTHCHECK")
     return JSONResponse(content={"status": "ok"})
@@ -136,3 +105,12 @@ async def log_upload_requests(request: Request, call_next):
         )
         return response
     return await call_next(request)
+
+
+app.include_router(upload_router, prefix="/api")
+app.include_router(export_router, prefix="/api")
+app.include_router(plugin_router, prefix="/api")
+app.include_router(stats_router, prefix="/api")
+app.include_router(progress_router, prefix="/api")
+app.include_router(jobs_router, prefix="/api")
+app.include_router(admin_router, prefix="/api")

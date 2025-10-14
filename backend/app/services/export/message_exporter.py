@@ -10,7 +10,8 @@ from app.logging_config import backend_logger
 from app.models.base import SessionLocal
 from app.models.entity import Entity
 from sqlalchemy import select
-from app.utils.filters import job_scoped_condition
+
+# (job_scoped_condition removed; global uniqueness renders it obsolete)
 
 
 class MessageCaches(TypedDict, total=False):
@@ -705,9 +706,7 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
         # Find parent message entity by slack thread_ts
         async with SessionLocal() as session:
             cond = (Entity.entity_type == "message") & (Entity.slack_id == thread_ts)
-            cond = job_scoped_condition(
-                cond, "message", getattr(self.entity, "job_id", None)
-            )
+            # Global uniqueness: job_id ignored
             q = await session.execute(select(Entity).where(cond))
             parent = q.scalar_one_or_none()
             if parent:

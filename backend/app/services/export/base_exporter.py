@@ -5,7 +5,6 @@ from app.models.base import SessionLocal
 from app.models.status_enum import MappingStatus
 from app.models.entity import Entity
 from sqlalchemy import update
-from app.utils.filters import job_scoped_condition
 
 
 class ExporterBase(ABC):
@@ -36,13 +35,7 @@ class ExporterBase(ABC):
 
             where_cond = (Entity.entity_type == self.entity.entity_type) & (
                 Entity.slack_id == self.entity.slack_id
-            )
-            # Scope condition consistently using helper
-            where_cond = job_scoped_condition(
-                where_cond,
-                self.entity.entity_type,
-                getattr(self.entity, "job_id", None),
-            )
+            )  # Global uniqueness now; job_id ignored for matching
             stmt = update(Entity).where(where_cond).values(**update_values)
 
             result = await session.execute(stmt)

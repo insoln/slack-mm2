@@ -117,15 +117,20 @@ async def test_stage_durations_controlled_by_debug_logging():
                 assert len(duration_calls) > 0
 
 
-def test_meta_update_constants_fixed():
-    """Test that meta update intervals use fixed constants instead of environment variables."""
+@pytest.mark.asyncio
+async def test_meta_update_constants_fixed():
+    """Test that meta update intervals use fixed constants instead of environment variables.
+
+    Converted to async test to avoid using asyncio.run inside a synchronous test body,
+    which previously caused an AsyncMock coroutine warning when mocks were created but
+    the event loop lifecycle ended prematurely.
+    """
 
     # Set environment variables that should be ignored
     with patch.dict(
         "os.environ",
         {"IMPORT_META_UPDATE_INTERVAL_SEC": "10", "IMPORT_META_UPDATE_EVERY": "5000"},
     ):
-        # Mock the dependencies
         export_dir = "/fake/export"
         folder_channel_map = {"general": {"id": "C123", "name": "general"}}
 
@@ -136,19 +141,11 @@ def test_meta_update_constants_fixed():
         ), patch(
             "app.services.backup.messages_import._create_emojis", new_callable=AsyncMock
         ):
-
-            # Call the function - it should complete without using env vars
-            import asyncio
-
-            result = asyncio.run(
-                messages_import.parse_channel_messages(
-                    export_dir, folder_channel_map, batch_size=1000
-                )
+            # Directly await the async function under test
+            result = await messages_import.parse_channel_messages(
+                export_dir, folder_channel_map, batch_size=1000
             )
 
-            # Should return expected structure regardless of env vars
             assert isinstance(result, dict)
-            assert "messages" in result
-            assert "reactions" in result
-            assert "attachments" in result
-            assert "emojis" in result
+            for key in ("messages", "reactions", "attachments", "emojis"):
+                assert key in result

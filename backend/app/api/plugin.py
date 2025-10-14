@@ -2,6 +2,7 @@ import os
 import json
 import hashlib
 import time
+import tempfile
 from pathlib import Path
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -13,12 +14,17 @@ router = APIRouter()
 
 MM_URL = os.environ.get("MM_URL")
 MM_TOKEN = os.environ.get("MM_TOKEN")
+PLUGIN_BUNDLE_URL = os.environ.get("PLUGIN_BUNDLE_URL")  # Optional remote tar.gz source
 
 PLUGIN_DEFAULT_ID = "mm-importer"
 
 # In-memory cache for bundle hash/mtime/size to avoid recalculating on every status request
 _bundle_cache: dict[str, dict] = {}
 _BUNDLE_CACHE_TTL = 30  # seconds
+
+# Remote bundle availability cache (avoid HEAD every status poll)
+_remote_bundle_cache: dict[str, dict] = {}
+_REMOTE_CACHE_TTL = 15  # seconds
 
 
 def _get_cached_bundle_info(
@@ -90,8 +96,15 @@ def get_local_bundle_path(plugin_id: str, version: str | None) -> Path | None:
     if not version:
         return None
     plugin_root = get_plugin_repo_root()
-    bundle = plugin_root / "dist" / f"{plugin_id}-{version}.tar.gz"
-    return bundle
+    primary = plugin_root / "dist" / f"{plugin_id}-{version}.tar.gz"
+    if primary.exists():
+        return primary
+    # Fallback path for externally mounted bundles directory
+    alt_dir = Path("/plugin-bundles")
+    alt = alt_dir / f"{plugin_id}-{version}.tar.gz"
+    if alt.exists():
+        return alt
+    return primary  # return expected primary even if missing (for hints)
 
 
 async def mm_get(path: str):
@@ -238,6 +251,51 @@ async def _compute_status() -> dict:
             _get_cached_bundle_info(bundle_path)
         )
 
+    # Remote bundle detection (only if local bundle missing and remote URL configured)
+    remote_available = False
+    remote_size: int | None = None
+    remote_error: str | None = None
+    if (not bundle_exists) and PLUGIN_BUNDLE_URL:
+        cache_key = PLUGIN_BUNDLE_URL
+        now = time.time()
+        cached = _remote_bundle_cache.get(cache_key)
+        if cached and (now - cached.get("ts", 0)) < _REMOTE_CACHE_TTL:
+            remote_available = bool(cached.get("available"))
+            remote_size = cached.get("size")
+            remote_error = cached.get("error")
+        else:
+            try:
+                # Prefer HEAD (fast); fall back to GET if server lacks HEAD support
+                timeout = httpx.Timeout(10.0)
+                with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                    r = client.head(PLUGIN_BUNDLE_URL)
+                    if (
+                        r.status_code >= 400 or r.status_code == 405
+                    ):  # 405 = method not allowed
+                        r = client.get(
+                            PLUGIN_BUNDLE_URL, headers={"Range": "bytes=0-0"}
+                        )  # fetch first byte
+                    if 200 <= r.status_code < 300:
+                        remote_available = True
+                        # Content-Length may be absent for ranged requests; attempt to parse
+                        cl = r.headers.get("Content-Length") or r.headers.get(
+                            "content-length"
+                        )
+                        if cl and cl.isdigit():
+                            remote_size = int(cl)
+                    else:
+                        remote_error = f"remote_status_{r.status_code}"
+            except Exception as e:  # pragma: no cover (network/transient)
+                remote_error = (
+                    f"remote_exc:{e}"  # logged only in cache, keep status lean
+                )
+            _remote_bundle_cache[cache_key] = {
+                "ts": now,
+                "available": remote_available,
+                "size": remote_size,
+                "error": remote_error,
+            }
+
     result = {
         "plugin_id": expected_id,
         "expected_version": expected_version,
@@ -251,9 +309,15 @@ async def _compute_status() -> dict:
         "bundle_mtime": bundle_mtime,
         "bundle_size": bundle_size,
         "bundle_hash_computed_at": bundle_hash_computed_at,
+        "remote_bundle_available": remote_available,
+        "remote_bundle_url": PLUGIN_BUNDLE_URL if PLUGIN_BUNDLE_URL else None,
+        "remote_bundle_size": remote_size,
     }
     if mm_fetch_error:
         result["error"] = mm_fetch_error
+    if remote_error:
+        # Provide non-fatal remote probe error for diagnosability (warn-level semantics)
+        result["remote_probe_error"] = remote_error
     return result
 
 
@@ -323,16 +387,25 @@ async def plugin_deploy(path: str | None = None):
             status_code=400, content={"error": "MM_URL or MM_TOKEN not set"}
         )
 
+    if (not bundle_path or not bundle_path.exists()) and PLUGIN_BUNDLE_URL:
+        # Attempt remote fetch
+        fetched, fetch_err = await _fetch_remote_bundle(plugin_id, version)
+        if fetched:
+            bundle_path = fetched
     if not bundle_path or not bundle_path.exists():
         status = await _compute_status()
         expected = get_local_bundle_path(plugin_id, version)
+        extra = {}
+        if PLUGIN_BUNDLE_URL:
+            extra["remote_url"] = PLUGIN_BUNDLE_URL
         return JSONResponse(
             status_code=200,
             content={
                 "status": "needs_bundle",
                 "error": "Plugin bundle not found",
                 "expected_path": str(expected) if expected else None,
-                "hint": "Run: docker compose -f infra/docker-compose.dev.yml up --build mm-plugin-build",
+                "hint": "Run: docker compose -f infra/docker-compose.dev.yml up --build mm-plugin-build or set PLUGIN_BUNDLE_URL",
+                **extra,
                 **status,
             },
         )
@@ -379,19 +452,46 @@ async def plugin_ensure():
             status_code=400, content={"error": "MM_URL or MM_TOKEN not set", **status}
         )
 
+    # If plugin already installed at correct version but local bundle (cache) is missing,
+    # opportunistically fetch it to have it ready for future updates / reinstall scenarios.
+    if (
+        status.get("installed")
+        and not status.get("needs_update")
+        and not status.get("bundle_exists")
+        and PLUGIN_BUNDLE_URL
+    ):
+        fetched, _ = await _fetch_remote_bundle(
+            status.get("plugin_id") or PLUGIN_DEFAULT_ID,
+            status.get("expected_version"),
+        )
+        if fetched:
+            status = await _compute_status()
+
     need_deploy = (not status.get("installed")) or status.get("needs_update")
     if need_deploy:
+        # Try remote fetch if missing
+        if not status.get("bundle_exists") and PLUGIN_BUNDLE_URL:
+            fetched, fetch_err = await _fetch_remote_bundle(
+                plugin_id, status.get("expected_version")
+            )
+            if fetched:
+                # Recompute status to reflect new local bundle
+                status = await _compute_status()
         if not status.get("bundle_exists"):
             expected_path = status.get("bundle_path") or str(
                 get_local_bundle_path(plugin_id, status.get("expected_version"))
             )
+            extra = {}
+            if PLUGIN_BUNDLE_URL:
+                extra["remote_url"] = PLUGIN_BUNDLE_URL
             return JSONResponse(
                 status_code=200,
                 content={
                     "status": "needs_bundle",
                     "error": "Plugin bundle not found for deploy/upgrade",
                     "expected_path": expected_path,
-                    "hint": "Run: docker compose -f infra/docker-compose.dev.yml up --build mm-plugin-build",
+                    "hint": "Run: docker compose -f infra/docker-compose.dev.yml up --build mm-plugin-build or set PLUGIN_BUNDLE_URL",
+                    **extra,
                     **status,
                 },
             )
@@ -436,7 +536,24 @@ async def plugin_ensure():
         ok, err = await _enable_plugin(plugin_id)
         if not ok:
             return JSONResponse(status_code=502, content={"error": err, **post})
-        post = await _compute_status()
+        # Poll a few times because enable in MM can be slightly async in larger envs
+        import asyncio
+
+        for _ in range(10):  # up to ~5s (10 * 0.5)
+            await asyncio.sleep(0.5)
+            post = await _compute_status()
+            if post.get("enabled"):
+                break
+        if not post.get("enabled"):
+            # Non-fatal: report partial success with hint to retry
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "enable_pending",
+                    "warning": "Plugin upload ok, but enable not yet reflected (retry soon)",
+                    **post,
+                },
+            )
 
     return JSONResponse(content={"status": "ensured", **post})
 
@@ -474,14 +591,24 @@ async def plugin_reinstall():
 
     # Need bundle
     fresh = await _compute_status()
+    if not fresh.get("bundle_exists") and PLUGIN_BUNDLE_URL:
+        fetched, fetch_err = await _fetch_remote_bundle(
+            plugin_id, fresh.get("expected_version")
+        )
+        if fetched:
+            fresh = await _compute_status()
     if not fresh.get("bundle_exists"):
+        extra = {}
+        if PLUGIN_BUNDLE_URL:
+            extra["remote_url"] = PLUGIN_BUNDLE_URL
         return JSONResponse(
             status_code=200,
             content={
                 "status": "needs_bundle",
                 "error": "Plugin bundle not found for reinstall",
                 "expected_path": fresh.get("bundle_path"),
-                "hint": "Run: docker compose -f infra/docker-compose.dev.yml up --build mm-plugin-build",
+                "hint": "Run: docker compose -f infra/docker-compose.dev.yml up --build mm-plugin-build or set PLUGIN_BUNDLE_URL",
+                **extra,
                 **fresh,
             },
         )
@@ -499,3 +626,57 @@ async def plugin_reinstall():
         return JSONResponse(status_code=502, content={"error": err2, **fresh})
     final = await _compute_status()
     return JSONResponse(content={"status": "reinstalled", **final})
+
+
+async def _fetch_remote_bundle(
+    plugin_id: str, expected_version: str | None
+) -> tuple[Path | None, str | None]:
+    """Download plugin bundle from PLUGIN_BUNDLE_URL if set.
+
+    Validates that the downloaded archive file name (if pattern matches) includes the expected version (best-effort) and stores it under local dist/.
+    Does NOT extract; Mattermost server validates manifest on upload.
+    """
+    if not PLUGIN_BUNDLE_URL:
+        return None, "PLUGIN_BUNDLE_URL not set"
+    if not expected_version:
+        return None, "expected_version unknown"
+    try:
+        # Basic heuristic: if URL doesn't already end with plugin_id-version.tar.gz, we still accept it; we just store with canonical name.
+        plugin_root = get_plugin_repo_root()
+        dist_dir = plugin_root / "dist"
+        target: Path
+        use_tmp = False
+        try:
+            dist_dir.mkdir(parents=True, exist_ok=True)
+            # Test writability
+            test_file = dist_dir / ".wtest"
+            with open(test_file, "w") as tf:
+                tf.write("ok")
+            test_file.unlink(missing_ok=True)
+        except Exception:
+            # Fallback to /tmp (ephemeral) for read-only plugin mount scenarios
+            tmp_root = Path("/tmp/plugin-bundles")
+            tmp_root.mkdir(parents=True, exist_ok=True)
+            dist_dir = tmp_root
+            use_tmp = True
+        target = dist_dir / f"{plugin_id}-{expected_version}.tar.gz"
+
+        async with httpx.AsyncClient(timeout=300) as client:
+            resp = await client.get(PLUGIN_BUNDLE_URL, follow_redirects=True)
+            if resp.status_code != 200:
+                return None, f"download_failed_{resp.status_code}"
+            # Write atomically
+            with tempfile.NamedTemporaryFile(dir=dist_dir, delete=False) as tmp:
+                tmp.write(resp.content)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+                tmp_path = Path(tmp.name)
+        tmp_path.replace(target)
+        loc = "tmp" if use_tmp else "dist"
+        backend_logger.info(
+            f"Downloaded remote plugin bundle to {target} (storage={loc}) from {PLUGIN_BUNDLE_URL}"
+        )
+        return target, None
+    except Exception as e:  # pragma: no cover (network issues)
+        backend_logger.warning(f"Remote bundle fetch failed: {e}")
+        return None, str(e)

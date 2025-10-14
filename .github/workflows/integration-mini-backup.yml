@@ -23,12 +23,10 @@ jobs:
         run: |
           docker compose -f infra/docker-compose.dev.yml build db backend mattermost test-files
 
-      - name: Build plugin (standalone) prior to integration script
+      - name: Build plugin (multi-stage Docker)
         run: |
-          pushd infra/plugin >/dev/null
-          bash build-dev.sh
-          ls -l dist || (echo 'Plugin dist missing after build' && exit 1)
-          popd >/dev/null
+          bash infra/plugin/build-docker.sh
+          ls -l infra/plugin/dist || (echo 'Plugin dist missing after build' && exit 1)
 
       - name: Run mini backup integration script
         run: |

@@ -19,7 +19,6 @@ from app.services.entities.user import User
 from app.services.entities.custom_emoji import CustomEmoji
 from app.services.entities.attachment import Attachment
 from app.utils.time import parse_slack_ts
-from app.utils.filters import job_scoped_condition
 
 EXPORT_ORDER = [
     ("user", UserExporter),
@@ -70,7 +69,7 @@ async def get_entities_to_export(entity_type: str, job_id=None):
         cond = (Entity.entity_type == entity_type) & (
             Entity.status == MappingStatus.pending
         )
-        cond = job_scoped_condition(cond, entity_type, job_id)
+        # job_scoped_condition now a no-op; we ignore job scoping for global uniqueness
 
         query = await session.execute(select(Entity).where(cond))
         entities = query.scalars().all()
@@ -161,11 +160,7 @@ async def export_worker(queue, mm_user_id):
                             Entity.slack_id == entity.slack_id
                         )
                         # Scope by job only for job-scoped types (message/reaction/attachment)
-                        where_cond = job_scoped_condition(
-                            where_cond,
-                            entity.entity_type,
-                            getattr(entity, "job_id", None),
-                        )
+                        # No job scoping; update by (type, slack_id)
                         await session.execute(
                             update(Entity)
                             .where(where_cond)

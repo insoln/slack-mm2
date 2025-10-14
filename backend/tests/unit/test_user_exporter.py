@@ -30,6 +30,9 @@ async def test_user_exporter_reuse_by_email(monkeypatch):
     exporter.mm_api_get.return_value.json = lambda: {"id": "existing-id"}
 
     await exporter.export_entity()
+    # Explicitly await any pending coroutine on set_status to avoid AsyncMock un-awaited RuntimeWarning
+    if exporter.set_status.await_count == 0:
+        await exporter.set_status("noop")  # pragma: no cover
 
     assert entity.mattermost_id == "existing-id"
     exporter.set_status.assert_awaited_with("success")

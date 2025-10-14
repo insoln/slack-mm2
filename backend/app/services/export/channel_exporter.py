@@ -1,5 +1,4 @@
 import os
-import json
 from app.logging_config import backend_logger
 from .base_exporter import ExporterBase, LoggingMixin
 from .mm_api_mixin import MMApiMixin
@@ -9,6 +8,18 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
     def __init__(self, entity):
         super().__init__(entity)
         self._cached_team_id = None
+
+    # Resilience / semantics notes:
+    # 1. Duplicate public/private channel names: treat "already exists" (or HTTP 409) as success by
+    #    looking up existing id and marking entity success (prevents cascade failures for messages).
+    # 2. DM requires exactly 2 mapped members. Otherwise mark skipped (dataset structural issue).
+    # 3. GDM (mpim) rules:
+    #    - <3 members -> skipped (invalid dataset)
+    #    - 3..8 members -> create via /gdm plugin endpoint
+    #    - >8 members -> downgrade to private channel creation path (acts like normal channel)
+    #    - Fallback: if only 2 members try adding USLACKBOT to reach threshold when possible.
+    # 4. Participant count structural errors from server mapped to skipped not failed.
+    # 5. Archived slack channel => archive in Mattermost after creation.
 
     def _get_channel_name(self, raw_data):
         """Получить название канала из raw_data"""
@@ -77,34 +88,30 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
         return raw_data.get("id", "").startswith("G") if raw_data else False
 
     async def export_entity(self):
-        # Сначала определяем тип канала и обрабатываем DM/GDM, где 'name' может отсутствовать
         self.log_export(f"Экспорт канала/диалога {self.entity.slack_id}")
-
         try:
-            # Определяем тип канала
             is_dm = self._is_dm_channel(self.entity.raw_data)
             is_gdm = self._is_group_dm_channel(self.entity.raw_data)
             is_private = self._is_private_channel(self.entity.raw_data)
 
-            # Для DM-каналов создаем/получаем канал через плагин /dm
+            # DM path
             if is_dm:
                 members = (self.entity.raw_data or {}).get("members") or []
                 mm_user_ids = await self._resolve_mm_user_ids(members)
                 if len(mm_user_ids) == 2:
                     dm_resp = await self.mm_api_post(
-                        "/plugins/mm-importer/api/v1/dm",
-                        {"user_ids": mm_user_ids},
+                        "/plugins/mm-importer/api/v1/dm", {"user_ids": mm_user_ids}
                     )
-                    if dm_resp.status_code in [200, 201]:
+                    if getattr(dm_resp, "status_code", None) in (200, 201):
                         try:
-                            dm_data = dm_resp.json()
+                            dm_data = dm_resp.json()  # type: ignore[attr-defined]
                         except Exception:
                             backend_logger.error(
-                                f"Плагин вернул не-JSON для DM: status={dm_resp.status_code} body={dm_resp.text[:200]}"
+                                f"Плагин вернул не-JSON для DM: status={getattr(dm_resp,'status_code',None)} body={getattr(dm_resp,'text','')[:200]}"
                             )
                             await self.set_status(
                                 "failed",
-                                error=f"Plugin invalid JSON for DM: {dm_resp.status_code}",
+                                error=f"Plugin invalid JSON for DM: {getattr(dm_resp,'status_code',None)}",
                             )
                             return
                         self.entity.mattermost_id = dm_data.get("channel_id")
@@ -113,39 +120,50 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                             f"DM канал создан/получен, ID: {self.entity.mattermost_id}"
                         )
                         return
-                    else:
-                        backend_logger.error(
-                            f"Ошибка создания DM через плагин: {dm_resp.status_code} {dm_resp.text}"
-                        )
-                        await self.set_status("failed", error=dm_resp.text)
-                        return
-                else:
-                    backend_logger.warn(
-                        f"Ожидалось 2 участника DM, найдено {len(mm_user_ids)}; пропускаю"
+                    backend_logger.error(
+                        f"Ошибка создания DM через плагин: {getattr(dm_resp,'status_code',None)} {getattr(dm_resp,'text','')}"
                     )
-                    await self.set_status("skipped", error="Invalid DM members count")
+                    await self.set_status("failed", error=getattr(dm_resp, "text", ""))
                     return
+                backend_logger.warning(
+                    f"Ожидалось 2 участника DM, найдено {len(mm_user_ids)}; пропускаю"
+                )
+                await self.set_status("skipped", error="Invalid DM members count")
+                return
 
-            # Для групповых DM (mpim) используем плагин /gdm
+            # Group DM (mpim) path
             if is_gdm:
                 members = (self.entity.raw_data or {}).get("members") or []
                 mm_user_ids = await self._resolve_mm_user_ids(members)
-                # В mpim обычно >= 3 участников, но на всякий случай требуем хотя бы 2
-                if len(mm_user_ids) >= 2:
-                    gdm_resp = await self.mm_api_post(
-                        "/plugins/mm-importer/api/v1/gdm",
-                        {"user_ids": mm_user_ids},
+                if len(mm_user_ids) == 2:  # attempt to pad with USLACKBOT
+                    try:
+                        slackbot_mm = await self._resolve_mm_user_ids(["USLACKBOT"])
+                        if slackbot_mm:
+                            backend_logger.debug(
+                                "Добавляем USLACKBOT в 2-участниковый MPIM для соответствия порогу"
+                            )
+                            mm_user_ids.append(slackbot_mm[0])
+                    except Exception:
+                        pass
+                if len(mm_user_ids) > 8:
+                    backend_logger.info(
+                        f"MPIM с {len(mm_user_ids)} участниками преобразован в приватный канал"
                     )
-                    if gdm_resp.status_code in [200, 201]:
+                    is_gdm = False  # fall through to normal channel creation
+                elif len(mm_user_ids) >= 3:
+                    gdm_resp = await self.mm_api_post(
+                        "/plugins/mm-importer/api/v1/gdm", {"user_ids": mm_user_ids}
+                    )
+                    if getattr(gdm_resp, "status_code", None) in (200, 201):
                         try:
-                            gdm_data = gdm_resp.json()
+                            gdm_data = gdm_resp.json()  # type: ignore[attr-defined]
                         except Exception:
                             backend_logger.error(
-                                f"Плагин вернул не-JSON для GDM: status={gdm_resp.status_code} body={gdm_resp.text[:200]}"
+                                f"Плагин вернул не-JSON для GDM: status={getattr(gdm_resp,'status_code',None)} body={getattr(gdm_resp,'text','')[:200]}"
                             )
                             await self.set_status(
                                 "failed",
-                                error=f"Plugin invalid JSON for GDM: {gdm_resp.status_code}",
+                                error=f"Plugin invalid JSON for GDM: {getattr(gdm_resp,'status_code',None)}",
                             )
                             return
                         self.entity.mattermost_id = gdm_data.get("channel_id")
@@ -154,20 +172,21 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                             f"GDM канал создан/получен, ID: {self.entity.mattermost_id}"
                         )
                         return
-                    else:
-                        backend_logger.error(
-                            f"Ошибка создания GDM через плагин: {gdm_resp.status_code} {gdm_resp.text}"
-                        )
-                        await self.set_status("failed", error=gdm_resp.text)
-                        return
-                else:
-                    backend_logger.warn(
-                        f"Слишком мало участников для GDM: {len(mm_user_ids)}; пропускаю"
+                    backend_logger.error(
+                        f"Ошибка создания GDM через плагин: {getattr(gdm_resp,'status_code',None)} {getattr(gdm_resp,'text','')}"
                     )
-                    await self.set_status("skipped", error="Insufficient GDM members")
+                    await self.set_status("failed", error=getattr(gdm_resp, "text", ""))
+                    return
+                else:
+                    backend_logger.warning(
+                        f"Слишком мало участников для GDM: {len(mm_user_ids)}; пропускаю (need >=3)"
+                    )
+                    await self.set_status(
+                        "skipped", error="Insufficient GDM members (<3)"
+                    )
                     return
 
-            # Обычные каналы (публичные/приватные) требуют имени
+            # Normal (public/private) channel path
             channel_name = self._get_channel_name(self.entity.raw_data)
             if not channel_name:
                 backend_logger.error(f"Нет названия для канала {self.entity.slack_id}")
@@ -178,62 +197,49 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 return
 
             self.log_export(f"Экспорт канала {channel_name}")
-
-            # Определяем team_id надёжно (ENV MM_TEAM_ID или по имени MM_TEAM через API)
             team_id = await self._get_mm_team_id()
-
-            # Строим payload для создания канала
-            # Подготовим безопасный display_name
             safe_display = self._sanitize_display_name(
                 self._get_channel_display_name(self.entity.raw_data),
                 channel_name.replace("-", " "),
             )
-
+            if not is_gdm and self._is_group_dm_channel(self.entity.raw_data):
+                safe_display = f"MPIM {self.entity.slack_id}"[:64]
+                is_private = True
             payload = {
                 "team_id": team_id,
                 "name": channel_name,
                 "display_name": safe_display,
-                "type": "P" if is_private else "O",  # P - приватный, O - публичный
+                "type": "P" if is_private else "O",
             }
-
-            # Добавляем описание и заголовок если есть
             purpose = self._get_channel_purpose(self.entity.raw_data)
             if purpose:
                 payload["purpose"] = purpose
-
             header = self._get_channel_header(self.entity.raw_data)
             if header:
                 payload["header"] = header
 
-            # Создаем/получаем канал через плагин (включает нормализацию имени)
             response = await self.mm_api_post(
                 "/plugins/mm-importer/api/v1/channel", payload
             )
-
-            if response.status_code in [200, 201]:
+            if getattr(response, "status_code", None) in (200, 201):
                 try:
-                    channel_data = response.json()
+                    channel_data = response.json()  # type: ignore[attr-defined]
                 except Exception:
                     backend_logger.error(
-                        f"Плагин вернул не-JSON для channel: status={response.status_code} body={response.text[:200]}"
+                        f"Плагин вернул не-JSON для channel: status={getattr(response,'status_code',None)} body={getattr(response,'text','')[:200]}"
                     )
                     await self.set_status(
                         "failed",
-                        error=f"Plugin invalid JSON for channel: {response.status_code}",
+                        error=f"Plugin invalid JSON for channel: {getattr(response,'status_code',None)}",
                     )
                     return
-                # Плагин возвращает { channel_id }
                 self.entity.mattermost_id = channel_data.get(
                     "channel_id"
                 ) or channel_data.get("id")
-
-                # Добавляем участников, если они есть в raw_data
                 members = (self.entity.raw_data or {}).get("members") or []
                 if members:
-                    # Нужно замапить Slack user_id -> Mattermost user_id из Entity
                     mm_user_ids = await self._resolve_mm_user_ids(members)
                     if mm_user_ids:
-                        # Автоматически гарантируем членство пользователей в команде перед добавлением в канал
                         await self._ensure_team_membership(mm_user_ids)
                         add_resp = await self.mm_api_post(
                             "/plugins/mm-importer/api/v1/channel/members",
@@ -242,37 +248,67 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                                 "user_ids": mm_user_ids,
                             },
                         )
-                        if add_resp.status_code not in [200, 201]:
+                        if getattr(add_resp, "status_code", None) not in (200, 201):
                             backend_logger.error(
-                                f"Не удалось добавить участников: {add_resp.status_code} {add_resp.text}"
+                                f"Не удалось добавить участников: {getattr(add_resp,'status_code',None)} {getattr(add_resp,'text','')}"
                             )
-
-                # Архивируем, если канал в Slack был архивирован
                 if (self.entity.raw_data or {}).get("is_archived"):
                     arch_resp = await self.mm_api_post(
                         "/plugins/mm-importer/api/v1/channel/archive",
                         {"channel_id": self.entity.mattermost_id},
                     )
-                    if arch_resp.status_code not in [200, 201]:
+                    if getattr(arch_resp, "status_code", None) not in (200, 201):
                         backend_logger.error(
-                            f"Не удалось архивировать канал: {arch_resp.status_code} {arch_resp.text}"
+                            f"Не удалось архивировать канал: {getattr(arch_resp,'status_code',None)} {getattr(arch_resp,'text','')}"
                         )
-
                 await self.set_status("success")
                 backend_logger.debug(
                     f"Канал {channel_name} экспортирован в Mattermost, ID: {self.entity.mattermost_id}"
                 )
                 return
 
-            # Проверяем ошибки дублирования
-            data = response.json()
+            # Error handling
+            try:
+                data = response.json()
+            except Exception:
+                data = {"raw": getattr(response, "text", "")[:300]}
+            err_text = (
+                data.get("error") or data.get("message") or data.get("id") or str(data)
+            )
+            duplicate_hint = False
+            if err_text and "already exists" in err_text.lower():
+                duplicate_hint = True
+            if getattr(response, "status_code", None) == 409:
+                duplicate_hint = True
+            if duplicate_hint:
+                backend_logger.info(
+                    f"Канал '{channel_name}' уже существует, попытаемся получить его id и продолжить"
+                )
+                existing_id = await self._lookup_existing_channel_id(channel_name)
+                if existing_id:
+                    self.entity.mattermost_id = existing_id
+                    await self.set_status("success")
+                    backend_logger.info(
+                        f"Переиспользован существующий канал '{channel_name}' -> {existing_id}"
+                    )
+                    return
+                backend_logger.warning(
+                    f"Не удалось найти existing channel '{channel_name}' после дубликат-ошибки"
+                )
+            if (
+                err_text
+                and "participant" in err_text.lower()
+                and "count" in err_text.lower()
+            ):
+                await self.set_status("skipped", error=err_text)
+                backend_logger.warning(
+                    f"Пропускаем канал '{channel_name}' из-за ошибки количества участников: {err_text}"
+                )
+                return
             backend_logger.error(
-                f"Ошибка создания канала через плагин: {response.status_code}, {data}"
+                f"Ошибка создания канала через плагин: {getattr(response,'status_code',None)}, {data}"
             )
-            await self.set_status(
-                "failed", error=data.get("error") or data.get("message") or str(data)
-            )
-
+            await self.set_status("failed", error=err_text)
         except Exception as e:
             backend_logger.error(f"Ошибка при создании канала: {e}")
             await self.set_status("failed", error=str(e))
@@ -297,7 +333,7 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     if mm_id:
                         mm_ids.append(mm_id)
                 else:
-                    backend_logger.warn(f"MM user id not found for Slack user {sid}")
+                    backend_logger.warning(f"MM user id not found for Slack user {sid}")
         return mm_ids
 
     async def _get_mm_team_id(self):
@@ -315,14 +351,14 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
         team_name = os.environ.get("MM_TEAM", "test")
         try:
             resp = await self.mm_api_get(f"/api/v4/teams/name/{team_name}")
-            if resp.status_code == 200:
-                data = resp.json()
+            if getattr(resp, "status_code", None) == 200:
+                data = resp.json()  # type: ignore[attr-defined]
                 tid = data.get("id")
                 if tid:
                     self._cached_team_id = tid
                     return tid
             backend_logger.error(
-                f"Не удалось получить team id по имени '{team_name}': {resp.status_code} {resp.text}"
+                f"Не удалось получить team id по имени '{team_name}': {getattr(resp,'status_code',None)} {getattr(resp,'text','')}"
             )
         except Exception as e:
             backend_logger.error(f"Ошибка при получении team id: {e}")
@@ -338,18 +374,48 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     f"/api/v4/teams/{team_id}/members",
                     {"team_id": team_id, "user_id": uid},
                 )
-                if resp.status_code not in (200, 201):
+                if getattr(resp, "status_code", None) not in (200, 201):
                     # Server may respond with an error if already a member; log for trace and continue
                     try:
-                        data = resp.json()
+                        data = resp.json()  # type: ignore[attr-defined]
                         backend_logger.debug(
-                            f"ensure team member resp for user {uid}: {resp.status_code} {data}"
+                            f"ensure team member resp for user {uid}: {getattr(resp,'status_code',None)} {data}"
                         )
                     except Exception:
                         backend_logger.debug(
-                            f"ensure team member resp for user {uid}: {resp.status_code} {resp.text}"
+                            f"ensure team member resp for user {uid}: {getattr(resp,'status_code',None)} {getattr(resp,'text','')}"
                         )
             except Exception as e:
                 backend_logger.error(
                     f"Ошибка добавления пользователя {uid} в команду {team_id}: {e}"
                 )
+
+    async def _lookup_existing_channel_id(self, name: str) -> str | None:
+        """Попытаться найти существующий канал по имени через публичный MM API.
+
+        Используем /api/v4/teams/{team_id}/channels/name/{name}. Если найден —
+        возвращаем id. При ошибке/отсутствии возвращаем None. Не бросаем исключения,
+        чтобы не останавливать основной экспорт потоком.
+        """
+        try:
+            team_id = await self._get_mm_team_id()
+            resp = await self.mm_api_get(
+                f"/api/v4/teams/{team_id}/channels/name/{name}"
+            )
+            if hasattr(resp, "status_code") and getattr(resp, "status_code") == 200:
+                try:
+                    data = resp.json()  # type: ignore[attr-defined]
+                except Exception:
+                    backend_logger.error(
+                        f"Не-JSON ответ при lookup канала '{name}': {getattr(resp,'text','')[:200]}"
+                    )
+                    return None
+                cid = data.get("id")
+                return cid
+            else:
+                backend_logger.debug(
+                    f"lookup канала '{name}' вернул {getattr(resp,'status_code',None)}: {getattr(resp,'text','')[:120]}"
+                )
+        except Exception as e:
+            backend_logger.error(f"Ошибка lookup существующего канала '{name}': {e}")
+        return None
