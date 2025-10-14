@@ -543,6 +543,13 @@ async def parse_channel_messages(
             # Per-file final emission (so UI updates even for small files)
             await emit()
 
+            # Update file processing progress
+            if file_progress:
+                try:
+                    await file_progress(1)
+                except Exception:  # pragma: no cover
+                    pass
+
     # Final forced emission to flush trailing counters
     await emit(force=True)
 
