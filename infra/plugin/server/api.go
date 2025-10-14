@@ -367,14 +367,23 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 	}
 	
 	// Validate that the user exists in Mattermost if it's not the system user
-	if userId != model.UploadNoUserID {
+	if userId != model.UploadNoUserID && userId != "" {
 		if p.API != nil {
-			_, appErr := p.API.GetUser(userId)
-			if appErr != nil {
-				// User doesn't exist, fallback to system user
+			user, appErr := p.API.GetUser(userId)
+			if appErr != nil || user == nil {
+				// User doesn't exist or API call failed, fallback to system user
+				if p.API != nil {
+					p.API.LogWarn("User validation failed for attachment upload, using system user", "userId", userId, "error", appErr)
+				}
 				userId = model.UploadNoUserID
 			}
+		} else {
+			// API not available, use system user
+			userId = model.UploadNoUserID
 		}
+	} else {
+		// Empty or already system user, ensure it's properly set
+		userId = model.UploadNoUserID
 	}
 	
 	uploadSession := &model.UploadSession{
@@ -385,10 +394,22 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 		FileSize:  contentLength,
 	}
 
+	// Validate channel exists
+	if p.API != nil {
+		channel, appErr := p.API.GetChannel(req.ChannelID)
+		if appErr != nil || channel == nil {
+			p.API.LogError("Channel validation failed for attachment upload", "channelId", req.ChannelID, "error", appErr)
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Invalid channel ID"})
+			return
+		}
+		p.API.LogDebug("Creating upload session", "userId", userId, "channelId", req.ChannelID, "filename", req.Filename, "fileSize", contentLength, "originalUserId", req.UserID)
+	}
+
 	us, err := p.API.CreateUploadSession(uploadSession)
 	if err != nil {
 		if p.API != nil {
-			p.API.LogError("Failed to create upload session", "error", err.Error(), "userId", userId, "channelId", req.ChannelID, "filename", req.Filename, "fileSize", contentLength)
+			p.API.LogError("Failed to create upload session", "error", err.Error(), "userId", userId, "channelId", req.ChannelID, "filename", req.Filename, "fileSize", contentLength, "originalUserId", req.UserID)
 		}
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Failed to create upload session"})
