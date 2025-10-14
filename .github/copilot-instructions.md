@@ -48,7 +48,7 @@ Current unified single-pass importer (messages + reactions + attachments + emoji
 * `IMPORT_CHANNEL_CONCURRENCY` — parallel channel processing during ingestion. Default 1 (sequential). Increase cautiously to avoid DB contention.
 * `IMPORT_RECORD_STAGE_DURATIONS` — if set to 1/true, record per-stage ms durations into job.meta.
 * `IMPORT_META_UPDATE_INTERVAL_SEC` / `IMPORT_META_UPDATE_EVERY` — throttling of meta/progress JSONB updates (time-based or every N messages). 
-Deprecated / removed: batching flags, orjson fast-path flags, single-pass feature toggles, reaction bulk flags.
+
 ### Frontend Development (React/Vite)
 - **Install dependencies**: `cd frontend && npm ci` -- takes ~7 seconds
 - **Linting**: `npm run lint` -- takes <1 second. ALWAYS run before committing  
@@ -76,6 +76,15 @@ Deprecated / removed: batching flags, orjson fast-path flags, single-pass featur
 
 #### Plugin Makefile Issues
 The Makefile requires `build/setup.mk` which is missing from this repository. Use `build-dev.sh` instead of make commands.
+
+### Environment Variable Policy
+- **DO NOT** use environment variables as feature flags to control application logic (e.g., enabling/disabling a code path). All core features should be enabled and work out-of-the-box.
+- **DO** use environment variables for external configuration that changes between environments, such as:
+  - API tokens, secrets, and credentials
+  - Database connection strings (e.g., `DATABASE_URL`)
+  - External service URLs (e.g., `MATTERMOST_API_URL`)
+  - Ports and hostnames
+- Debugging or performance-tuning options should not be managed by environment variables in production code. If such functionality is needed, it should be exposed via dedicated debug endpoints or logging configurations.
 
 ### Docker Development Environment
 
