@@ -8,6 +8,7 @@ from app.models.status_enum import MappingStatus
 from sqlalchemy.exc import IntegrityError
 from app.logging_config import backend_logger
 from sqlalchemy import select
+from sqlalchemy import func as _sa_func
 from typing import List, Optional, Dict, Set, Tuple
 
 
@@ -36,23 +37,15 @@ class BaseMapping:
 
     async def save_to_db(self):
         async with SessionLocal() as session:
-            # Проверка на существование
-            if self.job_id is None:
-                query = await session.execute(
-                    select(Entity).where(
-                        (Entity.entity_type == self.entity_type)
-                        & (Entity.slack_id == self.slack_id)
-                        & (Entity.job_id.is_(None))
-                    )
+            # Global uniqueness: ignore job_id when checking for existing entity.
+            # job_id now only serves as provenance / grouping metadata and MUST NOT
+            # create duplicate logical entities differing only by job_id.
+            query = await session.execute(
+                select(Entity).where(
+                    (Entity.entity_type == self.entity_type)
+                    & (Entity.slack_id == self.slack_id)
                 )
-            else:
-                query = await session.execute(
-                    select(Entity).where(
-                        (Entity.entity_type == self.entity_type)
-                        & (Entity.slack_id == self.slack_id)
-                        & (Entity.job_id == self.job_id)
-                    )
-                )
+            )
             existing = query.scalar_one_or_none()
             if existing:
                 self.id = existing.id
@@ -65,9 +58,19 @@ class BaseMapping:
                 slack_id=self.slack_id,
                 mattermost_id=self.mattermost_id,
                 raw_data=self.raw_data,
-                job_id=self.job_id,
+                job_id=self.job_id,  # retained for lineage only
                 status=self.status,
             )
+            # Manual PK assignment for SQLite in-memory where BIGINT autoincrement can misbehave.
+            try:
+                bind = session.get_bind()
+                if bind and bind.dialect.name == "sqlite":
+                    curmax = await session.execute(select(_sa_func.max(Entity.id)))
+                    next_id = (curmax.scalar() or 0) + 1
+                    # Use setattr to avoid static type complaints; SQLAlchemy will treat as PK value.
+                    setattr(entity, "id", next_id)
+            except Exception:  # pragma: no cover
+                pass
             session.add(entity)
             try:
                 await session.commit()
@@ -81,22 +84,12 @@ class BaseMapping:
                 # Возможен гонок: другая корутина вставила запись между select и commit
                 # Делаем до 2 быстрых повторных проверок с короткой задержкой
                 for attempt in range(2):
-                    if self.job_id is None:
-                        query = await session.execute(
-                            select(Entity).where(
-                                (Entity.entity_type == self.entity_type)
-                                & (Entity.slack_id == self.slack_id)
-                                & (Entity.job_id.is_(None))
-                            )
+                    query = await session.execute(
+                        select(Entity).where(
+                            (Entity.entity_type == self.entity_type)
+                            & (Entity.slack_id == self.slack_id)
                         )
-                    else:
-                        query = await session.execute(
-                            select(Entity).where(
-                                (Entity.entity_type == self.entity_type)
-                                & (Entity.slack_id == self.slack_id)
-                                & (Entity.job_id == self.job_id)
-                            )
-                        )
+                    )
                     existing = query.scalar_one_or_none()
                     if existing:
                         self.id = existing.id
@@ -132,7 +125,7 @@ class BaseMapping:
         # Group by entity_type for better logging and potential optimization
         grouped_mappings: Dict[str, List["BaseMapping"]] = {}
         for mapping in mappings:
-            entity_type = mapping.entity_type
+            entity_type = mapping.entity_type or "__undefined__"
             if entity_type not in grouped_mappings:
                 grouped_mappings[entity_type] = []
             grouped_mappings[entity_type].append(mapping)
@@ -144,86 +137,32 @@ class BaseMapping:
         async with SessionLocal() as session:
             try:
                 # Check for existing entities to avoid duplicates
-                existing_entities: Set[Tuple[str, str, Optional[int]]] = set()
+                # Keyed only by (entity_type, slack_id) — job_id intentionally excluded
+                existing_entities: Set[Tuple[str, str]] = set()
 
                 for entity_type, type_mappings in grouped_mappings.items():
-                    # Build query to check for existing entities of this type
                     slack_ids = [m.slack_id for m in type_mappings]
-                    job_ids = list({m.job_id for m in type_mappings})
-
-                    # Query for existing entities
-                    if len(job_ids) == 1 and job_ids[0] is None:
-                        # All mappings have job_id=None
-                        query = await session.execute(
-                            select(Entity).where(
-                                (Entity.entity_type == entity_type)
-                                & (Entity.slack_id.in_(slack_ids))
-                                & (Entity.job_id.is_(None))
-                            )
+                    query = await session.execute(
+                        select(Entity).where(
+                            (Entity.entity_type == entity_type)
+                            & (Entity.slack_id.in_(slack_ids))
                         )
-                    elif None not in job_ids:
-                        # All mappings have non-None job_ids
-                        query = await session.execute(
-                            select(Entity).where(
-                                (Entity.entity_type == entity_type)
-                                & (Entity.slack_id.in_(slack_ids))
-                                & (Entity.job_id.in_(job_ids))
-                            )
-                        )
-                    else:
-                        # Mixed job_ids (some None, some not) - need separate queries
-                        for mapping in type_mappings:
-                            if mapping.job_id is None:
-                                query = await session.execute(
-                                    select(Entity).where(
-                                        (Entity.entity_type == mapping.entity_type)
-                                        & (Entity.slack_id == mapping.slack_id)
-                                        & (Entity.job_id.is_(None))
-                                    )
-                                )
-                            else:
-                                query = await session.execute(
-                                    select(Entity).where(
-                                        (Entity.entity_type == mapping.entity_type)
-                                        & (Entity.slack_id == mapping.slack_id)
-                                        & (Entity.job_id == mapping.job_id)
-                                    )
-                                )
-                            existing = query.scalar_one_or_none()
-                            if existing:
-                                existing_entities.add(
-                                    (
-                                        mapping.entity_type,
-                                        mapping.slack_id,
-                                        mapping.job_id,
-                                    )
-                                )
-                                mapping.id = existing.id
-                        continue
-
-                    # Process results for simple cases (all same job_id pattern)
+                    )
                     existing_results = query.scalars().all()
                     for existing in existing_results:
+                        # existing.entity_type / slack_id are already Python strings
                         existing_entities.add(
-                            (existing.entity_type, existing.slack_id, existing.job_id)
+                            (str(existing.entity_type), str(existing.slack_id))
                         )
-                        # Update mapping.id for the corresponding mapping
                         for mapping in type_mappings:
-                            if (
-                                mapping.slack_id == existing.slack_id
-                                and mapping.job_id == existing.job_id
-                            ):
+                            if mapping.slack_id == existing.slack_id:
                                 mapping.id = existing.id
                                 break
 
                 # Prepare entities to insert
                 new_entities = []
                 for mapping in mappings:
-                    if (
-                        mapping.entity_type,
-                        mapping.slack_id,
-                        mapping.job_id,
-                    ) in existing_entities:
+                    if (mapping.entity_type, mapping.slack_id) in existing_entities:
                         existing_count += 1
                         backend_logger.debug(
                             f"Batch: {mapping.entity_type} already exists: slack_id={mapping.slack_id}"
@@ -234,13 +173,25 @@ class BaseMapping:
                             slack_id=mapping.slack_id,
                             mattermost_id=mapping.mattermost_id,
                             raw_data=mapping.raw_data,
-                            job_id=mapping.job_id,
+                            job_id=mapping.job_id,  # lineage only
                             status=mapping.status,
                         )
                         new_entities.append((entity, mapping))
 
                 # Bulk insert new entities
                 if new_entities:
+                    # Manual PK assignment for SQLite
+                    try:
+                        bind = session.get_bind()
+                        if bind and bind.dialect.name == "sqlite":
+                            curmax = await session.execute(
+                                select(_sa_func.max(Entity.id))
+                            )
+                            base = curmax.scalar() or 0
+                            for off, (entity, _m) in enumerate(new_entities, start=1):
+                                setattr(entity, "id", base + off)
+                    except Exception:  # pragma: no cover
+                        pass
                     session.add_all([entity for entity, _ in new_entities])
                     await session.commit()
 
@@ -297,14 +248,9 @@ class BaseMapping:
             # Обновляем существующую запись
             from sqlalchemy import update
 
-            cond = (
-                (Entity.entity_type == self.entity_type)
-                & (Entity.slack_id == self.slack_id)
-                & (
-                    Entity.job_id.is_(None)
-                    if self.job_id is None
-                    else (Entity.job_id == self.job_id)
-                )
+            # Global uniqueness: locate by (entity_type, slack_id) only
+            cond = (Entity.entity_type == self.entity_type) & (
+                Entity.slack_id == self.slack_id
             )
             stmt = (
                 update(Entity)
