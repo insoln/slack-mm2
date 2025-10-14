@@ -38,6 +38,7 @@ Rationale: Guarantees reproducible review history, enables safe rewrites (rebase
 - **Docker**: Required for full development environment
 
 ### Backend Development (Python FastAPI)
+- **Virtual Environment**: ALWAYS work within a Python virtual environment. Create it in the project root: `python3 -m venv .venv`. Activate it before running any commands: `source .venv/bin/activate`.
 - **Install dependencies**: `cd backend && pip install -r requirements.txt` -- takes ~18 seconds
 - **Code formatting**: `black app alembic tests` -- takes <1 second. ALWAYS run before committing
 - **Unit tests**: `pytest tests/unit` -- takes ~1.5 seconds for 2 tests  
@@ -180,6 +181,8 @@ Before committing, ALWAYS run:
 ### Known Working Commands
 ```bash
 # Backend development
+python3 -m venv .venv
+source .venv/bin/activate
 cd backend
 pip install -r requirements.txt
 black app alembic tests  
