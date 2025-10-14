@@ -124,6 +124,7 @@ EOF
 Docker builds may fail with SSL certificate errors when downloading Python packages or Node modules. This is a known limitation in some network environments. Individual component builds work correctly outside Docker.
 
 #### Default Credentials (Development)
+- **Mattermost admin user**: `admin` / `P@ssw0rd`
 - **Mattermost admin token**: `5x7rr788c7gwdnkdr9imb49ffo`
 - **Mattermost team**: `test` (ID: b7u9rycm43nip86mdiuqsxdcbe)
 - **Database**: user `slack-mm`, password `slack-mm`, database `slack-mm`

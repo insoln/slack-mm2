@@ -69,6 +69,29 @@ curl -X POST "http://localhost:8065/plugins/mm-importer/api/v1/import" \
   - `GET /plugin/status`, `POST /plugin/deploy`, `POST /plugin/enable`, `POST /plugin/ensure`
 - On backend startup, a best-effort auto-ensure runs to deploy/enable the plugin.
 
+### Versioning and Releases
+
+When making any changes to the plugin, the version number in `plugin.json` **MUST** be incremented according to the following Semantic Versioning (SemVer) guidelines:
+
+The version format is `MAJOR.MINOR.PATCH`.
+
+- **MAJOR** version should be incremented for incompatible API changes. This includes:
+    - Removing or renaming existing API endpoints.
+    - Changing request or response formats in a non-backward-compatible way.
+    - Significant refactoring that alters core plugin behavior.
+
+- **MINOR** version should be incremented for adding new functionality in a backward-compatible manner. This includes:
+    - Adding new API endpoints.
+    - Adding new optional fields to existing API requests or responses.
+    - Introducing new features that do not break existing integrations.
+
+- **PATCH** version should be incremented for backward-compatible bug fixes. This includes:
+    - Fixing incorrect behavior.
+    - Performance improvements.
+    - Security patches.
+
+After updating the version, a new plugin bundle must be built and deployed for the changes to take effect.
+
 ### Взаимодействие с однопроходным импортом
 Backend завершает формирование полного набора данных ещё до стадии `exporting`. Мини-интеграционный сценарий считает ранним успехом момент, когда импорт перешёл в `exporting` и финальные счётчики достигли эталонных значений. Плагин в этот момент уже может принимать массовые вызовы создания постов/реакций — дополнительных стадий импорта не будет.
 

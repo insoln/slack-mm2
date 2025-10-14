@@ -31,7 +31,7 @@ docker compose -f docker-compose.dev.yml up --build -d
 Доступ:
 - Backend: http://localhost:8000
 - Frontend: http://localhost:5173
-- Mattermost: http://localhost:8065
+- Mattermost: http://localhost:8065 (user: `admin`, password: `P@ssw0rd`)
 - Test files: http://localhost:9000
 - Postgres: localhost:5432 (user/pass/db: slack-mm)
 
