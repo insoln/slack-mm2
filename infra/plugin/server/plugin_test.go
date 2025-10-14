@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -43,6 +44,17 @@ func TestUploadAttachmentFromURL_EmptyBody(t *testing.T) {
 	plugin := Plugin{}
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/attachment_from_url", nil)
+
+	plugin.UploadAttachmentFromURL(w, r)
+
+	result := w.Result()
+	assert.Equal(t, http.StatusBadRequest, result.StatusCode)
+}
+
+func TestUploadAttachmentFromURL_InvalidJSON(t *testing.T) {
+	plugin := Plugin{}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/attachment_from_url", strings.NewReader("invalid json"))
 
 	plugin.UploadAttachmentFromURL(w, r)
 

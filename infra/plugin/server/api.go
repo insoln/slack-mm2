@@ -337,19 +337,48 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Read file content
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Failed to read downloaded file"})
+	// Get content length for upload session
+	contentLength := resp.ContentLength
+	if contentLength <= 0 {
+		// If content length is not provided, we need to fall back to reading all data
+		data, err := io.ReadAll(resp.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Failed to read downloaded file"})
+			return
+		}
+		// Upload file to Mattermost using legacy method
+		fi, appErr := p.API.UploadFile(data, req.ChannelID, req.Filename)
+		if appErr != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: appErr.Error()})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{FileID: fi.Id})
 		return
 	}
 
-	// Upload file to Mattermost
-	fi, appErr := p.API.UploadFile(data, req.ChannelID, req.Filename)
-	if appErr != nil {
+	// Create upload session for streaming
+	uploadSession := &model.UploadSession{
+		Type:      model.UploadTypeAttachment,
+		ChannelId: req.ChannelID,
+		Filename:  req.Filename,
+		FileSize:  contentLength,
+	}
+
+	us, err := p.API.CreateUploadSession(uploadSession)
+	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: appErr.Error()})
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Failed to create upload session"})
+		return
+	}
+
+	// Stream file data to Mattermost
+	fi, err := p.API.UploadData(us, resp.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: err.Error()})
 		return
 	}
 	w.WriteHeader(http.StatusOK)
