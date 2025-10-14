@@ -60,14 +60,15 @@ Rationale: Guarantees reproducible review history, enables safe rewrites (rebase
 For integration tests that connect to Mattermost API:
 - `MATTERMOST_API_TOKEN=5x7rr788c7gwdnkdr9imb49ffo` (dev environment default)
 - `MATTERMOST_API_URL=http://localhost:8065/api/v4/users/me`
-#### Import / Performance Environment Variables (Single-Pass Importer)
-Current unified single-pass importer (messages + reactions + attachments + emojis) honors these optional variables:
+#### Import Configuration (Single-Pass Importer)
+Current unified single-pass importer (messages + reactions + attachments + emojis) uses fixed constants for predictable behavior:
 * `IMPORT_URL_PREFIXES` — CSV of allowed `url_private` prefixes for attachments (default: `https://files.slack.com`). Test dataset adds `http://test-files:9000`.
 
-* `IMPORT_CHANNEL_CONCURRENCY` — parallel channel processing during ingestion. Default 1 (sequential). Increase cautiously to avoid DB contention.
-* `IMPORT_RECORD_STAGE_DURATIONS` — if set to 1/true, record per-stage ms durations into job.meta.
-* `IMPORT_META_UPDATE_INTERVAL_SEC` / `IMPORT_META_UPDATE_EVERY` — throttling of meta/progress JSONB updates (time-based or every N messages). 
-Deprecated / removed: batching flags, orjson fast-path flags, single-pass feature toggles, reaction bulk flags.
+**Fixed behavior (no longer configurable via environment variables):**
+* Channel processing: Fixed to sequential (concurrency=1) to prevent database race conditions.
+* Stage duration recording: Controlled by DEBUG logging level instead of environment variables.
+* Meta update frequency: Fixed to 2-second intervals and batch_size message counts.
+Deprecated / removed: `IMPORT_CHANNEL_CONCURRENCY`, `IMPORT_RECORD_STAGE_DURATIONS`, `IMPORT_META_UPDATE_INTERVAL_SEC`, `IMPORT_META_UPDATE_EVERY`, batching flags, orjson fast-path flags, single-pass feature toggles, reaction bulk flags.
 ### Frontend Development (React/Vite)
 - **Install dependencies**: `cd frontend && npm ci` -- takes ~7 seconds
 - **Linting**: `npm run lint` -- takes <1 second. ALWAYS run before committing  

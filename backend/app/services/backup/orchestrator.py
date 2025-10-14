@@ -15,6 +15,7 @@ import tempfile
 import shutil
 import time
 import asyncio
+import logging
 from typing import Any, Dict, cast
 
 from sqlalchemy import text as _text
@@ -64,11 +65,8 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
     await merge_job_meta(job_id, set={"extract_dir": extract_dir})
 
     single_pass = True  # always single-pass now
-    record_durations = os.environ.get("IMPORT_RECORD_STAGE_DURATIONS", "1") in (
-        "1",
-        "true",
-        "TRUE",
-    )
+    # Record stage durations when DEBUG logging is enabled
+    record_durations = backend_logger.isEnabledFor(logging.DEBUG)
 
     # Persist mode flag and initialize durations container
     init_nested: Dict[str, Dict[str, Any]] = {}
@@ -238,11 +236,9 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
 
     # Run the messages import once (was incorrectly nested inside _counters)
     _stage_start = time.time()
+    # Always use sequential processing (concurrency=1) for predictable behavior
+    # and to avoid database race conditions and deadlocks
     concurrency = 1
-    try:
-        concurrency = int(os.environ.get("IMPORT_CHANNEL_CONCURRENCY", "1") or 1)
-    except Exception:  # pragma: no cover
-        concurrency = 1
 
     if concurrency <= 1:
         await parse_messages_and_related(
@@ -258,7 +254,7 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
         )
     else:
         backend_logger.info(
-            f"Messages import concurrency enabled (IMPORT_CHANNEL_CONCURRENCY={concurrency}) for {len(folder_channel_map)} folders"
+            f"Messages import concurrency enabled (concurrency={concurrency}) for {len(folder_channel_map)} folders"
         )
         sem = asyncio.Semaphore(concurrency)
 
