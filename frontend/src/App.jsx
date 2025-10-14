@@ -18,6 +18,8 @@ function App() {
   const [jobs, setJobs] = useState({ loading:false, data:[], error:null });
   const [jobStats, setJobStats] = useState({});
   const [expandedJobs, setExpandedJobs] = useState(()=>new Set());
+  // Cached ETAs per job id { pct: number, etaText: string }
+  const [jobEtas, setJobEtas] = useState({});
   const [toasts, setToasts] = useState([]);
   const [fixingPlugin, setFixingPlugin] = useState(false);
   const [lastEnsureSuccessTs, setLastEnsureSuccessTs] = useState(null);
@@ -347,7 +349,7 @@ function App() {
               {plugin.data && (
                 (() => {
                   const bad = !plugin.data.installed || !plugin.data.enabled;
-                  const warn = plugin.data.installed && plugin.data.enabled && (plugin.data.needs_update || !plugin.data.bundle_exists);
+                  const warn = plugin.data.installed && plugin.data.enabled && (plugin.data.needs_update || (!plugin.data.bundle_exists && plugin.data.remote_bundle_available));
                   const txt = bad ? '✖' : warn ? '⚠' : 'OK';
                   const color = bad ? '#f87171' : warn ? '#f59e0b' : '#34d399';
                   return <span style={{fontSize:11, fontWeight:600, color, border:'1px solid var(--border)', padding:'2px 6px', borderRadius:6, background:'rgba(255,255,255,.04)'}}>{txt}</span>;
@@ -388,7 +390,10 @@ function App() {
                     <div>Включен: <b style={{color: plugin.data.enabled ? '#34d399' : '#f59e0b'}}>{plugin.data.enabled ? 'да' : 'нет'}</b></div>
                     <div>Текущая версия: <b>{plugin.data.installed_version || 'n/a'}</b></div>
                     <div>Нужен апдейт: <b style={{color: plugin.data.needs_update ? '#f59e0b' : undefined}}>{plugin.data.needs_update ? 'да' : 'нет'}</b></div>
-                    <div>Локальный bundle: <b style={{color: plugin.data.bundle_exists ? '#34d399' : '#f87171'}}>{plugin.data.bundle_exists ? 'есть' : 'нет'}</b></div>
+                    <div>Локальный bundle: <b style={{color: plugin.data.bundle_exists ? '#34d399' : (plugin.data.remote_bundle_available ? '#f59e0b' : '#f87171')}}>{plugin.data.bundle_exists ? 'есть' : (plugin.data.remote_bundle_available ? 'нет (доступен удалённо)' : 'нет')}</b></div>
+                    {!plugin.data.bundle_exists && plugin.data.remote_bundle_available && (
+                      <div style={{color:'#9ca3af'}}>Удалённый bundle доступен: будет скачан автоматически при Ensure.</div>
+                    )}
                     {plugin.data.bundle_exists && (
                       <div>
                         Hash: <span title={plugin.data.bundle_sha256 || ''}>{(plugin.data.bundle_sha256 || '').slice(0,12) || '—'}</span>
@@ -441,58 +446,76 @@ function App() {
                         // keys list removed (no longer needed for percentage calc)
                         // (totalsSum/processedSum removed – export phase now uses exporter matrix)
 
+                        // Progress percentage calculation (fixed):
+                        // During import we now reflect true file coverage: json_files_processed / json_files_total.
+                        // Provide small stage baselines so early phases are not shown as 0%.
                         let pct = 0;
                         if (inImport) {
-                          if (singlePass) {
-                            // In single-pass mode we weight by logical stages: users (1), channels (1), messages (bulk)
-                            // Use file progress for coarse feedback until messages known.
-                            if (j.current_stage === 'extracting') pct = 5; // small seed
-                            else if (j.current_stage === 'users') pct = 15;
-                            else if (j.current_stage === 'channels') pct = 25;
-                            else if (j.current_stage === 'messages') {
-                              if ((totals.messages || 0) > 0) {
-                                const msgPct = Math.min(1, (processed.messages || 0) / (totals.messages || 1));
-                                pct = 25 + Math.round(msgPct * 75);
-                              } else if (jsonTotal > 0) {
-                                // fallback to file fraction during early stream
-                                pct = 25 + Math.round(Math.min(1, jsonDone / jsonTotal) * 75);
-                              } else {
-                                pct = 30; // early messages unknown
-                              }
-                            }
+                          if (jsonTotal > 0) {
+                            const fileFrac = Math.min(1, jsonDone / jsonTotal);
+                            // Baseline offsets per stage (kept tiny so bar visually tracks files almost linearly)
+                            const stageBase = j.current_stage === 'extracting' ? 0 : j.current_stage === 'users' ? 0.01 : j.current_stage === 'channels' ? 0.02 : 0.02;
+                            // Portion allocated to file fraction (rest of bar after baseline)
+                            const effectiveFrac = stageBase + fileFrac * (1 - stageBase);
+                            pct = Math.round(effectiveFrac * 100);
                           } else {
-                            if (jsonTotal > 0) {
-                              pct = Math.max(1, Math.min(100, Math.round((jsonDone / jsonTotal) * 100)));
-                            } else if ((totals.messages || 0) > 0) {
-                              pct = Math.max(1, Math.min(100, Math.round(((processed.messages || 0) / (totals.messages || 1)) * 100)));
-                            } else {
-                              pct = 1;
-                            }
+                            // No totals yet: show minimal seed per stage
+                            if (j.current_stage === 'extracting') pct = 1;
+                            else if (j.current_stage === 'users') pct = 3;
+                            else if (j.current_stage === 'channels') pct = 5;
+                            else pct = 7;
                           }
                         } else {
-                          // EXPORTING / DONE — use exporter status matrix for real progress
+                          // EXPORTING / DONE — progress over exported entity types.
+                          // Exclude 'channel' totals if exporter does not emit statuses for them (no matrix row).
                           const matrix = jobStats[j.id]?.data?.matrix || {};
-                          // Compute success / total(exportable) counts across exportOrder
-                          let successAll = 0; let totalAll = 0;
-                          exportOrder.forEach(t => {
+                          const exportedTypes = new Set(['user','custom_emoji','attachment','message','reaction']);
+                          const typeUniverse = new Set();
+                          // Add any matrix-present rows (even if not in exportedTypes – future proof)
+                          Object.keys(matrix).forEach(t => typeUniverse.add(t));
+                          // Add meta totals for known exported types only
+                          Object.keys(totals || {}).forEach(k => {
+                            const norm = k === 'emojis' ? 'custom_emoji' : k === 'users' ? 'user' : (k === 'channels' ? 'channel' : (k.endsWith('s') ? k.slice(0,-1) : k));
+                            if (exportedTypes.has(norm)) typeUniverse.add(norm);
+                          });
+                          let successAll = 0; let totalAll = 0; let failedAll = 0; let skippedAll = 0;
+                          typeUniverse.forEach(t => {
+                            // Skip channel if no matrix row (not actually exported)
+                            if (t === 'channel' && !matrix[t]) return;
                             const row = matrix[t] || {};
                             const succ = Number(row.success || 0);
                             const pend = Number(row.pending || 0);
                             const fail = Number(row.failed || 0);
                             const skip = Number(row.skipped || 0);
-                            const localTotal = succ + pend + fail + skip;
+                            let localTotal = succ + pend + fail + skip;
+                            if (localTotal === 0) {
+                              const metaPlural = t === 'user' ? 'users' : t === 'custom_emoji' ? 'emojis' : t + (t.endsWith('s') ? '' : 's');
+                              const metaVal = Number((totals || {})[metaPlural]) || 0;
+                              localTotal = metaVal;
+                            }
                             if (localTotal > 0) {
                               successAll += succ;
+                              failedAll += fail;
+                              skippedAll += skip;
                               totalAll += localTotal;
                             }
                           });
                           if (j.status === 'success') {
+                            // For a completed job treat failed+skipped as completed units.
+                            const completedAll = successAll + failedAll + skippedAll;
+                            if (totalAll > 0 && completedAll < totalAll) {
+                              // If denominator still bloated by a non-exported type, trim it.
+                              totalAll = completedAll; // align visual and numeric 100%
+                            }
                             pct = 100;
                           } else if (totalAll > 0) {
                             pct = Math.max(1, Math.min(100, Math.round((successAll / totalAll) * 100)));
                           } else {
                             pct = totalsFrozen ? 100 : 1;
                           }
+                          // Stash aggregates for label reuse via closure variables
+                          // Attach aggregate transiently to job object (not persisted) for reuse in label render
+                          j._exportAgg = { successAll, failedAll, skippedAll, totalAll };
                         }
                         // Choose bar color: green for import stages, themed primary for export/done
                         const barBg = inImport
@@ -504,6 +527,32 @@ function App() {
                           if (next.has(j.id)) next.delete(j.id); else next.add(j.id);
                           return next;
                         });
+                        // Compute or reuse cached ETA only when meaningful progress fields change
+                        const createdAtMs = j.created_at ? new Date(j.created_at).getTime() : Date.now();
+                        const etaCache = jobEtas[j.id] || {};
+                        let etaText = etaCache.etaText || '';
+                        const etaKeyStage = j.current_stage;
+                        const etaPct = pct; // current percent
+                        const pctChanged = etaCache.pct !== etaPct || etaCache.stage !== etaKeyStage;
+                        if (pctChanged) {
+                          try {
+                            let newEta = '';
+                            if (etaPct > 0 && etaPct < 100) {
+                              const elapsedMs = Date.now() - createdAtMs;
+                              const frac = etaPct / 100;
+                              const remainingMs = Math.max(0, (elapsedMs / frac) - elapsedMs);
+                              const totalSec = Math.round(remainingMs / 1000);
+                              const h = Math.floor(totalSec / 3600);
+                              const m = Math.floor((totalSec % 3600) / 60);
+                              const s = totalSec % 60;
+                              let formatted;
+                              if (h > 0) formatted = `${h}h ${m.toString().padStart(2,'0')}m`; else formatted = `${m}m ${s.toString().padStart(2,'0')}s`;
+                              newEta = `ETA ${formatted}`;
+                            }
+                            etaText = newEta;
+                            setJobEtas(prev => ({ ...prev, [j.id]: { pct: etaPct, etaText: newEta, stage: etaKeyStage } }));
+                          } catch { /* ignore */ }
+                        }
                         return (
                           <div key={j.id} style={{border:'1px solid var(--border)', borderRadius:8, padding:8, transition:'background .2s'}}>
                             <div className="small" style={{display:'flex', justifyContent:'space-between', marginBottom:6}}>
@@ -523,19 +572,27 @@ function App() {
                             <div style={{height: 8, background: '#0b1223', border: '1px solid var(--border)', borderRadius: 9999, overflow: 'hidden'}}>
                               <div style={{width: `${pct}%`, height: '100%', background: barBg, transition: 'width 0.3s'}} />
                             </div>
-                            <div className="small" style={{marginTop: 4, color:'#9ca3af'}}>
+                            <div className="small" style={{marginTop: 4, color:'#9ca3af', display:'flex', gap:12, flexWrap:'wrap'}}>
                               {inImport ? (
                                 jsonTotal > 0
-                                  ? (<span>import files {jsonDone}/{jsonTotal}</span>)
+                                  ? (<span>import {jsonDone}/{jsonTotal}</span>)
                                   : (<span>{j.current_stage}…</span>)
                               ) : (() => {
-                                const matrix = jobStats[j.id]?.data?.matrix || {};
-                                const rowMsg = matrix.message || {};
-                                const msgDone = Number(rowMsg.success || 0);
-                                const msgTotal = msgDone + Number(rowMsg.pending || 0) + Number(rowMsg.failed || 0) + Number(rowMsg.skipped || 0);
-                                const msgLabel = msgTotal > 0 ? `${msgDone}/${msgTotal}` : `${processed.messages}/${totals.messages || 0}`;
-                                return <span>export msgs {msgLabel}</span>;
+                                const agg = (j && j._exportAgg) || {};
+                                const successAll = agg.successAll ?? 0;
+                                const failedAll = agg.failedAll ?? 0;
+                                const skippedAll = agg.skippedAll ?? 0;
+                                let totalAll = agg.totalAll ?? 0;
+                                if (j.status === 'success') {
+                                  // Completed: reflect all finished units (success+fail+skipped) as denominator to avoid misleading leftover gap.
+                                  totalAll = successAll + failedAll + skippedAll;
+                                }
+                                const label = totalAll > 0 ? `${successAll}/${totalAll}` : `${processed.messages}/${totals.messages || 0}`;
+                                const failNote = failedAll > 0 ? ` (${failedAll} failed)` : '';
+                                return <span>export {label}{failNote}</span>;
                               })()}
+                              {etaText && <span style={{color:'#6b7280'}}>{etaText}</span>}
+                              <span style={{color:'#6b7280'}}>{pct}%</span>
                             </div>
                             {expanded && (
                               <div style={{marginTop:10}}>
@@ -645,7 +702,7 @@ function JobsSection({ jobs, jobStats, liveStats, expandedJobs, setExpandedJobs 
                 </div>
                 <div className="small" style={{marginTop:4,color:'#9ca3af'}}>
                   {inImport ? (
-                    jsonTotal>0 ? <span>import files {jsonDone}/{jsonTotal}</span> : <span>import scanning…</span>
+                    jsonTotal>0 ? <span>import {jsonDone}/{jsonTotal}</span> : <span>import scanning…</span>
                   ) : (
                     <span>files {processed.attachments}/{totals.attachments||0}, msgs {processed.messages}/{totals.messages||0}, reactions {processed.reactions}/{totals.reactions||0}</span>
                   )}
@@ -686,16 +743,24 @@ function PluginModal({ open, healthy, fixingPlugin, handleEnsurePlugin, plugin, 
           <li>Установлен: <b style={{color: plugin?.data?.installed ? '#34d399' : '#f87171'}}>{plugin?.data?.installed ? 'да' : 'нет'}</b></li>
           <li>Включен: <b style={{color: plugin?.data?.enabled ? '#34d399' : '#f59e0b'}}>{plugin?.data?.enabled ? 'да' : 'нет'}</b></li>
           <li>Нужен апдейт: <b style={{color: plugin?.data?.needs_update ? '#f59e0b' : '#9ca3af'}}>{plugin?.data?.needs_update ? 'да' : 'нет'}</b></li>
-          <li>Bundle локально: <b style={{color: plugin?.data?.bundle_exists ? '#34d399' : '#f87171'}}>{plugin?.data?.bundle_exists ? 'есть' : 'нет'}</b></li>
+          <li>Bundle локально: <b style={{color: plugin?.data?.bundle_exists ? '#34d399' : (plugin?.data?.remote_bundle_available ? '#f59e0b' : '#f87171')}}>{plugin?.data?.bundle_exists ? 'есть' : (plugin?.data?.remote_bundle_available ? 'нет (доступен удалённо)' : 'нет')}</b></li>
           {plugin?.data?.bundle_exists && <li>Hash: <span title={plugin.data.bundle_sha256 || ''}>{(plugin.data.bundle_sha256 || '').slice(0,12) || '—'}</span> • размер: {plugin.data.bundle_size ? (Math.round(plugin.data.bundle_size/1024)) + ' KB' : '—'}</li>}
+          {!plugin?.data?.bundle_exists && plugin?.data?.remote_bundle_available && (
+            <li style={{color:'#9ca3af'}}>Удалённый bundle доступен и будет скачан при Ensure.</li>
+          )}
         </ul>
-        {!plugin?.data?.bundle_exists && (
+        {!plugin?.data?.bundle_exists && !plugin?.data?.remote_bundle_available && (
           <div style={{color:'#f87171'}}>
-            <p style={{margin:'0 0 6px'}}>Bundle отсутствует. Соберите и повторите:</p>
-            <code style={{fontSize:12,userSelect:'all',display:'block',background:'#0e1a33',padding:'6px 8px',borderRadius:6,border:'1px solid var(--border)'}}>docker compose -f infra/docker-compose.dev.yml up --build mm-plugin-build</code>
+            <p style={{margin:'0 0 6px'}}>Bundle отсутствует и удалённый источник не настроен.</p>
+            <code style={{fontSize:12,userSelect:'all',display:'block',background:'#0e1a33',padding:'6px 8px',borderRadius:6,border:'1px solid var(--border)'}}>docker compose -f infra/docker-compose.dev.yml up plugin-autobuild</code>
             <div style={{marginTop:8}}>
-              <Button variant="secondary" onClick={()=>{ const cmd='docker compose -f infra/docker-compose.dev.yml up --build mm-plugin-build'; navigator.clipboard.writeText(cmd).then(()=>{ pushToast({tone:'info',title:'Команда скопирована',message:'Вставьте её в терминал для сборки bundle.'}); }).catch(()=>{ pushToast({tone:'error',title:'Не удалось скопировать',message:'Скопируйте вручную.'}); }); }} style={{fontSize:12}}>Скопировать команду</Button>
+              <Button variant="secondary" onClick={()=>{ const cmd='docker compose -f infra/docker-compose.dev.yml up plugin-autobuild'; navigator.clipboard.writeText(cmd).then(()=>{ pushToast({tone:'info',title:'Команда скопирована',message:'Вставьте её в терминал для сборки bundle.'}); }).catch(()=>{ pushToast({tone:'error',title:'Не удалось скопировать',message:'Скопируйте вручную.'}); }); }} style={{fontSize:12}}>Скопировать команду</Button>
             </div>
+          </div>
+        )}
+        {!plugin?.data?.bundle_exists && plugin?.data?.remote_bundle_available && (
+          <div style={{color:'#f59e0b'}}>
+            <p style={{margin:'0 0 6px'}}>Локального bundle нет — но удалённый доступен и будет скачан автоматически кнопкой Ensure.</p>
           </div>
         )}
         <p style={{marginTop:8}}>Кнопка Ensure выполнит установку / обновление / включение при наличии bundle, иначе покажет подсказку.</p>

@@ -18,7 +18,7 @@ Slack-MM2 Sync is a monorepo for one-way data synchronization from Slack to Matt
 - **Docker**: Required for full development environment
 
 ### Backend Development (Python FastAPI)
-- **Virtual Environment**: ALWAYS work within a Python virtual environment. Create it in the project root: `python3 -m venv .venv`. Activate it before running any commands: `source .venv/bin/activate`.
+- **Virtual Environment**: ALWAYS work within a Python virtual environment. Create it in the project root: `python3 -m venv .venv` and activate: `source .venv/bin/activate`.
 - **Install dependencies**: `cd backend && pip install -r requirements.txt` -- takes ~18 seconds
 - **Code formatting**: `black app alembic tests` -- takes <1 second. ALWAYS run before committing
 - **Unit tests**: `pytest tests/unit` -- takes ~1.5 seconds for 2 tests  
@@ -58,25 +58,24 @@ Current unified single-pass importer (messages + reactions + attachments + emoji
 - `src/components/ui.css` - Dark theme styling with CSS variables
 
 ### Mattermost Plugin Development (Go)
-- **Quick build**: `cd infra/plugin && bash build-dev.sh` -- takes ~69 seconds. NEVER CANCEL
-- **NEVER CANCEL**: Plugin build includes Go dependency downloads, npm install, and webpack compilation
-- **Output**: Creates `dist/mm-importer-X.Y.Z.tar.gz` bundle ready for Mattermost upload
-- **Plugin ID**: `mm-importer` (version 1.2.3)
-- **Requirements**: Go 1.22+, Node.js for webapp build
-- **Mattermost GitHub**: https://github.com/mattermost/mattermost (useful for plugin API docs and examples)
+- **Quick build (multi-stage Docker)**: `bash infra/plugin/build-docker.sh` (≈69s first build with cache warmup). NEVER CANCEL mid-way.
+- **Output**: `infra/plugin/dist/mm-importer-X.Y.Z.tar.gz` ready for upload / publication
+- **Plugin ID**: `mm-importer` (version reflected in `plugin.json`)
+- **Requirements**: Docker (preferred). Direct host Go/Node setup no longer supported (legacy scripts removed).
+- **Mattermost GitHub**: https://github.com/mattermost/mattermost (plugin API examples)
 - **Mattermost API docs**: https://developers.mattermost.com/api-documentation/
 - **Mattermost Plugin docs**: https://developers.mattermost.com/integrate/plugins/components/server/
-- **Mattermost server API reference**: https://developers.mattermost.com/integrate/reference/server/server-reference
+- **Server API reference**: https://developers.mattermost.com/integrate/reference/server/server-reference
 
 
 #### Plugin Structure  
-- `plugin.json` - Plugin manifest with ID, version, and server executable paths
-- `server/` - Go server-side plugin code
-- `webapp/` - React webapp for plugin UI (if applicable)
-- `build-dev.sh` - Portable build script for development
+- `plugin.json` - Manifest (id/version)
+- `server/` - Go server implementation
+- `webapp/` - React webapp (if any UI)
+- `build-docker.sh` - Multi-stage Docker build helper (authoritative path)
 
-#### Plugin Makefile Issues
-The Makefile requires `build/setup.mk` which is missing from this repository. Use `build-dev.sh` instead of make commands.
+#### Deprecated Artifacts Removed
+Legacy `build-dev.sh` and the old Makefile have been removed in favor of the reproducible Docker multi-stage build. Use only `build-docker.sh`.
 
 ### Environment Variable Policy
 - **DO NOT** use environment variables as feature flags to control application logic (e.g., enabling/disabling a code path). All core features should be enabled and work out-of-the-box.
