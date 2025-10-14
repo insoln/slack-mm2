@@ -54,3 +54,37 @@ class TestMMApiMixin:
             )
 
             assert result == mock_response
+
+    @pytest.mark.asyncio
+    async def test_mm_api_post_attachment_from_url_with_user_id(self):
+        """Test the attachment_from_url method with user_id parameter."""
+        mixin = MMApiMixin()
+        
+        # Mock the mm_api_post method
+        with patch.object(mixin, 'mm_api_post', new_callable=AsyncMock) as mock_post:
+            mock_response = AsyncMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {"file_id": "test_file_id"}
+            mock_post.return_value = mock_response
+            
+            result = await mixin.mm_api_post_attachment_from_url(
+                channel_id="test_channel",
+                filename="test.txt",
+                file_url="https://files.slack.com/test.txt",
+                auth_header="Bearer xoxb-test-token",
+                user_id="test_user_id"
+            )
+            
+            # Verify mm_api_post was called with correct parameters including user_id
+            mock_post.assert_called_once_with(
+                "/plugins/mm-importer/api/v1/attachment_from_url",
+                {
+                    "channel_id": "test_channel",
+                    "filename": "test.txt",
+                    "file_url": "https://files.slack.com/test.txt",
+                    "auth_header": "Bearer xoxb-test-token",
+                    "user_id": "test_user_id",
+                }
+            )
+            
+            assert result == mock_response

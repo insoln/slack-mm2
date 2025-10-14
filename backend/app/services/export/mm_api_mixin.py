@@ -146,7 +146,7 @@ class MMApiMixin:
         return resp
 
     async def mm_api_post_attachment_from_url(
-        self, channel_id: str, filename: str, file_url: str, auth_header: str
+        self, channel_id: str, filename: str, file_url: str, auth_header: str, user_id: str = None
     ):
         """Send attachment URL to plugin for direct download and upload to Mattermost."""
         payload = {
@@ -155,6 +155,8 @@ class MMApiMixin:
             "file_url": file_url,
             "auth_header": auth_header,
         }
+        if user_id:
+            payload["user_id"] = user_id
         return await self.mm_api_post(
             "/plugins/mm-importer/api/v1/attachment_from_url", payload
         )

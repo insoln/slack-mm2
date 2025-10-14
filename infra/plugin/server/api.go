@@ -291,6 +291,7 @@ type UploadAttachmentFromURLRequest struct {
 	Filename   string `json:"filename"`
 	FileURL    string `json:"file_url"`
 	AuthHeader string `json:"auth_header"`
+	UserID     string `json:"user_id,omitempty"`
 }
 
 // UploadAttachmentFromURL downloads a file from the specified URL and uploads it to Mattermost
@@ -359,9 +360,15 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Create upload session for streaming
+	// Use provided user ID if available, otherwise fallback to system user ID
+	userId := req.UserID
+	if userId == "" {
+		userId = model.UploadNoUserID
+	}
+	
 	uploadSession := &model.UploadSession{
 		Type:      model.UploadTypeAttachment,
-		UserId:    model.UploadNoUserID,
+		UserId:    userId,
 		ChannelId: req.ChannelID,
 		Filename:  req.Filename,
 		FileSize:  contentLength,

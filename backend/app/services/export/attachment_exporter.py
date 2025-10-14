@@ -73,13 +73,16 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
 
         auth_header = f"Bearer {slack_token}"
 
+        # Try to resolve the actual user who uploaded the attachment
+        user_id = await self._resolve_mm_user_id_for_attachment()
+
         # Send URL to plugin for direct download and upload
         async def _retry_plugin_post(attempts=3, base_delay=1.0):
             last_err = None
             for i in range(attempts):
                 try:
                     resp = await self.mm_api_post_attachment_from_url(
-                        channel_id, filename, url, auth_header
+                        channel_id, filename, url, auth_header, user_id
                     )
                     # retry on 5xx/429; accept 2xx
                     if 200 <= resp.status_code < 300:
@@ -177,4 +180,43 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
                         if isinstance(mmid2, str) and mmid2:
                             return mmid2
 
+        return None
+
+    async def _resolve_mm_user_id_for_attachment(self) -> Optional[str]:
+        """Find the Mattermost user id who uploaded this attachment.
+        Strategy: traverse attached_to -> message and get the user from that message.
+        """
+        async with SessionLocal() as session:
+            # Find message entity via attached_to relation
+            from app.models.entity_relation import (
+                EntityRelation,
+            )  # local import to avoid cycles
+
+            q_att = await session.execute(
+                select(EntityRelation, Entity)
+                .join(Entity, Entity.id == EntityRelation.to_entity_id)
+                .where(
+                    (EntityRelation.from_entity_id == self.entity.id)
+                    & (EntityRelation.relation_type == "attached_to")
+                )
+            )
+            row = q_att.first()
+            if row:
+                _, msg_entity = row
+                msg_raw = msg_entity.raw_data or {}
+                slack_uid = msg_raw.get("user") or msg_raw.get("bot_id")
+                
+                if slack_uid:
+                    # Look up user entity by slack_id to get mattermost_id
+                    q_user = await session.execute(
+                        select(Entity).where(
+                            (Entity.entity_type == "user")
+                            & (Entity.slack_id == slack_uid)
+                        )
+                    )
+                    user_entity = q_user.scalar_one_or_none()
+                    if user_entity is not None:
+                        mmid = getattr(user_entity, "mattermost_id", None)
+                        if isinstance(mmid, str) and mmid:
+                            return mmid
         return None

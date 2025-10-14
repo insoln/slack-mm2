@@ -40,11 +40,15 @@ class TestAttachmentExporter:
 
         exporter = AttachmentExporter(entity)
 
-        # Mock dependencies
+        # Mock dependencies including user resolution
         with patch.object(
             exporter,
             "_resolve_mm_channel_id_for_attachment",
             return_value="mm_channel_123",
+        ), patch.object(
+            exporter,
+            "_resolve_mm_user_id_for_attachment",
+            return_value="mm_user_123"
         ), patch.object(
             exporter, "set_status", new_callable=AsyncMock
         ) as mock_set_status, patch.object(
@@ -70,6 +74,7 @@ class TestAttachmentExporter:
                 "test-document.pdf",
                 "https://files.slack.com/files-pri/T123/F123/test-document.pdf",
                 "Bearer xoxb-test-token",
+                "mm_user_123"
             )
 
             # Verify success status was set
@@ -151,6 +156,10 @@ class TestAttachmentExporter:
             exporter,
             "_resolve_mm_channel_id_for_attachment",
             return_value="mm_channel_123",
+        ), patch.object(
+            exporter,
+            "_resolve_mm_user_id_for_attachment",
+            return_value="mm_user_123"
         ), patch.object(
             exporter, "set_status", new_callable=AsyncMock
         ) as mock_set_status, patch.object(
