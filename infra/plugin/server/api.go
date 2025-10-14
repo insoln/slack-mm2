@@ -313,8 +313,7 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Create HTTP client and download file
-	httpClient := &http.Client{}
+	// Use the shared plugin HTTP client to download the file
 	httpReq, err := http.NewRequest("GET", req.FileURL, nil)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -323,7 +322,7 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 	}
 	httpReq.Header.Set("Authorization", req.AuthHeader)
 
-	resp, err := httpClient.Do(httpReq)
+	resp, err := p.httpClient.Do(httpReq)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Failed to download file"})

@@ -1,6 +1,6 @@
 # Slack-MM2 Sync Development Instructions
 
-Always follow these instructions first before gathering additional context. Only fallback to search or bash commands when you encounter unexpected information that does not match the information provided here.
+Always follow these instructions first before gathering additional context. Only fallback to search or direct commands when you encounter unexpected information that does not match the information provided here.
 
 ## Project Overview
 Slack-MM2 Sync is a monorepo for one-way data synchronization from Slack to Mattermost. The project includes:
@@ -10,26 +10,6 @@ Slack-MM2 Sync is a monorepo for one-way data synchronization from Slack to Matt
 - **Infrastructure**: Docker Compose configurations and Kubernetes manifests
 
 ## Working Effectively
-
-### Branching Policy (MANDATORY)
-ALL changes MUST be implemented in a separate feature branch – never commit directly to `master`.
-
-Required workflow:
-1. Pull latest `origin/master`.
-2. Create a branch: `git checkout -b feature/<short-topic>` (or `fix/`, `chore/`, `docs/`).
-3. Make and commit changes (small, logically grouped commits; run formatters / linters / tests before each push).
-4. Rebase onto `origin/master` before opening / updating a PR: `git fetch origin && git rebase origin/master`.
-5. Push with tracking: `git push -u origin feature/<short-topic>`.
-6. Open Pull Request → wait for checks → review → squash or fast-forward merge.
-7. Delete the branch after merge (remote + local).
-
-Hard rules:
-- No force pushes to `master`.
-- `master` must remain in a deployable / green state (tests pass, migrations valid).
-- If an emergency hotfix is required: still create `hotfix/<issue>` branch, PR, and only then merge.
-- Large refactors: coordinate early; prefer incremental PRs.
-
-Rationale: Guarantees reproducible review history, enables safe rewrites (rebases) off the mainline, reduces merge conflicts, and keeps CI signal clean.
 
 ### Initial Setup and Dependencies
 - **Python**: Version 3.11+ required (project tested with Python 3.12)
@@ -159,7 +139,7 @@ After making changes, ALWAYS test these scenarios:
 3. **End-to-end workflow**: Upload → Process → Export → Verify in Mattermost
 
 ### CI/CD Validation
-Before committing, ALWAYS run:
+When you finished your work, and especially before committing, ALWAYS run:
 - **Backend**: `cd backend && black app alembic tests && pytest --cov=app --cov-report=term-missing`
 - **Frontend**: `cd frontend && npm run lint && npm run build`
 
@@ -171,67 +151,10 @@ Before committing, ALWAYS run:
 - Frontend build: ~1.7 seconds (timeout: 30s)
 - Plugin build: ~69 seconds (timeout: 120s)
 - Docker development environment: 15+ minutes first time (timeout: 30+ minutes)
-- **NEVER CANCEL** any build process - always wait for completion
 
-### Testing Times
-- Backend unit tests: ~1.5 seconds (timeout: 30s)
-- Backend tests with coverage: ~6 seconds (timeout: 60s)
-- Frontend linting: <1 second (timeout: 30s)
-
-### Known Working Commands
-```bash
-# Backend development
-python3 -m venv .venv
-source .venv/bin/activate
-cd backend
-pip install -r requirements.txt
-black app alembic tests  
-pytest --cov=app --cov-report=term-missing
-
-# Frontend development  
-cd frontend
-npm ci
-npm run lint
-npm run build
-
-# Plugin development
-cd infra/plugin
-bash build-dev.sh
-
-# Database migrations
-cd /path/to/project/root
-alembic -c alembic.ini upgrade head
-
-# Docker development
-cd infra
-echo "SLACK_VERIFICATION_TOKEN=test" > .env
-echo "SLACK_BOT_TOKEN=test" >> .env  
-echo "SLACK_SIGNING_SECRET=test" >> .env
-docker compose -f docker-compose.dev.yml up --build
-```
-
-## Important Notes
-
-### What Works Reliably
-- ✅ Backend: Dependencies, tests, linting, local development
-- ✅ Frontend: Dependencies, build, linting, local development  
-- ✅ Plugin: Go build process via build-dev.sh script
-- ✅ Database: Local PostgreSQL via Docker container
-- ✅ Individual service testing and development
-
-### Known Limitations  
-- ❌ Docker full environment build may fail with SSL certificate issues in some network environments
-- ❌ Plugin Makefile requires missing `build/setup.mk` - use `build-dev.sh` instead
-- ⚠️ Integration tests require running Mattermost and database services
-- ⚠️ Plugin requires Mattermost server for full testing
-
-### Critical Reminders
-- **NEVER CANCEL** builds or long-running commands - they may take 15+ minutes
-- **ALWAYS** run linting before committing (black for Python, ESLint for JavaScript)
-- **ALWAYS** test manual validation scenarios after making changes
-- **SET TIMEOUTS** of 30+ minutes for Docker builds, 2+ minutes for plugin builds
-- Use the individual component build processes when Docker environment issues occur
-- **NEVER COMMIT DIRECTLY TO `master`** – always create a feature branch and go through a PR.
+### CLI commands
+- Always use reasonable timeouts
+- Always limit expected output by mumber of lines as output may be large. Try to limit to 20 lines or less where possible, but it depends on the command. Try to filter output to only what is necessary where possible.
 
 ## File Locations
 
