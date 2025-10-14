@@ -362,6 +362,7 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 	// Create upload session for streaming
 	uploadSession := &model.UploadSession{
 		Type:      model.UploadTypeAttachment,
+		UserId:    model.UploadNoUserID,
 		ChannelId: req.ChannelID,
 		Filename:  req.Filename,
 		FileSize:  contentLength,
