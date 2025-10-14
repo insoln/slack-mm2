@@ -38,3 +38,14 @@ func TestImportReaction_EmptyBody(t *testing.T) {
 	result := w.Result()
 	assert.Equal(t, http.StatusBadRequest, result.StatusCode)
 }
+
+func TestUploadAttachmentFromURL_EmptyBody(t *testing.T) {
+	plugin := Plugin{}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/attachment_from_url", nil)
+
+	plugin.UploadAttachmentFromURL(w, r)
+
+	result := w.Result()
+	assert.Equal(t, http.StatusBadRequest, result.StatusCode)
+}

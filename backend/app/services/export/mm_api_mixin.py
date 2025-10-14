@@ -145,6 +145,20 @@ class MMApiMixin:
         )
         return resp
 
+    async def mm_api_post_attachment_from_url(
+        self, channel_id: str, filename: str, file_url: str, auth_header: str
+    ):
+        """Send attachment URL to plugin for direct download and upload to Mattermost."""
+        payload = {
+            "channel_id": channel_id,
+            "filename": filename,
+            "file_url": file_url,
+            "auth_header": auth_header,
+        }
+        return await self.mm_api_post(
+            "/plugins/mm-importer/api/v1/attachment_from_url", payload
+        )
+
     async def download_file(self, url: str, headers: dict | None = None):
         """Скачать файл по URL. Опционально с заголовками (например, Slack Bearer Token)."""
         backend_logger.debug(f"Downloading file from {url}")

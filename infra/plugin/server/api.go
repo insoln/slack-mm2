@@ -35,6 +35,7 @@ func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Req
 	apiRouter.HandleFunc("/reaction", p.ImportReaction).Methods(http.MethodPost)
 	apiRouter.HandleFunc("/attachment", p.UploadAttachment).Methods(http.MethodPost)
 	apiRouter.HandleFunc("/attachment_multipart", p.UploadAttachmentMultipart).Methods(http.MethodPost)
+	apiRouter.HandleFunc("/attachment_from_url", p.UploadAttachmentFromURL).Methods(http.MethodPost)
 
 	// Channel helpers
 	apiRouter.HandleFunc("/channel", p.CreateOrGetChannel).Methods(http.MethodPost)
@@ -276,6 +277,76 @@ func (p *Plugin) UploadAttachmentMultipart(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	fi, appErr := p.API.UploadFile(data, channelID, filename)
+	if appErr != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: appErr.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{FileID: fi.Id})
+}
+
+type UploadAttachmentFromURLRequest struct {
+	ChannelID  string `json:"channel_id"`
+	Filename   string `json:"filename"`
+	FileURL    string `json:"file_url"`
+	AuthHeader string `json:"auth_header"`
+}
+
+// UploadAttachmentFromURL downloads a file from the specified URL and uploads it to Mattermost
+func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Failed to read body"})
+		return
+	}
+	var req UploadAttachmentFromURLRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Invalid JSON"})
+		return
+	}
+	if req.ChannelID == "" || req.Filename == "" || req.FileURL == "" || req.AuthHeader == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "channel_id, filename, file_url and auth_header are required"})
+		return
+	}
+
+	// Create HTTP client and download file
+	httpClient := &http.Client{}
+	httpReq, err := http.NewRequest("GET", req.FileURL, nil)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Invalid file URL"})
+		return
+	}
+	httpReq.Header.Set("Authorization", req.AuthHeader)
+
+	resp, err := httpClient.Do(httpReq)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Failed to download file"})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "File download failed"})
+		return
+	}
+
+	// Read file content
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Failed to read downloaded file"})
+		return
+	}
+
+	// Upload file to Mattermost
+	fi, appErr := p.API.UploadFile(data, req.ChannelID, req.Filename)
 	if appErr != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: appErr.Error()})

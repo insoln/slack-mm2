@@ -253,7 +253,6 @@ class BaseMapping:
                         f"Batch saved {saved_count} new mappings, found {existing_count} existing"
                     )
 
-
             except Exception as e:
                 await session.rollback()
                 failed_count = len(mappings) - existing_count - saved_count
