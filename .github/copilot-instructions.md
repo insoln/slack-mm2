@@ -64,9 +64,14 @@ Current unified single-pass importer (messages + reactions + attachments + emoji
 ### Mattermost Plugin Development (Go)
 - **Quick build**: `cd infra/plugin && bash build-dev.sh` -- takes ~69 seconds. NEVER CANCEL
 - **NEVER CANCEL**: Plugin build includes Go dependency downloads, npm install, and webpack compilation
-- **Output**: Creates `dist/mm-importer-0.3.0.tar.gz` bundle ready for Mattermost upload
-- **Plugin ID**: `mm-importer` (version 0.3.0)
+- **Output**: Creates `dist/mm-importer-X.Y.Z.tar.gz` bundle ready for Mattermost upload
+- **Plugin ID**: `mm-importer` (version 1.2.3)
 - **Requirements**: Go 1.22+, Node.js for webapp build
+- **Mattermost GitHub**: https://github.com/mattermost/mattermost (useful for plugin API docs and examples)
+- **Mattermost API docs**: https://developers.mattermost.com/api-documentation/
+- **Mattermost Plugin docs**: https://developers.mattermost.com/integrate/plugins/components/server/
+- **Mattermost server API reference**: https://developers.mattermost.com/integrate/reference/server/server-reference
+
 
 #### Plugin Structure  
 - `plugin.json` - Plugin manifest with ID, version, and server executable paths
