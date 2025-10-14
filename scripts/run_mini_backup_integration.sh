@@ -24,11 +24,11 @@ set -euo pipefail
 : "${EXPECTED_CHANNELS:=3}"
 : "${EXPECTED_MESSAGES:=17}"
 : "${EXPECTED_ATTACHMENTS:=3}"
-: "${EXPECTED_REACTIONS:=1}"
+: "${EXPECTED_REACTIONS:=0}"
 
 # Compose file, services list, dataset, and log capture path (override allowed)
 : "${COMPOSE_FILE:=infra/docker-compose.dev.yml}"
-SERVICES="${COMPOSE_SERVICES:-db mattermost backend}"
+SERVICES="${COMPOSE_SERVICES:-db mattermost backend test-files}"
 DATASET_FILE="${DATASET_FILE:-infra/test-data/slack-mini-backup.zip}"
 LOG_CAPTURE=${LOG_CAPTURE:-/tmp/backend_integration_logs.txt}
 

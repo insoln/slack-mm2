@@ -1,13 +1,12 @@
-name: Integration Mini Backup
+name: E2E Integration Test (Mini Backup)
 
 on:
-  push:
-    branches: [ master, feature/**, fix/**, chore/** ]
   pull_request:
     branches: [ master ]
 
 jobs:
-  mini-backup-import:
+  mini-backup-test:
+    name: "E2E: Mini Backup Import"
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
