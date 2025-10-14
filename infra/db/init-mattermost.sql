@@ -148,7 +148,7 @@ SELECT 'b7u9rycm43nip86mdiuqsxdcbe', 1750986469595, 1750986469595, 0, 'Test', 't
 WHERE NOT EXISTS (SELECT 1 FROM public.teams WHERE id = 'b7u9rycm43nip86mdiuqsxdcbe');
 
 INSERT INTO public.users (id, createat, updateat, deleteat, username, password, authdata, authservice, email, emailverified, nickname, firstname, lastname, roles, allowmarketing, props, notifyprops, lastpasswordupdate, lastpictureupdate, failedattempts, locale, mfaactive, mfasecret, "position", timezone, remoteid, lastlogin, mfausedtimestamps)
-SELECT 'o6b98rc1tpnfmy7ajxiadygmzy', 1750986450008, 1750986469609, 0, 'admin', '$2a$10$gSm/am2weKxS06Dzvgqu../d9CWwh8nHXnBrdBPrpHN2v.uW4h/de', '', '', 'admin@example.com', 'f', '', '', '', 'system_admin system_user', 'f', '{}', '{"push": "mention", "email": "true", "channel": "true", "desktop": "mention", "comments": "never", "first_name": "false", "push_status": "online", "mention_keys": "", "push_threads": "all", "desktop_sound": "true", "email_threads": "all", "desktop_threads": "all"}', 1750986450008, 0, 0, 'en', 'f', '', '', '{"manualTimezone": "", "automaticTimezone": "Europe/Berlin", "useAutomaticTimezone": "true"}', '', 1750986450144, '[]'
+SELECT 'o6b98rc1tpnfmy7ajxiadygmzy', 1750986450008, 1750986469609, 0, 'admin', '$2a$10$6n2cTG7oFnGTeY1vsC3X3.cN0rUcHJE5dJTYJq0reeHC91VjK0B.6', '', '', 'admin@example.com', 'f', '', '', '', 'system_admin system_user', 'f', '{}', '{"push": "mention", "email": "true", "channel": "true", "desktop": "mention", "comments": "never", "first_name": "false", "push_status": "online", "mention_keys": "", "push_threads": "all", "desktop_sound": "true", "email_threads": "all", "desktop_threads": "all"}', 1750986450008, 0, 0, 'en', 'f', '', '', '{"manualTimezone": "", "automaticTimezone": "Europe/Berlin", "useAutomaticTimezone": "true"}', '', 1750986450144, '[]'
 WHERE NOT EXISTS (SELECT 1 FROM public.users WHERE id = 'o6b98rc1tpnfmy7ajxiadygmzy');
 
 INSERT INTO public.useraccesstokens (id, token, userid, description, isactive)
@@ -160,7 +160,7 @@ SELECT 'b7u9rycm43nip86mdiuqsxdcbe', 'o6b98rc1tpnfmy7ajxiadygmzy', '', 0, true, 
 WHERE NOT EXISTS (SELECT 1 FROM public.teammembers WHERE teamid = 'b7u9rycm43nip86mdiuqsxdcbe' AND userid = 'o6b98rc1tpnfmy7ajxiadygmzy'); 
 
 INSERT INTO public.channels (id, createat, updateat, deleteat, teamid, type, displayname, name, header, purpose, lastpostat, totalmsgcount, extraupdateat, creatorid, schemeid, groupconstrained, shared, totalmsgcountroot, lastrootpostat, bannerinfo, defaultcategoryname)
-SELECT '8q3dynerq7nzzmxo8dfckcfdnr', 1750986828119, 1750986828119, 0, 'b7u9rycm43nip86mdiuqsxdcbe', 'O', 'Test Channel 1', 'test-channel-1', '', 'Channel for integration testing', 1750986828128, 0, 0, 'o6b98rc1tpnfmy7ajxiadygmzy', NULL, NULL, NULL, 0, 1750986828128, NULL, ''
+SELECT '8q3dynerq7nzzmxo8dfckcfdnr', 1750986828119, 1750986828119, 0, 'b7u9rycm43nip86mdiuqsxdcbe', 'O', 'Town Square', 'town-square', '', 'Добро пожаловать в Mattermost!', 1750986828128, 0, 0, 'o6b98rc1tpnfmy7ajxiadygmzy', NULL, NULL, NULL, 0, 1750986828128, NULL, ''
 WHERE NOT EXISTS (
     SELECT 1 FROM public.channels WHERE id = '8q3dynerq7nzzmxo8dfckcfdnr'
 );

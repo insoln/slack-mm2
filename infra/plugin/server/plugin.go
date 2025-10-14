@@ -35,6 +35,9 @@ type Plugin struct {
 	// configuration is the active plugin configuration. Consult getConfiguration and
 	// setConfiguration for usage.
 	configuration *configuration
+
+	// httpClient is the client used for external HTTP requests, such as downloading attachments.
+	httpClient *http.Client
 }
 
 // OnActivate is invoked when the plugin is activated. If an error is returned, the plugin will be deactivated.
@@ -45,6 +48,8 @@ func (p *Plugin) OnActivate() error {
 	p.kvstore = kvstore.NewKVStore(p.client)
 
 	p.commandClient = command.NewCommandHandler(p.client)
+
+	p.httpClient = &http.Client{}
 
 	job, err := cluster.Schedule(
 		p.API,
