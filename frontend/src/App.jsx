@@ -405,7 +405,7 @@ function App() {
                 <div style={{marginBottom: 12}}>
                   <div className="small" style={{marginBottom: 6, color:'#9ca3af'}}>Активные и последние задачи</div>
                   {jobs.error && <div style={{color:'#f87171'}}>Ошибка: {jobs.error}</div>}
-                  {(!jobs.data || jobs.data.length === 0) && !jobs.loading && (
+                  {(!jobs.data || jobs.data.length === 0) && !jobs.loading && !jobs.error && (
                     <div className="small" style={{color:'#9ca3af'}}>Задач нет</div>
                   )}
                   {jobs.data && jobs.data.length > 0 && (
