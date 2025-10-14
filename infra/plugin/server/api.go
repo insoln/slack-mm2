@@ -366,6 +366,17 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 		userId = model.UploadNoUserID
 	}
 	
+	// Validate that the user exists in Mattermost if it's not the system user
+	if userId != model.UploadNoUserID {
+		if p.API != nil {
+			_, appErr := p.API.GetUser(userId)
+			if appErr != nil {
+				// User doesn't exist, fallback to system user
+				userId = model.UploadNoUserID
+			}
+		}
+	}
+	
 	uploadSession := &model.UploadSession{
 		Type:      model.UploadTypeAttachment,
 		UserId:    userId,
@@ -376,6 +387,9 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 
 	us, err := p.API.CreateUploadSession(uploadSession)
 	if err != nil {
+		if p.API != nil {
+			p.API.LogError("Failed to create upload session", "error", err.Error(), "userId", userId, "channelId", req.ChannelID, "filename", req.Filename, "fileSize", contentLength)
+		}
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Failed to create upload session"})
 		return
