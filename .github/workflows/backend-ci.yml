@@ -1,4 +1,4 @@
-name: Backend CI
+name: Backend CI (Lint & Unit Tests)
 
 on:
   push:
@@ -11,7 +11,8 @@ on:
       - '.github/workflows/backend-ci.yml'
 
 jobs:
-  test:
+  lint-and-unit-test:
+    name: "Lint & Unit Test"
     runs-on: ubuntu-latest
     defaults:
       run:
