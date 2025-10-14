@@ -205,7 +205,7 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 _, msg_entity = row
                 msg_raw = msg_entity.raw_data or {}
                 slack_uid = msg_raw.get("user") or msg_raw.get("bot_id")
-                
+
                 if slack_uid:
                     # Look up user entity by slack_id to get mattermost_id
                     q_user = await session.execute(

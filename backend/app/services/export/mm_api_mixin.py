@@ -1,6 +1,6 @@
 from __future__ import annotations
 import os
-import httpx
+import httpx, asyncio
 from app.logging_config import backend_logger
 
 # Shared async clients with connection pooling
@@ -74,28 +74,74 @@ class MMApiMixin:
 
     async def mm_api_get(self, path: str):
         client = _get_mm_client()
-        backend_logger.debug(f"MM API GET {client.base_url}{path}")
-        resp = await client.get(path)
-        backend_logger.debug(
-            f"MM API GET {client.base_url}{path} status={resp.status_code} resp={resp.text}"
-        )
-        return resp
+        is_plugin = path.startswith("/plugins/mm-importer/")
+        attempts = 3 if is_plugin else 1
+        delay = 0.4
+        last = None
+        for i in range(attempts):
+            backend_logger.debug(
+                f"MM API GET {client.base_url}{path} attempt={i+1}/{attempts}"
+            )
+            try:
+                resp = await client.get(path)
+            except Exception as e:  # noqa: BLE001
+                last = e
+                if i + 1 == attempts:
+                    backend_logger.error(
+                        f"MM API GET {client.base_url}{path} failed: {e}"
+                    )
+                    raise
+                await asyncio.sleep(delay * (2**i))
+                continue
+            # Retry 404 only for plugin endpoints (likely transient during plugin (re)enable) and specific retryable 5xx
+            if is_plugin and resp.status_code in (404, 502, 503):
+                last = resp
+                if i + 1 < attempts:
+                    await asyncio.sleep(delay * (2**i))
+                    continue
+            backend_logger.debug(
+                f"MM API GET {client.base_url}{path} status={resp.status_code} resp={resp.text[:200]}"
+            )
+            return resp
+        return last  # type: ignore
 
     async def mm_api_post(self, path: str, payload: dict):
         client = _get_mm_client()
-        backend_logger.debug(
-            f"MM API POST {client.base_url}{path} payload={self._redact_payload(payload)}"
-        )
-        resp = await client.post(path, json=payload)
-        if resp.status_code >= 400:
-            backend_logger.error(
-                f"MM API POST {client.base_url}{path} status={resp.status_code} body={resp.text[:200]}"
-            )
-        else:
+        redacted = self._redact_payload(payload)
+        is_plugin = path.startswith("/plugins/mm-importer/")
+        attempts = 4 if is_plugin else 1
+        delay = 0.5
+        last_resp = None
+        for i in range(attempts):
             backend_logger.debug(
-                f"MM API POST {client.base_url}{path} status={resp.status_code}"
+                f"MM API POST {client.base_url}{path} attempt={i+1}/{attempts} payload={redacted}"
             )
-        return resp
+            try:
+                resp = await client.post(path, json=payload)
+            except Exception as e:  # noqa: BLE001
+                if i + 1 == attempts:
+                    backend_logger.error(
+                        f"MM API POST {client.base_url}{path} network exception final: {e}"
+                    )
+                    raise
+                await asyncio.sleep(delay * (2**i))
+                continue
+            last_resp = resp
+            if is_plugin and resp.status_code in (404, 502, 503):
+                # Possible plugin not yet enabled or restarting; retry
+                if i + 1 < attempts:
+                    await asyncio.sleep(delay * (2**i))
+                    continue
+            if resp.status_code >= 400:
+                backend_logger.error(
+                    f"MM API POST {client.base_url}{path} status={resp.status_code} body={resp.text[:200]}"
+                )
+            else:
+                backend_logger.debug(
+                    f"MM API POST {client.base_url}{path} status={resp.status_code}"
+                )
+            return resp
+        return last_resp  # type: ignore
 
     async def mm_api_post_files(self, path: str, data_fields: dict, files: dict):
         """POST multipart/form-data with files using httpx 'files' API. Avoids logging file content."""
@@ -146,7 +192,12 @@ class MMApiMixin:
         return resp
 
     async def mm_api_post_attachment_from_url(
-        self, channel_id: str, filename: str, file_url: str, auth_header: str, user_id: str = None
+        self,
+        channel_id: str,
+        filename: str,
+        file_url: str,
+        auth_header: str,
+        user_id: str | None = None,
     ):
         """Send attachment URL to plugin for direct download and upload to Mattermost."""
         payload = {
