@@ -6,6 +6,7 @@ import './components/ui.css';
 function App() {
   const [status, setStatus] = useState('pending');
   const [error, setError] = useState(null);
+  const [isOnline, setIsOnline] = useState(true);
   const [plugin, setPlugin] = useState({ loading: false, data: null, error: null });
   const [uploadProgress, setUploadProgress] = useState(null);
   const [uploadResult, setUploadResult] = useState(null);
@@ -40,12 +41,48 @@ function App() {
   };
   const closeToast = id => setToasts(arr => arr.filter(t => t.id !== id));
 
+  // Network error handler - checks if error indicates connectivity issues
+  const handleNetworkError = (error, context = '') => {
+    const errorMessage = error.message || String(error);
+    const isNetworkError = errorMessage.includes('Failed to fetch') || 
+                          errorMessage.includes('NetworkError') ||
+                          errorMessage.includes('fetch') ||
+                          errorMessage === 'Failed to get plugin status' ||
+                          errorMessage === 'Bad JSON plugin status response';
+    
+    if (isNetworkError) {
+      setIsOnline(false);
+      // Return a user-friendly error message
+      return `Потеряна связь с сервером${context ? ` (${context})` : ''}`;
+    }
+    
+    // For non-network errors, assume connection is working
+    setIsOnline(true);
+    return errorMessage;
+  };
+
+  // Network success handler - marks connection as working
+  const handleNetworkSuccess = () => {
+    if (!isOnline) {
+      setIsOnline(true);
+      // Show a toast when connection is restored
+      pushToast({ tone: 'success', title: 'Соединение восстановлено', message: 'Связь с сервером восстановлена' });
+    }
+  };
+
   // Initial health check
   useEffect(() => {
     fetch('/api/healthcheck')
       .then(r => r.json())
-      .then(d => setStatus(d.status))
-      .catch(e => setError(e.message));
+      .then(d => {
+        setStatus(d.status);
+        handleNetworkSuccess();
+      })
+      .catch(e => {
+        const friendlyError = handleNetworkError(e, 'проверка состояния');
+        setError(friendlyError);
+      });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Plugin status
@@ -64,11 +101,13 @@ function App() {
         throw new Error('Bad JSON plugin status response');
       }
       setPlugin({loading: false, data, error: null});
+      handleNetworkSuccess();
     } catch (e) {
-      setPlugin({ loading: false, data: null, error: e.message });
+      const friendlyError = handleNetworkError(e, 'статус плагина');
+      setPlugin({ loading: false, data: null, error: friendlyError });
     }
   };
-  useEffect(() => { refreshPluginStatus(); }, []);
+  useEffect(() => { refreshPluginStatus(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Mapping stats snapshot (manual refresh + initial auto)
   const refreshStats = async () => {
@@ -78,11 +117,13 @@ function App() {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || 'stats');
       setStats({ loading: false, data: d, error: null });
+      handleNetworkSuccess();
     } catch (e) {
-      setStats({ loading: false, data: null, error: e.message });
+      const friendlyError = handleNetworkError(e, 'статистика');
+      setStats({ loading: false, data: null, error: friendlyError });
     }
   };
-  useEffect(() => { refreshStats(); }, []);
+  useEffect(() => { refreshStats(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Jobs polling
   useEffect(() => {
@@ -94,15 +135,19 @@ function App() {
         const d = await r.json();
         if (!active) return;
         if (!r.ok) throw new Error(d.error || 'jobs');
-        setJobs({ loading: false, data: d.jobs || [], error: null });
+        setJobs(s => ({ ...s, loading: false, data: d.jobs || [], error: null }));
+        handleNetworkSuccess();
       } catch (e) {
-        if (active) setJobs({ loading: false, data: [], error: e.message });
+        if (active) {
+          const friendlyError = handleNetworkError(e, 'задачи');
+          setJobs(s => ({ ...s, loading: false, data: [], error: friendlyError }));
+        }
       }
     };
     load();
     const t = setInterval(load, 3000);
     return () => { active = false; clearInterval(t); };
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // SSE progress (stats events only)
   useEffect(() => {
@@ -156,10 +201,12 @@ function App() {
           if (!res.ok) throw new Error(data.error || 'stat error');
           if (!cancelled) {
             setJobStats(prev => ({ ...prev, [job.id]: { updating: false, data, error: null } }));
+            handleNetworkSuccess();
           }
         } catch (e) {
           if (!cancelled) {
-            setJobStats(prev => ({ ...prev, [job.id]: { ...(prev[job.id]||{}), updating: false, error: e.message } }));
+            const friendlyError = handleNetworkError(e, 'статистика задачи');
+            setJobStats(prev => ({ ...prev, [job.id]: { ...(prev[job.id]||{}), updating: false, error: friendlyError } }));
           }
         } finally {
           lastFetchRef.current[job.id] = Date.now();
@@ -168,7 +215,7 @@ function App() {
     };
     const interval = setInterval(tick, 2000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const healthy = !!(plugin?.data && plugin.data.installed && plugin.data.enabled && !plugin.data.needs_update);
   const needsPluginFix = !!(plugin?.data && (!plugin.data.installed || plugin.data.needs_update || !plugin.data.enabled));
@@ -227,10 +274,15 @@ function App() {
         }
         setUploadProgress(null);
       };
-      xhr.onerror = () => { setUploadError('Ошибка сети'); setUploadProgress(null); };
+      xhr.onerror = () => { 
+        handleNetworkError(new Error('Failed to fetch'), 'загрузка файла');
+        setUploadError('Потеряна связь с сервером при загрузке файла'); 
+        setUploadProgress(null); 
+      };
       xhr.send(formData);
     } catch (err) {
-      setUploadError(err.message);
+      const friendlyError = handleNetworkError(err, 'загрузка файла');
+      setUploadError(friendlyError);
       setUploadProgress(null);
     }
   };
@@ -241,8 +293,16 @@ function App() {
     try {
   const response = await fetch('/api/export', { method: 'POST' });
       const data = await response.json();
-      if (response.ok) setExportStatus(data.message); else setExportError(data.error || 'Ошибка запуска экспорта');
-    } catch (err) { setExportError(err?.message || 'Ошибка сети'); }
+      if (response.ok) {
+        setExportStatus(data.message);
+        handleNetworkSuccess();
+      } else {
+        setExportError(data.error || 'Ошибка запуска экспорта');
+      }
+    } catch (err) { 
+      const friendlyError = handleNetworkError(err, 'экспорт');
+      setExportError(friendlyError); 
+    }
   };
 
   const handleEnsurePlugin = async () => {
@@ -260,8 +320,10 @@ function App() {
       }
       pushToast({ tone: 'success', title: 'Ensure', message: 'Плагин установлен и включен' });
       setLastEnsureSuccessTs(Date.now());
+      handleNetworkSuccess();
     } catch (e) {
-      setPlugin((s) => ({ ...s, error: e.message }));
+      const friendlyError = handleNetworkError(e, 'установка плагина');
+      setPlugin((s) => ({ ...s, error: friendlyError }));
     } finally {
       setFixingPlugin(false);
       await refreshPluginStatus();
@@ -274,7 +336,7 @@ function App() {
 
   return (
     <div className="app-shell">
-      <Header title="Slack → Mattermost Importer" subtitle="Корпоративная панель управления" right={<StatusBadge status={error ? 'error' : status==='ok' ? 'ok':'pending'} />} />
+      <Header title="Slack → Mattermost Importer" subtitle="Корпоративная панель управления" right={<StatusBadge status={!isOnline ? 'offline' : error ? 'error' : status==='ok' ? 'ok':'pending'} />} />
       <div className="layout">
         <Sidebar>
           <nav>
@@ -343,7 +405,7 @@ function App() {
                 <div style={{marginBottom: 12}}>
                   <div className="small" style={{marginBottom: 6, color:'#9ca3af'}}>Активные и последние задачи</div>
                   {jobs.error && <div style={{color:'#f87171'}}>Ошибка: {jobs.error}</div>}
-                  {(!jobs.data || jobs.data.length === 0) && !jobs.loading && (
+                  {(!jobs.data || jobs.data.length === 0) && !jobs.loading && !jobs.error && (
                     <div className="small" style={{color:'#9ca3af'}}>Задач нет</div>
                   )}
                   {jobs.data && jobs.data.length > 0 && (

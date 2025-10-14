@@ -13,7 +13,7 @@
     "team_id": "T0001",
     "name": "admin",
     "real_name": "Admin User",
-    "profile": {"email": "is@careerum.com"},
+    "profile": {"email": "admin@example.com"},
     "is_bot": false,
     "deleted": false
   },
