@@ -71,8 +71,12 @@ fi
 
 log "Build server (go)"
 mkdir -p server/dist
-# Build static binary (disable CGO) for minimal Mattermost container compatibility
-( cd server && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o dist/plugin-linux-amd64 . ) || fail "go build failed"
+# NOTE: We add -buildvcs=false because the repo is mounted read-only (and may appear as an 'unsafe' ownership to git inside the container),
+# which caused: 'error obtaining VCS status: exit status 128'. Disabling VCS stamping avoids git introspection failures.
+# (Alternative would be: git config --global --add safe.directory /repo)
+( cd server && \
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -ldflags='-s -w' -o dist/plugin-linux-amd64 . \
+) || fail "go build failed"
 
 if [ -f webapp/package.json ]; then
   log "Build webapp"
