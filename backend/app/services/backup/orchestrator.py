@@ -378,7 +378,10 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
 
     def _g(name: str) -> int:
         v = meta_now.get(name)
-        return int(v) if isinstance(v, (int, str)) and str(v).isdigit() else 0
+        try:
+            return int(v)
+        except (ValueError, TypeError):
+            return 0
 
     discovered_users = _g("users_discovered") or _g("users_processed")
     discovered_channels = _g("channels_discovered") or _g("channels_processed")
