@@ -274,7 +274,7 @@ async def list_jobs(limit: int = 50):
                 # Attach full status breakdown per type (success/failed/skipped/pending) for richer UI.
                 # Provide all four statuses even if zero to simplify client-side rendering.
                 # row.id is already an int (SQLAlchemy scalar instance). Avoid casting which upsets type checker.
-                br_key = row.id if isinstance(row.id, int) else None
+                br_key = row.id
                 br_map = breakdown.get(br_key, {}) if br_key is not None else {}
                 export_status: dict[str, dict[str, int]] = {}
                 all_status_values = [
