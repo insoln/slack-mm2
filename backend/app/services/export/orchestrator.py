@@ -19,6 +19,8 @@ from app.services.entities.user import User
 from app.services.entities.custom_emoji import CustomEmoji
 from app.services.entities.attachment import Attachment
 from app.utils.time import parse_slack_ts
+from collections import Counter
+import time as _time
 
 EXPORT_ORDER = [
     ("user", UserExporter),
@@ -144,13 +146,20 @@ async def export_worker(queue, mm_user_id):
                 continue
             await exporter.export_entity()
         except Exception as e:
+            # Capture concise root cause signature for aggregation.
+            err_txt = str(e)
+            # Derive a short category key (first segment before ':' or 80 chars)
+            if ":" in err_txt:
+                cat = err_txt.split(":", 1)[0].strip()
+            else:
+                cat = err_txt[:80]
             backend_logger.error(
-                f"Ошибка экспорта {entity.entity_type} {entity.slack_id}: {e}"
+                f"Ошибка экспорта {entity.entity_type} {entity.slack_id}: {err_txt} (cat={cat})"
             )
             try:
                 # Ensure status is not left pending on crash
                 if exporter is not None:
-                    await exporter.set_status("failed", error=str(e))
+                    await exporter.set_status("failed", error=err_txt)
                 else:
                     # fallback: direct update
                     from sqlalchemy import update
@@ -164,7 +173,7 @@ async def export_worker(queue, mm_user_id):
                         await session.execute(
                             update(Entity)
                             .where(where_cond)
-                            .values(status="failed", error_message=str(e))
+                            .values(status="failed", error_message=err_txt)
                         )
                         await session.commit()
             except Exception:
@@ -208,12 +217,55 @@ async def orchestrate_mm_export(job_id=None):
                     )
                 q = q.order_by(ImportJob.created_at.asc(), ImportJob.id.asc())
                 rows = await s.execute(q)
+                all_running = rows.scalars().all()
                 jobs = [
-                    r
-                    for r in rows.scalars().all()
-                    if cast(str, r.current_stage) == "exporting"
+                    r for r in all_running if cast(str, r.current_stage) == "exporting"
                 ]
                 return jobs
+
+        async def _promote_earliest_ready_export():
+            """Promote the earliest job in 'ready_export' (by created_at, id) to 'exporting' if
+            and only if there are no earlier jobs still not finished. This enforces strict FIFO.
+            """
+            async with SessionLocal() as s:
+                # Earliest running job by ordering
+                q_all = (
+                    select(ImportJob)
+                    .where(ImportJob.status == JobStatus.running)
+                    .order_by(ImportJob.created_at.asc(), ImportJob.id.asc())
+                )
+                rows_all = await s.execute(q_all)
+                ordered = list(rows_all.scalars().all())
+                if not ordered:
+                    return None
+                # Find earliest that is either already exporting or ready_export
+                earliest_ready = None
+                for r in ordered:
+                    stage = cast(str, r.current_stage)
+                    if stage in {"exporting"}:
+                        # Someone already exporting; do not promote new one yet
+                        return None
+                    if stage == "ready_export":
+                        earliest_ready = r
+                        break
+                    if stage in {"extracting", "users", "channels", "messages"}:
+                        # Still ingesting something earlier; can't promote any later job
+                        return None
+                if earliest_ready is None:
+                    return None
+                # Promote
+                from sqlalchemy import update
+
+                await s.execute(
+                    update(ImportJob)
+                    .where(ImportJob.id == earliest_ready.id)
+                    .values(current_stage="exporting")
+                )
+                await s.commit()
+                backend_logger.info(
+                    f"Продвигаю job_id={earliest_ready.id} из 'ready_export' в 'exporting' (FIFO)"
+                )
+                return earliest_ready.id
 
         async def _has_pending_for_type(
             entity_type: str, jobs: list[ImportJob]
@@ -248,34 +300,66 @@ async def orchestrate_mm_export(job_id=None):
                 )
                 return has
 
+        # Reaction logging aggregation state (to reduce log spam)
+        reaction_log_window: dict[str, int] = {}
+        reaction_log_last_flush = _time.time()
+        REACTION_FLUSH_INTERVAL = 5.0  # seconds
+        REACTION_FLUSH_LIMIT = 200  # distinct reactions before forced flush
+
+        def _record_reaction(slack_id: str):
+            nonlocal reaction_log_last_flush
+            reaction_log_window[slack_id] = reaction_log_window.get(slack_id, 0) + 1
+            now = _time.time()
+            if (
+                now - reaction_log_last_flush >= REACTION_FLUSH_INTERVAL
+                or len(reaction_log_window) >= REACTION_FLUSH_LIMIT
+            ):
+                total = sum(reaction_log_window.values())
+                sample_items = list(reaction_log_window.items())[:8]
+                backend_logger.info(
+                    f"[REACTIONS] batch exported total={total} distinct={len(reaction_log_window)} sample={sample_items}"
+                )
+                reaction_log_window.clear()
+                reaction_log_last_flush = now
+
         while True:
             jobs = await _fetch_exporting_jobs()
             if not jobs:
-                # If there are running jobs but not yet exporting, wait for earliest to reach exporting
-                async with SessionLocal() as s:
-                    q2 = select(ImportJob).where(ImportJob.status == JobStatus.running)
-                    if anchor_cutoff is not None:
-                        q2 = q2.where(
-                            (ImportJob.created_at < anchor_cutoff[0])
-                            | (
-                                (ImportJob.created_at == anchor_cutoff[0])
-                                & (ImportJob.id <= anchor_cutoff[1])
-                            )
+                # Try to promote earliest ready_export job (FIFO). If none promoted, then see if system idle.
+                promoted = await _promote_earliest_ready_export()
+                if promoted is None:
+                    # Re-evaluate; maybe no running jobs left
+                    async with SessionLocal() as s:
+                        q2 = select(ImportJob).where(
+                            ImportJob.status == JobStatus.running
                         )
-                    q2 = q2.order_by(
-                        ImportJob.created_at.asc(), ImportJob.id.asc()
-                    ).limit(1)
-                    row = await s.execute(q2)
-                    earliest = row.scalars().first()
-                if earliest is None:
-                    backend_logger.info("Очередь экспорта пуста — выходим")
-                    break
-                cur_stage = cast(str, earliest.current_stage)
-                backend_logger.info(
-                    f"Ожидание: job_id={earliest.id} ещё не в стадии 'exporting' (текущая: {cur_stage}), ждём барьер типов"
-                )
-                await asyncio.sleep(sleep_s)
-                continue
+                        if anchor_cutoff is not None:
+                            q2 = q2.where(
+                                (ImportJob.created_at < anchor_cutoff[0])
+                                | (
+                                    (ImportJob.created_at == anchor_cutoff[0])
+                                    & (ImportJob.id <= anchor_cutoff[1])
+                                )
+                            )
+                        q2 = q2.order_by(
+                            ImportJob.created_at.asc(), ImportJob.id.asc()
+                        ).limit(1)
+                        row = await s.execute(q2)
+                        earliest = row.scalars().first()
+                    if earliest is None:
+                        backend_logger.info("Очередь экспорта пуста — выходим")
+                        break
+                    # If earliest still ingesting, we'll sleep; if earliest is ready_export but not promoted (shouldn't happen), loop again.
+                    cur_stage = cast(str, earliest.current_stage)
+                    backend_logger.info(
+                        f"Ожидание продвижения: job_id={earliest.id} стадия={cur_stage} (FIFO барьер)"
+                    )
+                    await asyncio.sleep(sleep_s)
+                    continue
+                else:
+                    # Newly promoted; loop to pick up as exporting
+                    await asyncio.sleep(0)
+                    continue
 
             # Global per-type barrier: complete each type across all exporting jobs in FIFO order
             backend_logger.info(
@@ -316,7 +400,32 @@ async def orchestrate_mm_export(job_id=None):
                         for _ in workers:
                             await queue.put(None)
                         await asyncio.gather(*workers)
-                        backend_logger.info(f"Экспорт {entity_type} завершён (global)")
+                        # Aggregated status breakdown for transparency
+                        from sqlalchemy import select as _select, func as _func
+
+                        async with SessionLocal() as s:
+                            br_rows = await s.execute(
+                                _select(Entity.status, _func.count())
+                                .where(Entity.entity_type == entity_type)
+                                .group_by(Entity.status)
+                            )
+                            counts = {
+                                str(getattr(st, "value", st)): int(c)
+                                for st, c in br_rows.all()
+                            }
+                            # Which jobs still have pending of this type (should be 0 if created rows stable)
+                            job_rows = await s.execute(
+                                _select(Entity.job_id).where(
+                                    (Entity.entity_type == entity_type)
+                                    & (Entity.status == MappingStatus.pending)
+                                )
+                            )
+                            pending_job_ids = sorted(
+                                {int(r[0]) for r in job_rows.all() if r[0] is not None}
+                            )
+                        backend_logger.info(
+                            f"Экспорт {entity_type} завершён (global) statuses={counts} pending_jobs={pending_job_ids}"
+                        )
                     else:
                         # Job-scoped types: export per job
                         for j in jobs:
@@ -333,15 +442,23 @@ async def orchestrate_mm_export(job_id=None):
                                 backend_logger.info(
                                     f"Экспорт сообщений завершён за {dt:.2f}s (job_id={j.id})"
                                 )
+                                # After message export pass, aggregate failed categories for this job
+                                await _aggregate_failed_summary(job_id_val, "message")
                             else:
                                 queue = asyncio.Queue()
                                 entities = await get_entities_to_export(
                                     entity_type, job_id=j.id
                                 )
                                 for entity in entities:
-                                    backend_logger.debug(
-                                        f"[EXPORT] enqueue {entity_type} {entity.slack_id}"
-                                    )
+                                    if entity_type == "reaction":
+                                        # Aggregate instead of verbose per-entity debug
+                                        _record_reaction(
+                                            str(getattr(entity, "slack_id", ""))
+                                        )
+                                    else:
+                                        backend_logger.debug(
+                                            f"[EXPORT] enqueue {entity_type} {entity.slack_id}"
+                                        )
                                     await queue.put((entity, exporter_cls))
                                 if entity_type == "attachment":
                                     workers_for_type = int(
@@ -365,17 +482,38 @@ async def orchestrate_mm_export(job_id=None):
                             backend_logger.info(
                                 f"Экспорт {entity_type} завершён (job_id={j.id})"
                             )
+                            # Aggregate failed categories for this job & type (only if failures exist)
+                            if entity_type != "message":
+                                await _aggregate_failed_summary(
+                                    int(cast(int, j.id)), entity_type
+                                )
                     # If still any pending/skipped of this type (including newly-exporting jobs), loop again
                     jobs = await _fetch_exporting_jobs()
                     if not await _has_pending_for_type(entity_type, jobs):
                         break
 
-            # After completing all types for these jobs, mark them done
+            # After completing all types for these jobs, perform cleanup & mark them done
             try:
                 from sqlalchemy import update
+                import shutil
 
                 async with SessionLocal() as session:
                     for j in jobs:
+                        # Attempt cleanup of extract_dir if still present in meta
+                        meta = j.meta or {}
+                        extract_dir = meta.get("extract_dir")
+                        if extract_dir and isinstance(extract_dir, str):
+                            try:
+                                shutil.rmtree(extract_dir, ignore_errors=True)
+                                backend_logger.debug(
+                                    f"[CLEANUP] remove extract_dir for job_id={j.id}: {extract_dir}"
+                                )
+                            except Exception:  # pragma: no cover
+                                pass
+                        # Remove extract_dir key from meta
+                        if meta.get("extract_dir"):
+                            meta.pop("extract_dir", None)
+                        setattr(j, "meta", meta)
                         await session.execute(
                             update(ImportJob)
                             .where(ImportJob.id == j.id)
@@ -383,9 +521,7 @@ async def orchestrate_mm_export(job_id=None):
                         )
                     await session.commit()
             except Exception as ex:  # noqa: BLE001
-                backend_logger.error(
-                    f"Не удалось обновить статус завершённых задач: {ex}"
-                )
+                backend_logger.error(f"Не удалось завершить задачи: {ex}")
 
             # If called for a specific job, stop after finishing it (but only after all earlier jobs)
             if (
@@ -402,6 +538,14 @@ async def _export_messages_per_channel(job_id: int, mm_user_id: str) -> None:
     chronological order within a channel by sorting roots first then ts.
     """
     from app.models.entity_relation import EntityRelation
+
+    # Relation batching helpers keep IN() queries within safe limits when
+    # millions of message ids are pending.
+    def _chunked(seq, chunk_size):
+        for i in range(0, len(seq), chunk_size):
+            yield seq[i : i + chunk_size]
+
+    relation_chunk = max(1000, int(os.getenv("EXPORT_RELATION_CHUNK", "10000")))
 
     # Concurrency controls
     max_channels = int(
@@ -426,22 +570,33 @@ async def _export_messages_per_channel(job_id: int, mm_user_id: str) -> None:
 
         ids = [m.id for m in messages]
         # posted_in: message -> channel
-        rel_rows = await session.execute(
-            select(EntityRelation.from_entity_id, EntityRelation.to_entity_id).where(
-                (EntityRelation.relation_type == "posted_in")
-                & (EntityRelation.from_entity_id.in_(ids))
-            )
-        )
-        msg_to_channel = {mid: cid for (mid, cid) in rel_rows.all()}
+        # Relation tables can hold millions of rows; batching keeps the IN() parameter
+        # count well below driver limits and avoids exhausting statement caches.
+        msg_to_channel = {}
+        if ids:
+            for chunk in _chunked(ids, relation_chunk):
+                rel_rows = await session.execute(
+                    select(
+                        EntityRelation.from_entity_id, EntityRelation.to_entity_id
+                    ).where(
+                        (EntityRelation.relation_type == "posted_in")
+                        & (EntityRelation.from_entity_id.in_(chunk))
+                    )
+                )
+                for from_id, to_id in rel_rows.all():
+                    msg_to_channel[from_id] = to_id
 
         # Identify replies for sorting
-        reply_rows = await session.execute(
-            select(EntityRelation.from_entity_id).where(
-                (EntityRelation.relation_type == "thread_reply")
-                & (EntityRelation.from_entity_id.in_(ids))
-            )
-        )
-        reply_set = {row[0] for row in reply_rows.all()}
+        reply_set = set()
+        if ids:
+            for chunk in _chunked(ids, relation_chunk):
+                reply_rows = await session.execute(
+                    select(EntityRelation.from_entity_id).where(
+                        (EntityRelation.relation_type == "thread_reply")
+                        & (EntityRelation.from_entity_id.in_(chunk))
+                    )
+                )
+                reply_set.update(row[0] for row in reply_rows.all())
 
         # Group messages by channel entity id
         groups: dict[int, list[Entity]] = {}
@@ -520,3 +675,69 @@ async def _export_messages_per_channel(job_id: int, mm_user_id: str) -> None:
     ]
     if tasks:
         await asyncio.gather(*tasks)
+
+
+async def _aggregate_failed_summary(job_id: int, entity_type: str) -> None:
+    """Aggregate failed entities of a given type for a job into meta.failed_summary.
+
+    Stores structure:
+      meta.failed_summary[entity_type] = {
+         'total_failed': N,
+         'top_categories': [ {'category': cat, 'count': c}, ... up to 10 ],
+         'sample_errors': [first up to 5 distinct raw error_message strings]
+      }
+    Safe to call repeatedly; it overwrites the section each time.
+    """
+    from sqlalchemy import select as _select
+
+    async with SessionLocal() as session:
+        q = await session.execute(
+            _select(Entity.error_message).where(
+                (Entity.job_id == job_id)
+                & (Entity.entity_type == entity_type)
+                & (Entity.status == MappingStatus.failed)
+                & (Entity.error_message.is_not(None))
+            )
+        )
+        rows = [r[0] for r in q.all() if r[0]]
+        if not rows:
+            return
+        # Categorize
+        cats = []
+        for err in rows:
+            text = str(err)
+            if ":" in text:
+                cat = text.split(":", 1)[0].strip()
+            else:
+                cat = text[:80]
+            cats.append(cat)
+        counter = Counter(cats)
+        top_items = counter.most_common(10)
+        sample = []
+        seen = set()
+        for err in rows:
+            if err not in seen:
+                seen.add(err)
+                sample.append(err)
+            if len(sample) >= 5:
+                break
+        # Update meta JSONB atomically (merge pattern)
+        from app.services.backup.meta_utils import merge_job_meta
+
+        await merge_job_meta(
+            job_id,
+            nested={
+                "failed_summary": {
+                    entity_type: {
+                        "total_failed": len(rows),
+                        "top_categories": [
+                            {"category": cat, "count": cnt} for cat, cnt in top_items
+                        ],
+                        "sample_errors": sample,
+                    }
+                }
+            },
+        )
+        backend_logger.info(
+            f"[FAILED_SUMMARY] job_id={job_id} type={entity_type} total_failed={len(rows)} top={top_items[:3]}"
+        )

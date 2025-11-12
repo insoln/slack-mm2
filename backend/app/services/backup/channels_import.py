@@ -37,31 +37,43 @@ async def parse_channels_and_chats(extract_dir, job_id: Optional[int] = None):
                 channel_objs.append(channel)
         except Exception as e:  # pragma: no cover
             backend_logger.error(f"Ошибка чтения {fname}: {e}")
-    # Batch save all channels
+    discovered = len(channel_objs)
+    created = 0
+    existing = 0
     if channel_objs:
         from app.services.entities.base_mixin import BaseMapping
 
         try:
-            # Check if we're dealing with real mappings or mocks (test environment)
             if hasattr(channel_objs[0], "entity_type") and not callable(
                 getattr(channel_objs[0], "entity_type", None)
             ):
                 result = await BaseMapping.batch_save_to_db(channel_objs)
-                backend_logger.debug(f"Batch saved {result.get('saved', 0)} channels")
+                created = int(result.get("saved", 0) or 0)
+                existing = int(result.get("existing", 0) or 0)
+                backend_logger.info(
+                    f"Channels discovered={discovered} created={created} existing={existing} failed={result.get('failed', 0)}"
+                )
             else:
-                # Test environment with mocks - use individual saves
                 raise Exception("Mock detected, using fallback")
         except Exception as e:
             backend_logger.debug(
                 f"Batch save failed for channels, using individual saves: {e}"
             )
-            # Fallback to individual saves
-            for channel in channel_objs:
+            for c in channel_objs:
                 try:
-                    await channel.save_to_db()
+                    prev_id = getattr(c, "id", None)
+                    res = await c.save_to_db()
+                    if res is not None and prev_id is None:
+                        created += 1
                 except Exception:  # pragma: no cover
                     pass
-    return channel_objs
+            existing = discovered - created if discovered >= created else 0
+    return {
+        "objects": channel_objs,
+        "discovered": discovered,
+        "created": created,
+        "existing": existing,
+    }
 
 
 def find_channel_for_folder(export_dir, _):

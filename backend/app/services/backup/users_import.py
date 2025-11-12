@@ -31,28 +31,41 @@ async def parse_users(extract_dir, job_id: Optional[int] = None):
             job_id=job_id,
         )
         user_objs.append(user)
-    # Batch save all users
+    discovered = len(user_objs)
+    created = 0
+    existing = 0
     if user_objs:
         from app.services.entities.base_mixin import BaseMapping
 
         try:
-            # Check if we're dealing with real mappings or mocks (test environment)
             if hasattr(user_objs[0], "entity_type") and not callable(
                 getattr(user_objs[0], "entity_type", None)
             ):
                 result = await BaseMapping.batch_save_to_db(user_objs)
-                backend_logger.debug(f"Batch saved {result.get('saved', 0)} users")
+                created = int(result.get("saved", 0) or 0)
+                # existing = discovered - created - failed (approx). If batch returns 'existing'.
+                existing = int(result.get("existing", 0) or 0)
+                backend_logger.info(
+                    f"Users discovered={discovered} created={created} existing={existing} failed={result.get('failed', 0)}"
+                )
             else:
-                # Test environment with mocks - use individual saves
                 raise Exception("Mock detected, using fallback")
         except Exception as e:
             backend_logger.debug(
                 f"Batch save failed for users, using individual saves: {e}"
             )
-            # Fallback to individual saves
             for u in user_objs:
                 try:
-                    await u.save_to_db()
+                    prev_id = getattr(u, "id", None)
+                    res = await u.save_to_db()
+                    if res is not None and prev_id is None:
+                        created += 1
                 except Exception:  # pragma: no cover
                     pass
-    return user_objs
+            existing = discovered - created if discovered >= created else 0
+    return {
+        "objects": user_objs,
+        "discovered": discovered,
+        "created": created,
+        "existing": existing,
+    }

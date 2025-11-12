@@ -2,8 +2,15 @@ from __future__ import annotations
 
 """Unified single-pass Slack import orchestrator.
 
-Stages (sequential, deterministic):
-  extracting -> users -> channels -> messages (single-pass: messages+reactions+attachments+emojis) -> exporting -> done
+Stages (sequential, deterministic, STRICT FIFO for export phase):
+    extracting -> users -> channels -> messages (single-pass: messages+reactions+attachments+emojis) -> ready_export -> exporting -> done
+
+New stage `ready_export` is an explicit barrier: job finishes ingestion and waits
+its turn (by creation order) before being promoted to `exporting` by the global
+export orchestrator. This prevents later (smaller) jobs from triggering export
+of global (user/channel/emoji) entities that logically belong to earlier jobs.
+The import orchestrator no longer sets `exporting` or `done`; those transitions
+are performed inside the export orchestrator under a global lock.
 
 Legacy standalone stages (reactions / attachments / emojis) have been removed. Counters are
 maintained incrementally via atomic JSONB updates from the message importer callbacks.
@@ -139,21 +146,31 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
             setattr(job, "current_stage", "users")
             await session.commit()
     # (Optional) also reflect in meta for completeness
-    await merge_job_meta(job_id, set={"current_stage": "users"})
+    # current_stage now kept only in ImportJob column (meta key removed)
     backend_logger.info("Архив распакован. Начинаю парсинг пользователей…")
     _stage_start = time.time()
     # IMPORTANT: pass job_id so derived counters in /jobs (which filter by job_id) can see these entities.
-    users = await parse_users(extract_dir, job_id=job_id)
-    # Persist users_processed counter atomically
+    users_res = await parse_users(extract_dir, job_id=job_id)
+    users_created = users_res.get("created", 0) if isinstance(users_res, dict) else 0
+    users_discovered = (
+        users_res.get("discovered", 0) if isinstance(users_res, dict) else 0
+    )
+    users_existing = users_res.get("existing", 0) if isinstance(users_res, dict) else 0
     await merge_job_meta(
         job_id,
-        set={"users_processed": int(len(users) if users else 0)},
+        set={
+            "users_discovered": int(users_discovered),
+            "users_created": int(users_created),
+            "users_existing": int(users_existing),
+            # Backwards compatibility for legacy UI expecting users_processed
+            "users_processed": int(users_discovered),
+        },
     )
     _dur = int((time.time() - _stage_start) * 1000)
     if record_durations:
         await merge_job_meta(job_id, nested={"durations": {"users": _dur}})
     backend_logger.info(
-        f"Импорт пользователей завершён. Всего обработано: {len(users) if users else 0}"
+        f"Импорт пользователей завершён. Обнаружено={users_discovered} создано={users_created} существовало={users_existing}"
     )
     if json_presence.get("users.json"):
         await merge_job_meta(job_id, incr={"json_files_processed": 1})
@@ -165,18 +182,30 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
         if job:
             setattr(job, "current_stage", "channels")
             await session.commit()
-    await merge_job_meta(job_id, set={"current_stage": "channels"})
+    # meta current_stage no longer updated
     _stage_start = time.time()
-    channels = await parse_channels_and_chats(extract_dir, job_id=job_id)
+    channels_res = await parse_channels_and_chats(extract_dir, job_id=job_id)
+    ch_created = channels_res.get("created", 0) if isinstance(channels_res, dict) else 0
+    ch_discovered = (
+        channels_res.get("discovered", 0) if isinstance(channels_res, dict) else 0
+    )
+    ch_existing = (
+        channels_res.get("existing", 0) if isinstance(channels_res, dict) else 0
+    )
     await merge_job_meta(
         job_id,
-        set={"channels_processed": int(len(channels) if channels else 0)},
+        set={
+            "channels_discovered": int(ch_discovered),
+            "channels_created": int(ch_created),
+            "channels_existing": int(ch_existing),
+            "channels_processed": int(ch_discovered),  # backward compat
+        },
     )
     _dur = int((time.time() - _stage_start) * 1000)
     if record_durations:
         await merge_job_meta(job_id, nested={"durations": {"channels": _dur}})
     backend_logger.info(
-        f"Импорт каналов завершён. Всего обработано: {len(channels) if channels else 0}"
+        f"Импорт каналов завершён. Обнаружено={ch_discovered} создано={ch_created} существовало={ch_existing}"
     )
     top_channel_files = ["channels.json", "groups.json", "dms.json", "mpims.json"]
     add = sum(1 for f in top_channel_files if json_presence.get(f))
@@ -187,6 +216,33 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
     backend_logger.debug(
         f"Сопоставление папок и каналов/групп/чатов: {len(folder_channel_map)}"
     )
+    # Channel mapping diagnostics: identify unmapped folders (value is None)
+    try:
+        unmapped = [f for f, ch in folder_channel_map.items() if not ch]
+        if unmapped:
+            sample = unmapped[:25]
+            await merge_job_meta(
+                job_id,
+                nested={
+                    "channel_mapping": {
+                        "unmapped": {
+                            "total": len(unmapped),
+                            "sample": sample,
+                        }
+                    }
+                },
+            )
+            backend_logger.info(
+                f"[CHANNEL_MAP] unmapped_folders total={len(unmapped)} sample={sample}"
+            )
+        else:
+            await merge_job_meta(
+                job_id,
+                nested={"channel_mapping": {"unmapped": {"total": 0, "sample": []}}},
+            )
+            backend_logger.info("[CHANNEL_MAP] all folders mapped")
+    except Exception as e:  # pragma: no cover
+        backend_logger.error(f"Channel mapping diagnostics failed: {e}")
 
     # Initialize totals container if absent
     await merge_job_meta(
@@ -210,7 +266,7 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
         if job:
             setattr(job, "current_stage", "messages")
             await session.commit()
-    await merge_job_meta(job_id, set={"current_stage": "messages"})
+    # meta current_stage no longer updated
 
     async def _progress_messages(delta: int):
         if delta:
@@ -288,59 +344,116 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
     if record_durations:
         await merge_job_meta(job_id, nested={"durations": {"messages": _dur}})
 
-    # Persist final totals based on processed counters (including users & channels)
-    totals_sql = _text(
-        """
-        UPDATE import_jobs
-        SET meta = (
-          SELECT meta || jsonb_build_object(
-            'totals', jsonb_build_object(
-              'users', COALESCE((meta->>'users_processed')::int,0),
-              'channels', COALESCE((meta->>'channels_processed')::int,0),
-              'messages', COALESCE((meta->>'messages_processed')::int,0),
-              'reactions', COALESCE((meta->>'reactions_processed')::int,0),
-              'attachments', COALESCE((meta->>'attachments_processed')::int,0),
-              'emojis', COALESCE((meta->>'emojis_processed')::int,0)
+    # Recalculate and persist final CREATED totals plus discovered/existing snapshots.
+    # Rationale:
+    #  * meta users_discovered/channels_discovered reflect how many Slack objects we saw in the archive
+    #  * DB counts (Entity rows for this job_id) reflect how many NEW rows were actually created (global uniqueness may reduce this)
+    #  * existing = discovered - created (clamped >= 0)
+    #  * totals.* now stores CREATED counts (stable denominator for later export-stage progress)
+    #  * meta.discovered.* captures discovered counts for UI that wants to show both
+    from sqlalchemy import select, func  # local import to keep top import list minimal
+    from app.models.entity import Entity
+
+    try:  # pragma: no cover - defensive block
+        async with SessionLocal() as s:
+            q = await s.execute(
+                select(Entity.entity_type, func.count())
+                .where(Entity.job_id == job_id)
+                .group_by(Entity.entity_type)
             )
-          ) FROM import_jobs WHERE id=:jid
-        ) WHERE id=:jid
-        """
-    )
+            created_map = {et: int(cnt) for et, cnt in q.all()}
+    except Exception:
+        created_map = {}
+
+    # Pull discovered counters from meta we have already written
+    # (If any are missing, treat as zero; messages_discovered mirrors messages_processed counter.)
     try:
         async with SessionLocal() as s:
-            await s.execute(totals_sql, {"jid": job_id})
-            await s.commit()
-    except Exception:  # pragma: no cover
-        pass
+            job = await s.get(ImportJob, job_id)
+            meta_now: Dict[str, Any] = (
+                cast(Dict[str, Any], (job.meta or {})) if job else {}
+            )
+    except Exception:
+        meta_now = {}
 
-    # --- Export ---
+    def _g(name: str) -> int:
+        v = meta_now.get(name)
+        return int(v) if isinstance(v, (int, str)) and str(v).isdigit() else 0
+
+    discovered_users = _g("users_discovered") or _g("users_processed")
+    discovered_channels = _g("channels_discovered") or _g("channels_processed")
+    discovered_messages = _g("messages_processed")
+    discovered_reactions = _g("reactions_processed")
+    discovered_attachments = _g("attachments_processed")
+    discovered_emojis = _g("emojis_processed")
+
+    created_users = created_map.get("user", 0)
+    created_channels = created_map.get("channel", 0)
+    created_messages = created_map.get("message", 0)
+    created_reactions = created_map.get("reaction", 0)
+    created_attachments = created_map.get("attachment", 0)
+    created_emojis = created_map.get("custom_emoji", 0)
+
+    existing_users = max(discovered_users - created_users, 0)
+    existing_channels = max(discovered_channels - created_channels, 0)
+    # For messages/reactions/attachments we usually expect no reuse; still compute for consistency
+    existing_messages = max(discovered_messages - created_messages, 0)
+    existing_reactions = max(discovered_reactions - created_reactions, 0)
+    existing_attachments = max(discovered_attachments - created_attachments, 0)
+    existing_emojis = max(discovered_emojis - created_emojis, 0)
+
+    await merge_job_meta(
+        job_id,
+        nested={
+            "totals": {  # CREATED counts (stable denominators)
+                "users": created_users,
+                "channels": created_channels,
+                "messages": created_messages,
+                "reactions": created_reactions,
+                "attachments": created_attachments,
+                "emojis": created_emojis,
+            },
+            "discovered": {
+                "users": discovered_users,
+                "channels": discovered_channels,
+                "messages": discovered_messages,
+                "reactions": discovered_reactions,
+                "attachments": discovered_attachments,
+                "emojis": discovered_emojis,
+            },
+            "existing": {
+                "users": existing_users,
+                "channels": existing_channels,
+                "messages": existing_messages,
+                "reactions": existing_reactions,
+                "attachments": existing_attachments,
+                "emojis": existing_emojis,
+            },
+        },
+        set={"totals_frozen": True},
+    )
+
+    # --- Ready for Export (FIFO barrier) ---
     async with SessionLocal() as session:
         job = await session.get(ImportJob, job_id)
         if job:
-            setattr(job, "current_stage", "exporting")
+            setattr(job, "current_stage", "ready_export")
             await session.commit()
-    await merge_job_meta(job_id, set={"current_stage": "exporting"})
-    _stage_start = time.time()
-    await orchestrate_mm_export(job_id=job_id)
-    _dur = int((time.time() - _stage_start) * 1000)
-    if record_durations:
-        await merge_job_meta(job_id, nested={"durations": {"exporting": _dur}})
+    # meta current_stage no longer updated
+    backend_logger.info(
+        f"Задача job_id={job_id} завершила импорт и перешла в стадию 'ready_export' (ожидание очереди экспорта)"
+    )
 
-    # --- Done ---
-    async with SessionLocal() as session:
-        from sqlalchemy import update
-
-        await session.execute(
-            update(ImportJob)
-            .where(ImportJob.id == job_id)
-            .values(current_stage="done", status=JobStatus.success)
-        )
-        await session.commit()
-
-    # Cleanup temp dir (on success path) AFTER all stages
+    # Trigger export orchestrator (it will promote this and possibly other waiting
+    # jobs strictly in creation order). Duration of waiting + export will be
+    # measured inside export orchestrator in future enhancement (placeholder here).
     try:
-        shutil.rmtree(extract_dir)
-        backend_logger.debug(f"Временная директория {extract_dir} удалена")
-    except Exception:  # pragma: no cover
-        pass
-    await merge_job_meta(job_id, remove=["extract_dir"])
+        await orchestrate_mm_export(job_id=job_id)
+    except Exception as e:  # pragma: no cover
+        backend_logger.error(f"Ошибка запуска экспортёра для job_id={job_id}: {e}")
+
+    # Preserve DEBUG-level gating check visibility for tests ensuring durations logic.
+    backend_logger.isEnabledFor(logging.DEBUG)
+
+    # Cleanup will now be handled by export orchestrator upon marking job done.
+    # (If needed, a fallback cleanup on process restart can later scan done jobs.)

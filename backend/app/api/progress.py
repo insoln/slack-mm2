@@ -34,6 +34,7 @@ async def progress_stream(interval: float = 2.0, jobs_limit: int = 25):
                         "id": row.id,
                         "status": getattr(row.status, "value", row.status),
                         "current_stage": row.current_stage,
+                        # meta no longer mirrors current_stage key
                         "meta": row.meta or {},
                         "error_message": row.error_message,
                     }
