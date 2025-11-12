@@ -54,15 +54,9 @@ async def parse_users(extract_dir, job_id: Optional[int] = None):
             backend_logger.debug(
                 f"Batch save failed for users, using individual saves: {e}"
             )
-            for u in user_objs:
-                try:
-                    prev_id = getattr(u, "id", None)
-                    res = await u.save_to_db()
-                    if res is not None and prev_id is None:
-                        created += 1
-                except Exception:  # pragma: no cover
-                    pass
-            existing = discovered - created if discovered >= created else 0
+            fallback = await BaseMapping.save_individually_with_stats(user_objs)
+            created = int(fallback.get("saved", 0))
+            existing = int(fallback.get("existing", 0))
     return {
         "objects": user_objs,
         "discovered": discovered,

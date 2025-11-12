@@ -453,7 +453,7 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
         backend_logger.error(f"Ошибка запуска экспортёра для job_id={job_id}: {e}")
 
     # Preserve DEBUG-level gating check visibility for tests ensuring durations logic.
-    backend_logger.isEnabledFor(logging.DEBUG)
+    _ = backend_logger.isEnabledFor(logging.DEBUG)
 
     # Cleanup will now be handled by export orchestrator upon marking job done.
     # (If needed, a fallback cleanup on process restart can later scan done jobs.)

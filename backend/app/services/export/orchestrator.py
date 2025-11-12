@@ -22,6 +22,8 @@ from app.utils.time import parse_slack_ts
 from collections import Counter
 import time as _time
 
+DEFAULT_RELATION_CHUNK = 10_000
+
 EXPORT_ORDER = [
     ("user", UserExporter),
     ("custom_emoji", CustomEmojiExporter),
@@ -37,6 +39,13 @@ EXPORT_LOCK = asyncio.Lock()
 
 # Default poll interval (seconds) when waiting for earliest job to enter 'exporting'
 EXPORT_QUEUE_POLL_DEFAULT: float = 2.0
+
+
+def _categorize_error(message: str) -> str:
+    text = str(message).strip()
+    if ":" in text:
+        return text.split(":", 1)[0].strip() or text[:80]
+    return text[:80]
 
 
 async def get_mm_user_id():
@@ -148,11 +157,7 @@ async def export_worker(queue, mm_user_id):
         except Exception as e:
             # Capture concise root cause signature for aggregation.
             err_txt = str(e)
-            # Derive a short category key (first segment before ':' or 80 chars)
-            if ":" in err_txt:
-                cat = err_txt.split(":", 1)[0].strip()
-            else:
-                cat = err_txt[:80]
+            cat = _categorize_error(err_txt)
             backend_logger.error(
                 f"Ошибка экспорта {entity.entity_type} {entity.slack_id}: {err_txt} (cat={cat})"
             )
@@ -545,7 +550,10 @@ async def _export_messages_per_channel(job_id: int, mm_user_id: str) -> None:
         for i in range(0, len(seq), chunk_size):
             yield seq[i : i + chunk_size]
 
-    relation_chunk = max(1000, int(os.getenv("EXPORT_RELATION_CHUNK", "10000")))
+    relation_chunk_default = os.getenv(
+        "EXPORT_RELATION_CHUNK", str(DEFAULT_RELATION_CHUNK)
+    )
+    relation_chunk = max(1000, int(relation_chunk_default))
 
     # Concurrency controls
     max_channels = int(
@@ -703,14 +711,7 @@ async def _aggregate_failed_summary(job_id: int, entity_type: str) -> None:
         if not rows:
             return
         # Categorize
-        cats = []
-        for err in rows:
-            text = str(err)
-            if ":" in text:
-                cat = text.split(":", 1)[0].strip()
-            else:
-                cat = text[:80]
-            cats.append(cat)
+        cats = [_categorize_error(err) for err in rows]
         counter = Counter(cats)
         top_items = counter.most_common(10)
         sample = []

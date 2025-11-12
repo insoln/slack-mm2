@@ -59,15 +59,9 @@ async def parse_channels_and_chats(extract_dir, job_id: Optional[int] = None):
             backend_logger.debug(
                 f"Batch save failed for channels, using individual saves: {e}"
             )
-            for c in channel_objs:
-                try:
-                    prev_id = getattr(c, "id", None)
-                    res = await c.save_to_db()
-                    if res is not None and prev_id is None:
-                        created += 1
-                except Exception:  # pragma: no cover
-                    pass
-            existing = discovered - created if discovered >= created else 0
+            fallback = await BaseMapping.save_individually_with_stats(channel_objs)
+            created = int(fallback.get("saved", 0))
+            existing = int(fallback.get("existing", 0))
     return {
         "objects": channel_objs,
         "discovered": discovered,

@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from app.logging_config import backend_logger
 from sqlalchemy import select
 from sqlalchemy import func as _sa_func
-from typing import List, Optional, Dict, Set, Tuple
+from typing import List, Optional, Dict, Set, Tuple, cast
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 
@@ -113,6 +113,39 @@ class BaseMapping:
                 return None
 
     @staticmethod
+    def is_newly_created(previous_id: Optional[int], result: Optional[Entity]) -> bool:
+        """Determine if save_to_db resulted in a newly created entity."""
+        if previous_id is not None:
+            return False
+        if result is None:
+            return False
+        return getattr(result, "id", None) is not None
+
+    @staticmethod
+    async def save_individually_with_stats(
+        mappings: List["BaseMapping"],
+    ) -> Dict[str, int]:
+        """Persist mappings sequentially, capturing created/existing/failed counts."""
+        created = 0
+        existing = 0
+        failed = 0
+        for mapping in mappings:
+            prev_id = getattr(mapping, "id", None)
+            try:
+                result = await mapping.save_to_db()
+            except Exception:
+                failed += 1
+                backend_logger.error(
+                    f"[FALLBACK_ERR] Individual save failed for {mapping.entity_type} {mapping.slack_id}"
+                )
+                continue
+            if BaseMapping.is_newly_created(prev_id, result):
+                created += 1
+            else:
+                existing += 1
+        return {"saved": created, "existing": existing, "failed": failed}
+
+    @staticmethod
     async def batch_save_to_db(mappings: List["BaseMapping"]) -> Dict[str, int]:
         """
         Batch save multiple mappings to database in a single transaction.
@@ -123,10 +156,16 @@ class BaseMapping:
         if not mappings:
             return {"saved": 0, "existing": 0, "failed": 0}
 
+        for mapping in mappings:
+            if mapping.entity_type is None:
+                raise ValueError(
+                    "BaseMapping.batch_save_to_db requires each mapping to define entity_type"
+                )
+
         # Group by entity_type for better logging and potential optimization
         grouped_mappings: Dict[str, List["BaseMapping"]] = {}
         for mapping in mappings:
-            entity_type = mapping.entity_type or "__undefined__"
+            entity_type = cast(str, mapping.entity_type)
             if entity_type not in grouped_mappings:
                 grouped_mappings[entity_type] = []
             grouped_mappings[entity_type].append(mapping)
@@ -134,6 +173,7 @@ class BaseMapping:
         saved_count = 0
         existing_count = 0
         failed_count = 0
+        needs_fallback = False
 
         async with SessionLocal() as session:
             try:
@@ -178,20 +218,21 @@ class BaseMapping:
                         )
                         res = await session.execute(stmt)
                         inserted = res.fetchall()
-                        inserted_map: Dict[tuple[Optional[str], str], int] = {}
+                        inserted_map: Dict[tuple[str, str], int] = {}
                         for rid, etype, sid in inserted:
-                            inserted_map[
-                                (etype if etype is not None else "__undefined__", sid)
-                            ] = rid
+                            if etype is None:
+                                raise ValueError(
+                                    "Entity row returned without entity_type; data corruption"
+                                )
+                            inserted_map[(etype, sid)] = rid
                         saved_count = len(inserted_map)
 
                         for m in mappings:
-                            etype = (
-                                m.entity_type
-                                if m.entity_type is not None
-                                else "__undefined__"
-                            )
-                            key = (etype, m.slack_id)
+                            if m.entity_type is None:
+                                raise ValueError(
+                                    "Mapping missing entity_type during batch save"
+                                )
+                            key = (m.entity_type, m.slack_id)
                             if key in inserted_map:
                                 m.id = inserted_map[key]
                             else:
@@ -247,20 +288,17 @@ class BaseMapping:
                             saved_count += 1
             except Exception as e:  # noqa: BLE001
                 await session.rollback()
-                failed_count = len(mappings) - existing_count - saved_count
                 backend_logger.error(f"[BATCH_ERR] Batch save failed: {e}")
-                # Fallback to individual saves
-                for m in mappings:
-                    if not hasattr(m, "id") or m.id is None:
-                        try:
-                            result = await m.save_to_db()
-                            if result is not None:
-                                saved_count += 1
-                                failed_count -= 1
-                        except Exception:
-                            backend_logger.error(
-                                f"[FALLBACK_ERR] Individual save failed for {m.entity_type} {m.slack_id}"
-                            )
+                needs_fallback = True
+                saved_count = 0
+                existing_count = 0
+                failed_count = 0
+
+        if needs_fallback:
+            fallback = await BaseMapping.save_individually_with_stats(mappings)
+            saved_count += fallback["saved"]
+            existing_count += fallback["existing"]
+            failed_count += fallback["failed"]
 
         return {
             "saved": saved_count,

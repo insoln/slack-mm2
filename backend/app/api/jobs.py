@@ -8,6 +8,15 @@ import os
 import glob
 import zipfile
 
+ENTITY_LABEL_TO_TYPE = {
+    "users": "user",
+    "channels": "channel",
+    "messages": "message",
+    "reactions": "reaction",
+    "attachments": "attachment",
+    "emojis": "custom_emoji",
+}
+
 router = APIRouter()
 
 
@@ -195,17 +204,16 @@ async def list_jobs(limit: int = 50):
                 )
                 derived = {et: cnt for et, cnt in q.all()}
                 frozen_totals = {
-                    "users": int(derived.get("user", 0)),
-                    "channels": int(derived.get("channel", 0)),
-                    "messages": int(derived.get("message", 0)),
-                    "reactions": int(derived.get("reaction", 0)),
-                    "attachments": int(derived.get("attachment", 0)),
-                    **(
-                        {"emojis": totals.get("emojis", 0)}
-                        if isinstance(totals, dict)
-                        else {}
-                    ),
+                    label: int(derived.get(et_key, 0))
+                    for label, et_key in ENTITY_LABEL_TO_TYPE.items()
+                    if label != "emojis"
                 }
+                emoji_source = (
+                    totals.get("emojis", 0)
+                    if isinstance(totals, dict)
+                    else derived.get(ENTITY_LABEL_TO_TYPE["emojis"], 0)
+                )
+                frozen_totals["emojis"] = int(emoji_source or 0)
                 meta["totals"] = frozen_totals
                 meta["totals_frozen"] = True
                 data["meta"] = meta
@@ -249,37 +257,20 @@ async def list_jobs(limit: int = 50):
                     # have not yet flipped from pending. Use max of nonpending, existing
                     # meta counters, and totals (if present) to maintain monotonicity.
                     totals_local = meta.get("totals") or {}
-                    meta["users_processed"] = max(
-                        int(nonpend.get("user", 0)),
-                        int(meta.get("users_processed") or 0),
-                        int(totals_local.get("users", 0) or 0),
-                    )
-                    meta["channels_processed"] = max(
-                        int(nonpend.get("channel", 0)),
-                        int(meta.get("channels_processed") or 0),
-                        int(totals_local.get("channels", 0) or 0),
-                    )
-                    meta["messages_processed"] = max(
-                        int(nonpend.get("message", 0)),
-                        int(meta.get("messages_processed") or 0),
-                        int(totals_local.get("messages", 0) or 0),
-                    )
-                    meta["reactions_processed"] = max(
-                        int(nonpend.get("reaction", 0)),
-                        int(meta.get("reactions_processed") or 0),
-                        int(totals_local.get("reactions", 0) or 0),
-                    )
-                    meta["attachments_processed"] = max(
-                        int(nonpend.get("attachment", 0)),
-                        int(meta.get("attachments_processed") or 0),
-                        int(totals_local.get("attachments", 0) or 0),
-                    )
+                    for label, et_key in ENTITY_LABEL_TO_TYPE.items():
+                        if label == "emojis":
+                            continue
+                        processed_key = f"{label}_processed"
+                        meta[processed_key] = max(
+                            int(nonpend.get(et_key, 0)),
+                            int(meta.get(processed_key) or 0),
+                            int(totals_local.get(label, 0) or 0),
+                        )
                 # Exported counters always reflect current non-pending counts (even during import)
-                meta["users_exported"] = nonpend.get("user", 0)
-                meta["channels_exported"] = nonpend.get("channel", 0)
-                meta["messages_exported"] = nonpend.get("message", 0)
-                meta["reactions_exported"] = nonpend.get("reaction", 0)
-                meta["attachments_exported"] = nonpend.get("attachment", 0)
+                for label, et_key in ENTITY_LABEL_TO_TYPE.items():
+                    if label == "emojis":
+                        continue
+                    meta[f"{label}_exported"] = int(nonpend.get(et_key, 0))
                 # Attach full status breakdown per type (success/failed/skipped/pending) for richer UI.
                 # Provide all four statuses even if zero to simplify client-side rendering.
                 # row.id is already an int (SQLAlchemy scalar instance). Avoid casting which upsets type checker.
@@ -355,12 +346,8 @@ async def audit_job(job_id: int):
             "emojis": _meta_int("emojis_processed"),
         }
         created = {
-            "users": created_map.get("user", 0),
-            "channels": created_map.get("channel", 0),
-            "messages": created_map.get("message", 0),
-            "reactions": created_map.get("reaction", 0),
-            "attachments": created_map.get("attachment", 0),
-            "emojis": created_map.get("custom_emoji", 0),
+            label: created_map.get(et_key, 0)
+            for label, et_key in ENTITY_LABEL_TO_TYPE.items()
         }
         existing = {
             k: max(discovered.get(k, 0) - created.get(k, 0), 0) for k in discovered
@@ -368,14 +355,7 @@ async def audit_job(job_id: int):
         # Export status (already produced in list_jobs meta); recompute for isolation
         all_status_values = [m.value for m in MappingStatus]
         export_status: dict[str, dict[str, int]] = {}
-        for et in (
-            "user",
-            "channel",
-            "message",
-            "reaction",
-            "attachment",
-            "custom_emoji",
-        ):
+        for et in set(ENTITY_LABEL_TO_TYPE.values()):
             raw = status_map.get(et, {})
             export_status[et] = {s: int(raw.get(s, 0)) for s in all_status_values}
 
@@ -397,16 +377,7 @@ async def audit_job(job_id: int):
         # Sum of statuses per type should equal created (or <= created if some still pending globally)
         mismatch_types = []
         for label, c_val in created.items():
-            # Map label to entity_type keys used in export_status
-            et_map = {
-                "users": "user",
-                "channels": "channel",
-                "messages": "message",
-                "reactions": "reaction",
-                "attachments": "attachment",
-                "emojis": "custom_emoji",
-            }
-            et_key = et_map[label]
+            et_key = ENTITY_LABEL_TO_TYPE[label]
             status_total = sum(export_status.get(et_key, {}).values())
             if status_total != c_val:
                 mismatch_types.append(et_key)
