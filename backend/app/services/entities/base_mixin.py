@@ -226,10 +226,6 @@ class BaseMapping:
                         saved_count = len(inserted_map)
 
                         for m in mappings:
-                            if m.entity_type is None:
-                                raise ValueError(
-                                    "Mapping missing entity_type during batch save"
-                                )
                             key = (m.entity_type, m.slack_id)
                             if key in inserted_map:
                                 m.id = inserted_map[key]
