@@ -220,7 +220,7 @@ class BaseMapping:
                         for rid, etype, sid in inserted:
                             if etype is None:
                                 raise ValueError(
-                                    "Entity row returned without entity_type; data corruption"
+                                    "Entity row returned without entity_type; possible database constraint or ORM mapping issue"
                                 )
                             inserted_map[(etype, sid)] = rid
                         saved_count = len(inserted_map)
