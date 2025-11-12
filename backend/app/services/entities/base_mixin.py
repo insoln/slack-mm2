@@ -156,15 +156,13 @@ class BaseMapping:
         if not mappings:
             return {"saved": 0, "existing": 0, "failed": 0}
 
+        # Group by entity_type for better logging and potential optimization
+        grouped_mappings: Dict[str, List["BaseMapping"]] = {}
         for mapping in mappings:
             if mapping.entity_type is None:
                 raise ValueError(
                     "BaseMapping.batch_save_to_db requires each mapping to define entity_type"
                 )
-
-        # Group by entity_type for better logging and potential optimization
-        grouped_mappings: Dict[str, List["BaseMapping"]] = {}
-        for mapping in mappings:
             entity_type = cast(str, mapping.entity_type)
             if entity_type not in grouped_mappings:
                 grouped_mappings[entity_type] = []
