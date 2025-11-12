@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from sqlalchemy import select, func
 from app.models.base import SessionLocal
 from app.models.import_job import ImportJob
@@ -7,6 +7,15 @@ from app.models.status_enum import MappingStatus
 import os
 import glob
 import zipfile
+
+ENTITY_LABEL_TO_TYPE = {
+    "users": "user",
+    "channels": "channel",
+    "messages": "message",
+    "reactions": "reaction",
+    "attachments": "attachment",
+    "emojis": "custom_emoji",
+}
 
 router = APIRouter()
 
@@ -32,6 +41,26 @@ async def list_jobs(limit: int = 50):
             select(ImportJob).order_by(ImportJob.id.desc()).limit(limit)
         )
         rows = res.scalars().all()
+
+        # Pre-compute export status breakdown for all jobs in a single query to avoid N+1
+        job_ids = [r.id for r in rows if r.id is not None]
+        breakdown: dict[int, dict[str, dict[str, int]]] = {}
+        if job_ids:
+            br_res = await session.execute(
+                select(
+                    Entity.job_id,
+                    Entity.entity_type,
+                    Entity.status,
+                    func.count(),
+                )
+                .where(Entity.job_id.in_(job_ids))  # type: ignore[arg-type]
+                .group_by(Entity.job_id, Entity.entity_type, Entity.status)
+            )
+            for jid, etype, status, cnt in br_res.all():
+                jid_int = int(jid)  # defensive
+                job_map = breakdown.setdefault(jid_int, {})
+                type_map = job_map.setdefault(str(etype), {})
+                type_map[str(getattr(status, "value", status))] = int(cnt)
 
         # Derive per-job totals for job-scoped types if meta.totals absent/empty
         jobs_out = []
@@ -175,17 +204,16 @@ async def list_jobs(limit: int = 50):
                 )
                 derived = {et: cnt for et, cnt in q.all()}
                 frozen_totals = {
-                    "users": int(derived.get("user", 0)),
-                    "channels": int(derived.get("channel", 0)),
-                    "messages": int(derived.get("message", 0)),
-                    "reactions": int(derived.get("reaction", 0)),
-                    "attachments": int(derived.get("attachment", 0)),
-                    **(
-                        {"emojis": totals.get("emojis", 0)}
-                        if isinstance(totals, dict)
-                        else {}
-                    ),
+                    label: int(derived.get(et_key, 0))
+                    for label, et_key in ENTITY_LABEL_TO_TYPE.items()
+                    if label != "emojis"
                 }
+                emoji_source = (
+                    totals.get("emojis", 0)
+                    if isinstance(totals, dict)
+                    else derived.get(ENTITY_LABEL_TO_TYPE["emojis"], 0)
+                )
+                frozen_totals["emojis"] = int(emoji_source or 0)
                 meta["totals"] = frozen_totals
                 meta["totals_frozen"] = True
                 data["meta"] = meta
@@ -229,37 +257,159 @@ async def list_jobs(limit: int = 50):
                     # have not yet flipped from pending. Use max of nonpending, existing
                     # meta counters, and totals (if present) to maintain monotonicity.
                     totals_local = meta.get("totals") or {}
-                    meta["users_processed"] = max(
-                        int(nonpend.get("user", 0)),
-                        int(meta.get("users_processed") or 0),
-                        int(totals_local.get("users", 0) or 0),
-                    )
-                    meta["channels_processed"] = max(
-                        int(nonpend.get("channel", 0)),
-                        int(meta.get("channels_processed") or 0),
-                        int(totals_local.get("channels", 0) or 0),
-                    )
-                    meta["messages_processed"] = max(
-                        int(nonpend.get("message", 0)),
-                        int(meta.get("messages_processed") or 0),
-                        int(totals_local.get("messages", 0) or 0),
-                    )
-                    meta["reactions_processed"] = max(
-                        int(nonpend.get("reaction", 0)),
-                        int(meta.get("reactions_processed") or 0),
-                        int(totals_local.get("reactions", 0) or 0),
-                    )
-                    meta["attachments_processed"] = max(
-                        int(nonpend.get("attachment", 0)),
-                        int(meta.get("attachments_processed") or 0),
-                        int(totals_local.get("attachments", 0) or 0),
-                    )
+                    for label, et_key in ENTITY_LABEL_TO_TYPE.items():
+                        if label == "emojis":
+                            continue
+                        processed_key = f"{label}_processed"
+                        meta[processed_key] = max(
+                            int(nonpend.get(et_key, 0)),
+                            int(meta.get(processed_key) or 0),
+                            int(totals_local.get(label, 0) or 0),
+                        )
                 # Exported counters always reflect current non-pending counts (even during import)
-                meta["users_exported"] = nonpend.get("user", 0)
-                meta["channels_exported"] = nonpend.get("channel", 0)
-                meta["messages_exported"] = nonpend.get("message", 0)
-                meta["reactions_exported"] = nonpend.get("reaction", 0)
-                meta["attachments_exported"] = nonpend.get("attachment", 0)
+                for label, et_key in ENTITY_LABEL_TO_TYPE.items():
+                    if label == "emojis":
+                        continue
+                    meta[f"{label}_exported"] = int(nonpend.get(et_key, 0))
+                # Attach full status breakdown per type (success/failed/skipped/pending) for richer UI.
+                # Provide all four statuses even if zero to simplify client-side rendering.
+                # row.id is already an int (SQLAlchemy scalar instance). Avoid casting which upsets type checker.
+                br_key = row.id
+                br_map = breakdown.get(br_key, {}) if br_key is not None else {}
+                export_status: dict[str, dict[str, int]] = {}
+                all_status_values = [
+                    m.value for m in MappingStatus
+                ]  # ['pending','skipped','failed','success']
+                for et in (
+                    "user",
+                    "channel",
+                    "message",
+                    "reaction",
+                    "attachment",
+                    "custom_emoji",
+                ):
+                    et_counts_raw = br_map.get(et, {})
+                    et_counts: dict[str, int] = {
+                        s: int(et_counts_raw.get(s, 0)) for s in all_status_values
+                    }
+                    export_status[et] = et_counts
+                meta["export_status"] = export_status
                 data["meta"] = meta
             jobs_out.append(data)
     return {"jobs": jobs_out}
+
+
+@router.get("/jobs/{job_id}/audit")
+async def audit_job(job_id: int):
+    """Comprehensive reconciliation for a single job.
+
+    Provides discovered vs created vs existing counts, live status breakdown,
+    failed summaries, unmapped channel folders, and basic integrity flags.
+    """
+    async with SessionLocal() as session:
+        job = await session.get(ImportJob, job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        meta = job.meta or {}
+        # Live created counts per type (entity rows for this job)
+        q_created = await session.execute(
+            select(Entity.entity_type, func.count())
+            .where(Entity.job_id == job_id)
+            .group_by(Entity.entity_type)
+        )
+        created_map = {et: int(cnt) for et, cnt in q_created.all()}
+        # Live status breakdown for this job
+        q_status = await session.execute(
+            select(Entity.entity_type, Entity.status, func.count())
+            .where(Entity.job_id == job_id)
+            .group_by(Entity.entity_type, Entity.status)
+        )
+        status_map: dict[str, dict[str, int]] = {}
+        for et, st, cnt in q_status.all():
+            sm = status_map.setdefault(str(et), {})
+            sm[str(getattr(st, "value", st))] = int(cnt)
+
+        def _meta_int(key: str) -> int:
+            v = meta.get(key)
+            try:
+                return int(v) if v is not None else 0
+            except Exception:
+                return 0
+
+        discovered = {
+            "users": _meta_int("users_discovered") or _meta_int("users_processed"),
+            "channels": _meta_int("channels_discovered")
+            or _meta_int("channels_processed"),
+            "messages": _meta_int("messages_processed"),
+            "reactions": _meta_int("reactions_processed"),
+            "attachments": _meta_int("attachments_processed"),
+            "emojis": _meta_int("emojis_processed"),
+        }
+        created = {
+            label: created_map.get(et_key, 0)
+            for label, et_key in ENTITY_LABEL_TO_TYPE.items()
+        }
+        existing = {
+            k: max(discovered.get(k, 0) - created.get(k, 0), 0) for k in discovered
+        }
+        # Export status (already produced in list_jobs meta); recompute for isolation
+        all_status_values = [m.value for m in MappingStatus]
+        export_status: dict[str, dict[str, int]] = {}
+        for et in set(ENTITY_LABEL_TO_TYPE.values()):
+            raw = status_map.get(et, {})
+            export_status[et] = {s: int(raw.get(s, 0)) for s in all_status_values}
+
+        failed_summary = meta.get("failed_summary") or {}
+        channel_mapping = meta.get("channel_mapping") or {}
+
+        # Integrity flags
+        integrity = {}
+        integrity["has_failures"] = any(
+            export_status.get(et, {}).get("failed", 0) > 0 for et in export_status
+        )
+        integrity["unmapped_folders"] = bool(
+            channel_mapping.get("unmapped", {}).get("total", 0) > 0
+        )
+        # Check mismatch: created should not exceed discovered
+        integrity["created_exceeds_discovered"] = any(
+            created.get(k, 0) > discovered.get(k, 0) for k in discovered
+        )
+        # Sum of statuses per type should equal created (or <= created if some still pending globally)
+        mismatch_types = []
+        for label, c_val in created.items():
+            et_key = ENTITY_LABEL_TO_TYPE[label]
+            status_total = sum(export_status.get(et_key, {}).values())
+            if status_total != c_val:
+                mismatch_types.append(et_key)
+        integrity["status_sum_mismatch_types"] = mismatch_types
+        integrity["status_sum_mismatch"] = bool(mismatch_types)
+
+        notes = []
+        if integrity["has_failures"]:
+            notes.append("One or more entity types have failures")
+        if integrity["unmapped_folders"]:
+            notes.append("Some archive folders have no channel mapping")
+        if integrity["created_exceeds_discovered"]:
+            notes.append("Created count exceeds discovered — unexpected")
+        if integrity["status_sum_mismatch"]:
+            notes.append("Status counts do not sum to created for some types")
+
+        payload = {
+            "job_id": job_id,
+            "status": getattr(job.status, "value", job.status),
+            "current_stage": job.current_stage,
+            "in_progress": job.current_stage not in {"done"},
+            "discovered": discovered,
+            "created": created,
+            "existing": existing,
+            "export_status": export_status,
+            "failed_summary": failed_summary,
+            "channel_mapping": channel_mapping,
+            "integrity": integrity,
+            "notes": notes,
+            "timestamps": {
+                "created_at": getattr(job.created_at, "isoformat", lambda: None)(),
+                "updated_at": getattr(job.updated_at, "isoformat", lambda: None)(),
+            },
+        }
+    return payload
