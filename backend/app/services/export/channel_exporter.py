@@ -390,32 +390,225 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     f"Ошибка добавления пользователя {uid} в команду {team_id}: {e}"
                 )
 
+    def _normalize_channel_name(self, name: str) -> str:
+        """Нормализовать название канала: lower, замена _ ↔ -, trim, collapse spaces."""
+        if not name:
+            return ""
+        # Приводим к нижнему регистру
+        normalized = name.lower().strip()
+        # Заменяем пробелы на дефисы
+        normalized = normalized.replace(" ", "-")
+        # Схлопываем множественные дефисы/подчеркивания в одинарные
+        import re
+
+        normalized = re.sub(r"[-_]+", "-", normalized)
+        return normalized
+
+    def _extract_search_terms(self, name: str) -> list[str]:
+        """Извлечь поисковые токены из названия канала (длина >= 3 символов)."""
+        if not name:
+            return []
+        # Разделяем по дефисам, подчеркиваниям и пробелам
+        import re
+
+        tokens = re.split(r"[-_\s]+", name.lower())
+        # Фильтруем токены длиной >= 3 символов
+        return [t for t in tokens if len(t) >= 3]
+
+    async def _search_existing_channel_id(
+        self,
+        slack_name: str,
+        slack_display_name: str | None = None,
+        is_private: bool = False,
+    ) -> tuple[str | None, str]:
+        """Многошаговый поиск существующего канала с fallback логикой.
+
+        Возвращает: (channel_id, lookup_path)
+        - channel_id: ID найденного канала или None
+        - lookup_path: строка описывающая, как был найден канал (для логирования)
+        """
+        team_id = await self._get_mm_team_id()
+
+        # Шаг 1: Попытка прямого lookup по имени (текущее поведение)
+        backend_logger.debug(f"Шаг 1: Прямой lookup канала '{slack_name}' по имени")
+        try:
+            resp = await self.mm_api_get(
+                f"/api/v4/teams/{team_id}/channels/name/{slack_name}"
+            )
+            if hasattr(resp, "status_code") and getattr(resp, "status_code") == 200:
+                try:
+                    data = resp.json()  # type: ignore[attr-defined]
+                    cid = data.get("id")
+                    if cid:
+                        backend_logger.info(
+                            f"Канал '{slack_name}' найден прямым lookup: {cid}"
+                        )
+                        return (cid, "name-lookup")
+                except Exception:
+                    backend_logger.error(
+                        f"Не-JSON ответ при lookup канала '{slack_name}': {getattr(resp,'text','')[:200]}"
+                    )
+        except Exception as e:
+            backend_logger.debug(f"Ошибка прямого lookup канала '{slack_name}': {e}")
+
+        # Шаг 2: Fallback search через /api/v4/teams/{team}/channels/search
+        backend_logger.debug(
+            f"Шаг 2: Fallback search для канала '{slack_name}' через API поиска"
+        )
+
+        # Формируем список поисковых терминов
+        search_terms = set()
+        search_terms.add(slack_name)  # исходное имя
+        search_terms.add(slack_name.lower())  # lowercase вариант
+
+        # Нормализованные варианты
+        normalized = self._normalize_channel_name(slack_name)
+        if normalized:
+            search_terms.add(normalized)
+            # Варианты с заменой _ ↔ -
+            search_terms.add(normalized.replace("-", "_"))
+            search_terms.add(normalized.replace("_", "-"))
+
+        # Добавляем display_name если есть
+        if slack_display_name:
+            search_terms.add(slack_display_name)
+            search_terms.add(slack_display_name.lower())
+
+        # Извлекаем токены для поиска (длина >= 3)
+        tokens = self._extract_search_terms(slack_name)
+        search_terms.update(tokens)
+
+        backend_logger.debug(
+            f"Поисковые термины для '{slack_name}': {list(search_terms)[:10]}"
+        )
+
+        # Собираем кандидатов из поиска
+        candidates = {}  # {channel_id: channel_data}
+        for term in search_terms:
+            if not term or len(term) < 2:  # Skip too short terms
+                continue
+            try:
+                search_resp = await self.mm_api_post(
+                    f"/api/v4/teams/{team_id}/channels/search",
+                    {"term": term},
+                )
+                if (
+                    hasattr(search_resp, "status_code")
+                    and getattr(search_resp, "status_code") == 200
+                ):
+                    try:
+                        search_data = search_resp.json()  # type: ignore[attr-defined]
+                        for chan in search_data:
+                            if isinstance(chan, dict) and "id" in chan:
+                                candidates[chan["id"]] = chan
+                    except Exception:
+                        backend_logger.debug(
+                            f"Не-JSON ответ при поиске по термину '{term}'"
+                        )
+            except Exception as e:
+                backend_logger.debug(f"Ошибка поиска по термину '{term}': {e}")
+
+        if not candidates:
+            backend_logger.warning(
+                f"Не найдено кандидатов для канала '{slack_name}' через search fallback"
+            )
+            return (
+                None,
+                f"already exists in MM, but lookup failed; candidates=0",
+            )
+
+        backend_logger.debug(f"Найдено {len(candidates)} кандидатов для '{slack_name}'")
+
+        # Шаг 3: Фильтруем кандидатов
+        # 3.1 Точное совпадение по name
+        normalized_slack_name = self._normalize_channel_name(slack_name)
+        for cid, chan in candidates.items():
+            chan_name = chan.get("name", "")
+            if normalized_slack_name and chan_name:
+                normalized_chan_name = self._normalize_channel_name(chan_name)
+                if normalized_chan_name == normalized_slack_name:
+                    # Проверяем тип канала если можем определить
+                    chan_type = chan.get("type", "")
+                    if is_private and chan_type != "P":
+                        backend_logger.debug(
+                            f"Кандидат {cid} отклонён: несовпадение типа (private vs {chan_type})"
+                        )
+                        continue
+                    backend_logger.info(
+                        f"Канал '{slack_name}' найден через search с точным совпадением name: {cid}"
+                    )
+                    return (cid, "search-fallback-exact-name")
+
+        # 3.2 Точное совпадение по display_name
+        if slack_display_name:
+            normalized_slack_display = self._normalize_channel_name(slack_display_name)
+            for cid, chan in candidates.items():
+                chan_display = chan.get("display_name", "")
+                if normalized_slack_display and chan_display:
+                    normalized_chan_display = self._normalize_channel_name(chan_display)
+                    if normalized_chan_display == normalized_slack_display:
+                        chan_type = chan.get("type", "")
+                        if is_private and chan_type != "P":
+                            backend_logger.debug(
+                                f"Кандидат {cid} отклонён: несовпадение типа по display_name"
+                            )
+                            continue
+                        backend_logger.info(
+                            f"Канал '{slack_name}' найден через search с точным совпадением display_name: {cid}"
+                        )
+                        return (cid, "search-fallback-exact-display-name")
+
+        # 3.3 Единственный кандидат с совпадением всех токенов
+        if len(candidates) == 1:
+            cid, chan = list(candidates.items())[0]
+            chan_display = (chan.get("display_name") or "").lower()
+            # Проверяем что все ключевые токены из slack_name присутствуют в display_name
+            if tokens and all(t in chan_display for t in tokens):
+                chan_type = chan.get("type", "")
+                if is_private and chan_type != "P":
+                    backend_logger.debug(
+                        f"Единственный кандидат {cid} отклонён: несовпадение типа"
+                    )
+                else:
+                    backend_logger.info(
+                        f"Канал '{slack_name}' найден как единственный кандидат с совпадением токенов: {cid}"
+                    )
+                    return (cid, "search-fallback-single-candidate")
+
+        # Шаг 4: Не удалось однозначно определить канал
+        candidate_info = []
+        for cid, chan in list(candidates.items())[:5]:  # ограничим до 5 для лога
+            candidate_info.append(
+                f"{cid}({chan.get('name','?')}/{chan.get('display_name','?')})"
+            )
+
+        err_msg = (
+            f"already exists in MM, but lookup failed; "
+            f"candidates={len(candidates)}, "
+            f"top5={','.join(candidate_info)}"
+        )
+        backend_logger.warning(
+            f"Не удалось однозначно определить канал '{slack_name}': {err_msg}"
+        )
+        return (None, err_msg)
+
     async def _lookup_existing_channel_id(self, name: str) -> str | None:
         """Попытаться найти существующий канал по имени через публичный MM API.
 
         Используем /api/v4/teams/{team_id}/channels/name/{name}. Если найден —
         возвращаем id. При ошибке/отсутствии возвращаем None. Не бросаем исключения,
         чтобы не останавливать основной экспорт потоком.
+
+        LEGACY: Этот метод теперь вызывает _search_existing_channel_id для
+        обратной совместимости и использует расширенную логику поиска.
         """
-        try:
-            team_id = await self._get_mm_team_id()
-            resp = await self.mm_api_get(
-                f"/api/v4/teams/{team_id}/channels/name/{name}"
+        slack_display_name = self._get_channel_display_name(self.entity.raw_data)
+        is_private = self._is_private_channel(self.entity.raw_data)
+        channel_id, lookup_path = await self._search_existing_channel_id(
+            name, slack_display_name, is_private
+        )
+        if channel_id:
+            backend_logger.info(
+                f"Найден существующий канал '{name}' через {lookup_path}: {channel_id}"
             )
-            if hasattr(resp, "status_code") and getattr(resp, "status_code") == 200:
-                try:
-                    data = resp.json()  # type: ignore[attr-defined]
-                except Exception:
-                    backend_logger.error(
-                        f"Не-JSON ответ при lookup канала '{name}': {getattr(resp,'text','')[:200]}"
-                    )
-                    return None
-                cid = data.get("id")
-                return cid
-            else:
-                backend_logger.debug(
-                    f"lookup канала '{name}' вернул {getattr(resp,'status_code',None)}: {getattr(resp,'text','')[:120]}"
-                )
-        except Exception as e:
-            backend_logger.error(f"Ошибка lookup существующего канала '{name}': {e}")
-        return None
+        return channel_id
