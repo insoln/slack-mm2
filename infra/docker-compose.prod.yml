@@ -1,59 +1,78 @@
 services:
-  db:
-    image: postgres:15
-    restart: always
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: slack-mm
-      POSTGRES_USER: slack-mm
-      POSTGRES_PASSWORD: slack-mm
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: ${POSTGRES_DB:-slack-mm}
+      POSTGRES_USER: ${POSTGRES_USER:-slack-mm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-slack-mm}
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U slack-mm"]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-slack-mm}"]
+      interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - core
 
   backend:
     build:
       context: ..
       dockerfile: backend/Dockerfile
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command:
+      - sh
+      - -c
+      - |
+        alembic upgrade head && \
+        uvicorn app.main:app --host 0.0.0.0 --port 8000
+    env_file:
+      - ./.env.prod
     environment:
-      DATABASE_URL: postgresql://slack-mm:slack-mm@db:5432/slack-mm
-      MM_TEAM: ${MM_TEAM}
-      EXPORT_WORKERS: 5
-      MM_URL: ${MM_URL}
-      MM_TOKEN: ${MM_TOKEN}
-      SLACK_VERIFICATION_TOKEN: ${SLACK_VERIFICATION_TOKEN}
-      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
-      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://slack-mm:slack-mm@postgres:5432/slack-mm}
+      EXPORT_WORKERS: ${EXPORT_WORKERS:-5}
+      ATTACHMENT_WORKERS: ${ATTACHMENT_WORKERS:-3}
+      ALEMBIC_INI: /app/alembic.ini
     depends_on:
-      db:
+      postgres:
         condition: service_healthy
     ports:
-      - "8000:8000"
-    volumes:
-      - ../backend:/app
-      - ../infra:/infra
-      - ../alembic.ini:/alembic.ini
-    restart: always
-    env_file:
-      - ../.env
+      - "${BACKEND_HTTP_PORT:-8000}:8000"
+    restart: unless-stopped
+    init: true
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthcheck')
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - core
+
   frontend:
     build:
       context: ../frontend
-      dockerfile: Dockerfile
-    command: ["npm", "run", "build"]
-    ports:
-      - "80:80"
-    volumes:
-      - ../frontend:/app
+      dockerfile: Dockerfile.prod
     depends_on:
-      - backend
-    restart: always
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_HTTP_PORT:-8080}:80"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider --quiet http://127.0.0.1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - core
 
 volumes:
-  db_data: 
+  db_data:
+
+networks:
+  core:
+    driver: bridge

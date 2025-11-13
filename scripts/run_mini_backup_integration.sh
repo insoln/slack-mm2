@@ -56,10 +56,10 @@ if [[ ! -f "$DATASET_FILE" ]]; then
     exit 1
   fi
 
-# Ensure infra/.env exists (CI runners won't have it by default). Provide dummy Slack tokens to satisfy docker compose env expectations.
-if [[ ! -f infra/.env ]]; then
-  echo "[INFO] Creating infra/.env with placeholder Slack tokens"
-  cat > infra/.env <<'ENVEOF'
+# Ensure infra/.env.dev exists (CI runners won't have it by default). Provide dummy Slack tokens to satisfy docker compose env expectations.
+if [[ ! -f infra/.env.dev ]]; then
+  echo "[INFO] Creating infra/.env.dev with placeholder Slack tokens"
+  cat > infra/.env.dev <<'ENVEOF'
 SLACK_VERIFICATION_TOKEN=dummy
 SLACK_BOT_TOKEN=dummy
 SLACK_SIGNING_SECRET=dummy

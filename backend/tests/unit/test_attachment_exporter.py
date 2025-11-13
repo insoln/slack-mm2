@@ -208,3 +208,41 @@ class TestAttachmentExporter:
             mock_set_status.assert_called_once_with(
                 "skipped", error="Attachment large-file.pdf 50.0MB exceeds cap 10.0MB"
             )
+
+    @pytest.mark.asyncio
+    async def test_attachment_extended_timeout_env_applied(self):
+        """Smoke test: ensure ATTACHMENT_URL_TIMEOUT_SECONDS presence does not break export flow."""
+        raw_data = {
+            "name": "timeout-file.bin",
+            "url_private": "https://files.slack.com/files-pri/T123/F999/timeout-file.bin",
+            "channel_id": "C123456789",
+        }
+        entity = self.create_mock_attachment_entity(raw_data)
+        exporter = AttachmentExporter(entity)
+        with patch.object(
+            exporter,
+            "_resolve_mm_channel_id_for_attachment",
+            return_value="mm_channel_123",
+        ), patch.object(
+            exporter, "_resolve_mm_user_id_for_attachment", return_value="mm_user_123"
+        ), patch.object(
+            exporter, "set_status", new_callable=AsyncMock
+        ) as mock_set_status, patch.object(
+            exporter, "log_export"
+        ), patch.object(
+            exporter, "mm_api_post_attachment_from_url", new_callable=AsyncMock
+        ) as mock_api_call, patch.dict(
+            os.environ,
+            {
+                "SLACK_BOT_TOKEN": "xoxb-test-token",
+                "ATTACHMENT_URL_TIMEOUT_SECONDS": "5",
+            },
+        ):
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {"file_id": "mattermost_file_timeout"}
+            mock_api_call.return_value = mock_response
+            await exporter.export_entity()
+            mock_api_call.assert_called_once()
+            mock_set_status.assert_called_once_with("success")
+            assert entity.mattermost_id == "mattermost_file_timeout"

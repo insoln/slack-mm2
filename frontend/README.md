@@ -56,5 +56,5 @@ docker build -t slack-mm2-frontend:prod -f frontend/Dockerfile .
 ### Планируемые улучшения
 * Кеш npm (`/root/.npm`) через buildkit cache mount
 * E2E smoke тест (Playwright)
-* Вынос общих ENV (API base URL) в `.env`
+* Вынос общих ENV (API base URL) в `.env.dev`
 * Возможный многостадийный Dockerfile с кешем зависимостей
