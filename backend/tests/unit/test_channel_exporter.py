@@ -148,3 +148,286 @@ async def test_mpim_insufficient_members_skipped(monkeypatch):
         await exporter.export_entity()
     assert ent.status.name == "skipped"
     assert "Insufficient" in (ent.error_message or "")
+
+
+def test_normalize_channel_name():
+    """Test channel name normalization logic."""
+    ent = StubEntity(entity_type="channel", slack_id="C123", raw_data={})
+    exporter = ChannelExporter(ent)
+
+    # Basic normalization
+    assert exporter._normalize_channel_name("General") == "general"
+    assert exporter._normalize_channel_name("Marketing Team") == "marketing-team"
+    assert exporter._normalize_channel_name("Marketing_Team") == "marketing-team"
+    assert exporter._normalize_channel_name("marketing__team") == "marketing-team"
+    assert exporter._normalize_channel_name("marketing--team") == "marketing-team"
+    assert exporter._normalize_channel_name("  Marketing  ") == "marketing"
+    assert exporter._normalize_channel_name("") == ""
+
+
+def test_extract_search_terms():
+    """Test search term extraction from channel names."""
+    ent = StubEntity(entity_type="channel", slack_id="C123", raw_data={})
+    exporter = ChannelExporter(ent)
+
+    # Extract tokens >= 3 chars
+    assert set(exporter._extract_search_terms("marketing-smm-crm")) == {
+        "marketing",
+        "smm",
+        "crm",
+    }
+    assert set(exporter._extract_search_terms("test_channel_name")) == {
+        "test",
+        "channel",
+        "name",
+    }
+    assert set(exporter._extract_search_terms("ab-cd-efg")) == {"efg"}  # only >= 3
+    assert exporter._extract_search_terms("") == []
+
+
+@pytest.mark.asyncio
+async def test_search_existing_channel_direct_lookup_success():
+    """Test direct lookup success path (step 1)."""
+    ent = StubEntity(
+        entity_type="channel", slack_id="C123", raw_data={"name": "general"}
+    )
+    exporter = ChannelExporter(ent)
+
+    # Mock direct lookup success
+    lookup_resp = SimpleNamespace(
+        status_code=200,
+        text='{"id":"chan123"}',
+        json=lambda: {"id": "chan123"},
+    )
+
+    with patch.object(exporter, "mm_api_get", new=AsyncMock(return_value=lookup_resp)):
+        with patch.object(
+            exporter, "_get_mm_team_id", new=AsyncMock(return_value="team1")
+        ):
+            channel_id, path = await exporter._search_existing_channel_id("general")
+
+    assert channel_id == "chan123"
+    assert path == "name-lookup"
+
+
+@pytest.mark.asyncio
+async def test_search_existing_channel_fallback_exact_name():
+    """Test search fallback with exact name match (step 3.1)."""
+    ent = StubEntity(
+        entity_type="channel", slack_id="C123", raw_data={"name": "marketing_team"}
+    )
+    exporter = ChannelExporter(ent)
+
+    # Direct lookup fails (404)
+    lookup_resp = SimpleNamespace(status_code=404, text="Not found")
+
+    # Search returns candidate with matching normalized name
+    search_resp = SimpleNamespace(
+        status_code=200,
+        text="[]",
+        json=lambda: [
+            {
+                "id": "chan456",
+                "name": "marketing-team",  # Normalized match
+                "display_name": "Marketing Team",
+                "type": "O",
+            }
+        ],
+    )
+
+    async def mock_get(path):
+        return lookup_resp
+
+    async def mock_post(path, payload):
+        return search_resp
+
+    with patch.object(exporter, "mm_api_get", new=AsyncMock(side_effect=mock_get)):
+        with patch.object(
+            exporter, "mm_api_post", new=AsyncMock(side_effect=mock_post)
+        ):
+            with patch.object(
+                exporter, "_get_mm_team_id", new=AsyncMock(return_value="team1")
+            ):
+                channel_id, path = await exporter._search_existing_channel_id(
+                    "marketing_team"
+                )
+
+    assert channel_id == "chan456"
+    assert path == "search-fallback-exact-name"
+
+
+@pytest.mark.asyncio
+async def test_search_existing_channel_fallback_exact_display_name():
+    """Test search fallback with exact display_name match (step 3.2)."""
+    ent = StubEntity(
+        entity_type="channel",
+        slack_id="C123",
+        raw_data={"name": "old-name", "display_name": "Marketing SMM"},
+    )
+    exporter = ChannelExporter(ent)
+
+    # Direct lookup fails
+    lookup_resp = SimpleNamespace(status_code=404, text="Not found")
+
+    # Search returns candidate with matching display_name
+    search_resp = SimpleNamespace(
+        status_code=200,
+        text="[]",
+        json=lambda: [
+            {
+                "id": "chan789",
+                "name": "some-internal-name",
+                "display_name": "Marketing_SMM",  # Normalized match with display
+                "type": "O",
+            }
+        ],
+    )
+
+    async def mock_get(path):
+        return lookup_resp
+
+    async def mock_post(path, payload):
+        return search_resp
+
+    with patch.object(exporter, "mm_api_get", new=AsyncMock(side_effect=mock_get)):
+        with patch.object(
+            exporter, "mm_api_post", new=AsyncMock(side_effect=mock_post)
+        ):
+            with patch.object(
+                exporter, "_get_mm_team_id", new=AsyncMock(return_value="team1")
+            ):
+                channel_id, path = await exporter._search_existing_channel_id(
+                    "old-name", slack_display_name="Marketing SMM"
+                )
+
+    assert channel_id == "chan789"
+    assert path == "search-fallback-exact-display-name"
+
+
+@pytest.mark.asyncio
+async def test_search_existing_channel_fallback_single_candidate_with_tokens():
+    """Test search fallback with single candidate matching all tokens (step 3.3)."""
+    ent = StubEntity(
+        entity_type="channel", slack_id="C123", raw_data={"name": "marketing-smm"}
+    )
+    exporter = ChannelExporter(ent)
+
+    # Direct lookup fails
+    lookup_resp = SimpleNamespace(status_code=404, text="Not found")
+
+    # Search returns single candidate with all tokens in display_name
+    search_resp = SimpleNamespace(
+        status_code=200,
+        text="[]",
+        json=lambda: [
+            {
+                "id": "chan999",
+                "name": "different-internal-name",
+                "display_name": "Our Marketing and SMM Channel",
+                "type": "O",
+            }
+        ],
+    )
+
+    async def mock_get(path):
+        return lookup_resp
+
+    async def mock_post(path, payload):
+        return search_resp
+
+    with patch.object(exporter, "mm_api_get", new=AsyncMock(side_effect=mock_get)):
+        with patch.object(
+            exporter, "mm_api_post", new=AsyncMock(side_effect=mock_post)
+        ):
+            with patch.object(
+                exporter, "_get_mm_team_id", new=AsyncMock(return_value="team1")
+            ):
+                channel_id, path = await exporter._search_existing_channel_id(
+                    "marketing-smm"
+                )
+
+    assert channel_id == "chan999"
+    assert path == "search-fallback-single-candidate"
+
+
+@pytest.mark.asyncio
+async def test_search_existing_channel_no_candidates():
+    """Test search fallback with no candidates found."""
+    ent = StubEntity(
+        entity_type="channel", slack_id="C123", raw_data={"name": "nonexistent"}
+    )
+    exporter = ChannelExporter(ent)
+
+    # Direct lookup fails
+    lookup_resp = SimpleNamespace(status_code=404, text="Not found")
+
+    # Search returns empty list
+    search_resp = SimpleNamespace(status_code=200, text="[]", json=lambda: [])
+
+    async def mock_get(path):
+        return lookup_resp
+
+    async def mock_post(path, payload):
+        return search_resp
+
+    with patch.object(exporter, "mm_api_get", new=AsyncMock(side_effect=mock_get)):
+        with patch.object(
+            exporter, "mm_api_post", new=AsyncMock(side_effect=mock_post)
+        ):
+            with patch.object(
+                exporter, "_get_mm_team_id", new=AsyncMock(return_value="team1")
+            ):
+                channel_id, path = await exporter._search_existing_channel_id(
+                    "nonexistent"
+                )
+
+    assert channel_id is None
+    assert "candidates=0" in path
+
+
+@pytest.mark.asyncio
+async def test_search_existing_channel_multiple_ambiguous_candidates():
+    """Test search fallback with multiple ambiguous candidates."""
+    ent = StubEntity(entity_type="channel", slack_id="C123", raw_data={"name": "test"})
+    exporter = ChannelExporter(ent)
+
+    # Direct lookup fails
+    lookup_resp = SimpleNamespace(status_code=404, text="Not found")
+
+    # Search returns multiple candidates without clear match
+    search_resp = SimpleNamespace(
+        status_code=200,
+        text="[]",
+        json=lambda: [
+            {
+                "id": "chan1",
+                "name": "test-channel-one",
+                "display_name": "Test Channel One",
+                "type": "O",
+            },
+            {
+                "id": "chan2",
+                "name": "test-channel-two",
+                "display_name": "Test Channel Two",
+                "type": "O",
+            },
+        ],
+    )
+
+    async def mock_get(path):
+        return lookup_resp
+
+    async def mock_post(path, payload):
+        return search_resp
+
+    with patch.object(exporter, "mm_api_get", new=AsyncMock(side_effect=mock_get)):
+        with patch.object(
+            exporter, "mm_api_post", new=AsyncMock(side_effect=mock_post)
+        ):
+            with patch.object(
+                exporter, "_get_mm_team_id", new=AsyncMock(return_value="team1")
+            ):
+                channel_id, path = await exporter._search_existing_channel_id("test")
+
+    assert channel_id is None
+    assert "candidates=2" in path

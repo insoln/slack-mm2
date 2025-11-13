@@ -112,12 +112,39 @@ class MMApiMixin:
         attempts = 4 if is_plugin else 1
         delay = 0.5
         last_resp = None
+        # Extended timeout logic: large attachments (video, big binaries) may exceed the
+        # default 30s client timeout. For the special attachment_from_url endpoint we
+        # apply a longer per-request timeout (read/write) while keeping a modest
+        # connect/pool timeout. Controlled via ATTACHMENT_URL_TIMEOUT_SECONDS env var.
+        per_request_timeout: httpx.Timeout | float | None = None
+        if is_plugin:
+            if path.endswith("/attachment_from_url"):
+                try:
+                    # Accept either int or float seconds
+                    ext_seconds = float(
+                        os.getenv("ATTACHMENT_URL_TIMEOUT_SECONDS", "600")
+                    )
+                    # Construct granular timeout: connect/pool small, read/write extended
+                    per_request_timeout = httpx.Timeout(
+                        connect=10.0,
+                        read=ext_seconds,
+                        write=ext_seconds,
+                        pool=10.0,
+                    )
+                except Exception:
+                    # Fallback to a simple scalar (treated as total timeout by httpx)
+                    per_request_timeout = 600.0
         for i in range(attempts):
             backend_logger.debug(
                 f"MM API POST {client.base_url}{path} attempt={i+1}/{attempts} payload={redacted}"
             )
             try:
-                resp = await client.post(path, json=payload)
+                if per_request_timeout is not None:
+                    resp = await client.post(
+                        path, json=payload, timeout=per_request_timeout
+                    )
+                else:
+                    resp = await client.post(path, json=payload)
             except Exception as e:  # noqa: BLE001
                 if i + 1 == attempts:
                     backend_logger.error(
