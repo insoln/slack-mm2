@@ -40,7 +40,7 @@ services:
       - "${BACKEND_HTTP_PORT:-8000}:8000"
     restart: unless-stopped
     # NOTE: Image already uses Tini as ENTRYPOINT. Avoid a second init layer to prevent
-    # duplicate non-PID1 Tini warnings and redundant process. (See dev compose change / PR #25.)
+    # duplicate non-PID1 Tini warnings and redundant process.
     healthcheck:
       test:
         - CMD
