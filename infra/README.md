@@ -52,7 +52,18 @@ docker compose -f docker-compose.dev.yml up --build -d
 ### Production (prod)
 - Запуск: backend, frontend, persistent Postgres (volume)
 - Mattermost не поднимается
-- - Название команды Mattermost задаётся через переменную окружения MM_TEAM в .env (например, MM_TEAM=yourteam).
+- Перед запуском заполните `infra/.env.prod` (копия с реальными токенами и URL Mattermost). Минимальный пример:
+  ```bash
+  cat > infra/.env.prod <<'EOF'
+  MM_URL=https://mattermost.example.com
+  MM_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxx
+  MM_TEAM=yourteam
+  SLACK_VERIFICATION_TOKEN=...
+  SLACK_BOT_TOKEN=...
+  SLACK_SIGNING_SECRET=...
+  EOF
+  ```
+- Название команды Mattermost задаётся через переменную окружения MM_TEAM в `.env.prod` (например, `MM_TEAM=yourteam`).
 - Для запуска:
   ```bash
   cd infra

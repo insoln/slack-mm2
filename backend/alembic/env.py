@@ -7,6 +7,24 @@ from alembic import context
 
 import os
 
+
+def _sync_database_url() -> str:
+    """Return the DATABASE_URL suited for Alembic (sync driver).
+
+    Allows the runtime app to use async URLs while Alembic sticks to psycopg2.
+    """
+    env_url = os.environ.get("DATABASE_URL")
+    if env_url:
+        # Convert common async driver specifiers to psycopg2 for migrations.
+        if env_url.startswith("postgresql+asyncpg"):
+            return env_url.replace("postgresql+asyncpg", "postgresql+psycopg2", 1)
+        return env_url
+    cfg_url = config.get_main_option("sqlalchemy.url")
+    if not cfg_url:
+        raise RuntimeError("sqlalchemy.url not configured in alembic.ini")
+    return cfg_url
+
+
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
@@ -37,11 +55,7 @@ def run_migrations_offline() -> None:
     script output.
 
     """
-    url = os.environ.get("DATABASE_URL")
-    print(f"[ALEMBIC DEBUG] sqlalchemy.url = {url}")
-    import sys
-
-    sys.exit(0)
+    url = _sync_database_url()
     context.configure(
         url=url,
         # target_metadata=target_metadata, # Removed as per edit hint
@@ -60,6 +74,7 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
+    config.set_main_option("sqlalchemy.url", _sync_database_url())
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
