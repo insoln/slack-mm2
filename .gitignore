@@ -43,6 +43,7 @@ infra/plugin/webapp/.eslintignore
 .env.local
 .env.*.local
 infra/.env
+infra/.env.*
 backend/.env
 frontend/.env
 
