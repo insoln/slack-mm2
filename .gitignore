@@ -48,3 +48,4 @@ frontend/.env
 # GitHub Actions (если не нужны в репо)
 # .github/
 .env
+.venv/

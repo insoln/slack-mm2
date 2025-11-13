@@ -558,51 +558,60 @@ async def parse_channel_messages(
         created_emojis = await _create_emojis(emojis_seen, emoji_list)
 
     # Post-pass integrity check for reactions: count reactions without one of required relations
-    try:
-        from sqlalchemy import select as _select, func as _func
-        from app.models.base import SessionLocal as _S
-        from app.models.entity import Entity as _E
-        from app.models.entity_relation import EntityRelation as _ER
+    # Can be disabled via SKIP_INTEGRITY_CHECKS=1 for large datasets to avoid blocking export
+    skip_checks = os.environ.get("SKIP_INTEGRITY_CHECKS", "0") in ("1", "true", "TRUE")
+    if not skip_checks:
+        try:
+            from sqlalchemy import select as _select, func as _func, exists as _exists
+            from app.models.base import SessionLocal as _S
+            from app.models.entity import Entity as _E
+            from app.models.entity_relation import EntityRelation as _ER
 
-        async with _S() as _s:
-            # reactions for this job
-            cond_job = (_E.entity_type == "reaction") & (_E.job_id == job_id)
-            q_total = await _s.execute(
-                _select(_func.count()).select_from(_E).where(cond_job)
-            )
-            total_reac = int(q_total.scalar_one())
-            # missing reacted_by
-            q_missing_by = await _s.execute(
-                _select(_E.id)
-                .where(cond_job)
-                .where(
-                    ~_E.id.in_(
-                        _select(_ER.to_entity_id).where(
-                            _ER.relation_type == "reacted_by"
+            async with _S() as _s:
+                # reactions for this job
+                cond_job = (_E.entity_type == "reaction") & (_E.job_id == job_id)
+                q_total = await _s.execute(
+                    _select(_func.count()).select_from(_E).where(cond_job)
+                )
+                total_reac = int(q_total.scalar_one())
+
+                # Optimized: Use NOT EXISTS instead of NOT IN for better performance
+                # missing reacted_by - check if reaction has no user relation
+                q_missing_by = await _s.execute(
+                    _select(_E.id)
+                    .where(cond_job)
+                    .where(
+                        ~_exists(
+                            _select(1)
+                            .select_from(_ER)
+                            .where(_ER.relation_type == "reacted_by")
+                            .where(_ER.to_entity_id == _E.id)
                         )
                     )
                 )
-            )
-            missing_by = len(q_missing_by.scalars().all())
-            # missing reacted_to
-            q_missing_to = await _s.execute(
-                _select(_E.id)
-                .where(cond_job)
-                .where(
-                    ~_E.id.in_(
-                        _select(_ER.from_entity_id).where(
-                            _ER.relation_type == "reacted_to"
+                missing_by = len(q_missing_by.scalars().all())
+
+                # missing reacted_to - check if reaction has no message relation
+                q_missing_to = await _s.execute(
+                    _select(_E.id)
+                    .where(cond_job)
+                    .where(
+                        ~_exists(
+                            _select(1)
+                            .select_from(_ER)
+                            .where(_ER.relation_type == "reacted_to")
+                            .where(_ER.from_entity_id == _E.id)
                         )
                     )
                 )
-            )
-            missing_to = len(q_missing_to.scalars().all())
-            if total_reac > 0 and (missing_by or missing_to):
-                backend_logger.warning(
-                    f"[INTEGRITY][reaction] job_id={job_id} total={total_reac} missing_reacted_by={missing_by} missing_reacted_to={missing_to}"
-                )
-    except Exception:
-        pass
+                missing_to = len(q_missing_to.scalars().all())
+
+                if total_reac > 0 and (missing_by or missing_to):
+                    backend_logger.warning(
+                        f"[INTEGRITY][reaction] job_id={job_id} total={total_reac} missing_reacted_by={missing_by} missing_reacted_to={missing_to}"
+                    )
+        except Exception:
+            pass
 
     return {
         "messages": messages_count,
