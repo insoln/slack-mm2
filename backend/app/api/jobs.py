@@ -101,9 +101,10 @@ async def list_jobs(limit: int = 50):
                         if os.path.exists(os.path.join(base_dir, fname)):
                             total += 1
                     # daily message JSONs per channel
+                    # Exclude FC: directories (file comments) as they don't contain message data
                     for entry in os.listdir(base_dir):
                         p = os.path.join(base_dir, entry)
-                        if os.path.isdir(p):
+                        if os.path.isdir(p) and not entry.startswith("FC:"):
                             total += len(glob.glob(os.path.join(p, "*.json")))
                     meta["json_files_total"] = int(total)
                     # processed remains whatever orchestrator has set; don't derive here to avoid expensive/fragile scans
@@ -164,7 +165,11 @@ async def list_jobs(limit: int = 50):
                                         total += 1
                                 else:
                                     # per-channel daily JSON: any *.json placed under some folder (channel/chat)
-                                    if fname.lower().endswith(".json"):
+                                    # Exclude FC: directories (file comments) as they don't contain message data
+                                    parent_dir = parts[-2] if len(parts) >= 2 else ""
+                                    if fname.lower().endswith(
+                                        ".json"
+                                    ) and not parent_dir.startswith("FC:"):
                                         total += 1
                         if total > 0:
                             meta["json_files_total"] = int(total)

@@ -3,6 +3,8 @@
 **/*.pyc
 **/*.pyo
 **/.pytest_cache/
+.venv/
+venv/
 
 # Node/JS
 **/node_modules/
