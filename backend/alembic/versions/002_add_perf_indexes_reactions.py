@@ -1,12 +1,12 @@
 """002_add_perf_indexes_reactions
 
-Adds performance indexes to optimize reaction integrity checks and export queries.
+Adds two new performance indexes to optimize reaction integrity checks and export queries.
 
 This migration addresses slow NOT IN queries during the post-import integrity check
 phase by adding:
 
 1. Composite index on entities(entity_type, job_id, id) for faster filtering
-2. Indexes on entity_relations for relation_type checks (reacted_by, reacted_to)
+2. Index on entities(entity_type, status) for efficient status-based queries
 
 All indexes are created with CONCURRENTLY to avoid blocking production workloads.
 
