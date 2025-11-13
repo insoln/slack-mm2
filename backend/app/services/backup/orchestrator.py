@@ -124,9 +124,10 @@ async def orchestrate_slack_import(zip_path: str):  # noqa: C901 (keep readable)
             if exists:
                 total += 1
         # Count per-channel message JSON files inside folders
+        # Exclude FC: directories (file comments) as they don't contain message data
         for entry in os.listdir(base_dir):
             p = os.path.join(base_dir, entry)
-            if os.path.isdir(p):
+            if os.path.isdir(p) and not entry.startswith("FC:"):
                 for _ in glob.glob(os.path.join(p, "*.json")):
                     total += 1
         return total, presence
