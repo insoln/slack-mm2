@@ -610,9 +610,11 @@ async def parse_channel_messages(
                     backend_logger.warning(
                         f"[INTEGRITY][reaction] job_id={job_id} total={total_reac} missing_reacted_by={missing_by} missing_reacted_to={missing_to}"
                     )
-        except Exception:
-            pass
-
+        except Exception as e:
+            backend_logger.error(
+                f"[INTEGRITY][reaction] job_id={job_id} integrity check failed: {e}",
+                exc_info=True,
+            )
     return {
         "messages": messages_count,
         "reactions": reactions_count,
