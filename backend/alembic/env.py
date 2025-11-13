@@ -56,8 +56,6 @@ def run_migrations_offline() -> None:
 
     """
     url = _sync_database_url()
-    if not url:
-        raise RuntimeError("DATABASE_URL is not configured for Alembic migrations")
     context.configure(
         url=url,
         # target_metadata=target_metadata, # Removed as per edit hint
