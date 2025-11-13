@@ -431,3 +431,111 @@ async def test_search_existing_channel_multiple_ambiguous_candidates():
 
     assert channel_id is None
     assert "candidates=2" in path
+
+
+@pytest.mark.asyncio
+async def test_dm_with_missing_users_creates_placeholders():
+    """Test that DM with missing users creates placeholder entities and exports them."""
+    ent = StubEntity(
+        entity_type="channel",
+        slack_id="D123",
+        raw_data={"id": "D123", "members": ["U1", "U2"]},
+    )
+    exporter = ChannelExporter(ent)
+
+    # Simulate DM creation success
+    dm_resp = SimpleNamespace(
+        status_code=201,
+        text='{"channel_id":"mm_dm_id"}',
+        json=lambda: {"channel_id": "mm_dm_id"},
+    )
+
+    # After placeholders are created and exported, _resolve_mm_user_ids should return 2 IDs
+    async def mock_resolve_mm_user_ids(slack_ids):
+        # Simulate that both users now have MM IDs after placeholder creation
+        return [f"mm_{sid.lower()}" for sid in slack_ids]
+
+    with patch.object(
+        exporter,
+        "_resolve_mm_user_ids",
+        new=AsyncMock(side_effect=mock_resolve_mm_user_ids),
+    ):
+        with patch.object(exporter, "mm_api_post", new=AsyncMock(return_value=dm_resp)):
+
+            async def fake_set_status(status, error=None):
+                ent.status = SimpleNamespace(name=status)
+                ent.error_message = error
+
+            exporter.set_status = fake_set_status  # type: ignore
+            await exporter.export_entity()
+
+    # Should have successfully created the DM
+    assert ent.mattermost_id == "mm_dm_id"
+    assert ent.status.name == "success"
+
+
+@pytest.mark.asyncio
+async def test_resolve_mm_user_ids_creates_placeholder():
+    """Test _resolve_mm_user_ids creates placeholder for missing users."""
+    from unittest.mock import MagicMock
+
+    ent = StubEntity(entity_type="channel", slack_id="D123", raw_data={"id": "D123"})
+    exporter = ChannelExporter(ent)
+
+    # Mock SessionLocal where it's actually imported from
+    with patch("app.models.base.SessionLocal") as mock_session_local:
+        mock_session = AsyncMock()
+        mock_session_local.return_value.__aenter__.return_value = mock_session
+
+        # Track calls to execute to simulate: first query returns None, second returns entity with MM ID
+        call_count = [0]
+
+        async def mock_execute(query):
+            call_count[0] += 1
+            mock_result = MagicMock()
+
+            if call_count[0] == 1:
+                # First query: user not found
+                mock_result.scalar_one_or_none.return_value = None
+            else:
+                # Second query (after creation): user found with MM ID
+                fake_entity = StubEntity(
+                    slack_id="U_MISSING",
+                    entity_type="user",
+                    mattermost_id="mm_u_missing",
+                )
+                mock_result.scalar_one_or_none.return_value = fake_entity
+
+            return mock_result
+
+        mock_session.execute.side_effect = mock_execute
+        mock_session.refresh = AsyncMock()
+
+        # Mock User.save_to_db
+        async def mock_user_save(self):
+            fake_entity = StubEntity(
+                slack_id=self.slack_id,
+                entity_type="user",
+                mattermost_id=None,
+                raw_data=self.raw_data,
+            )
+            return fake_entity
+
+        # Mock UserExporter.export_entity
+        async def mock_user_export(self):
+            self.entity.mattermost_id = f"mm_{self.entity.slack_id.lower()}"
+
+        with patch(
+            "app.services.entities.user.User.save_to_db",
+            new=mock_user_save,
+        ):
+            with patch(
+                "app.services.export.user_exporter.UserExporter.export_entity",
+                new=mock_user_export,
+            ):
+                # Test _resolve_mm_user_ids with a missing user
+                result = await exporter._resolve_mm_user_ids(["U_MISSING"])
+
+                # Should have created placeholder and returned MM ID
+                assert len(result) == 1
+                assert result[0] == "mm_u_missing"
