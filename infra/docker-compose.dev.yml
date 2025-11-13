@@ -61,9 +61,9 @@ services:
       ATTACHMENT_WORKERS: 5
       # Allow attachments whose url_private begins with any of these prefixes (CSV). Include test-files fixture host for CI integration dataset.
       IMPORT_URL_PREFIXES: "https://files.slack.com,http://test-files:9000"
-      SLACK_VERIFICATION_TOKEN: ${SLACK_VERIFICATION_TOKEN}
-      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
-      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET}
+      # IMPORTANT: Slack tokens must come from env_file (.env.dev). Do NOT override them here with interpolation.
+      # Using ${VAR} causes Compose to substitute host env (blank) and overwrite values from env_file.
+      # Therefore we intentionally omit SLACK_* here so that env_file provides them.
     depends_on:
       db:
         condition: service_healthy
