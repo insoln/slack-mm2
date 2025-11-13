@@ -44,6 +44,7 @@ For integration tests that connect to Mattermost API:
 #### Import Configuration (Single-Pass Importer)
 Current unified single-pass importer (messages + reactions + attachments + emojis) uses fixed constants for predictable behavior:
 * `IMPORT_URL_PREFIXES` — CSV of allowed `url_private` prefixes for attachments (default: `https://files.slack.com`). Test dataset adds `http://test-files:9000`.
+* `ATTACHMENT_URL_TIMEOUT_SECONDS` — extended timeout (seconds) for large attachment streaming via plugin endpoint `/attachment_from_url` (default 600). Increase for large videos; decrease to detect stalls more aggressively.
 
 ### Frontend Development (React/Vite)
 - **Install dependencies**: `cd frontend && npm ci` -- takes ~7 seconds
@@ -67,7 +68,6 @@ Current unified single-pass importer (messages + reactions + attachments + emoji
 - **Mattermost Plugin docs**: https://developers.mattermost.com/integrate/plugins/components/server/
 - **Server API reference**: https://developers.mattermost.com/integrate/reference/server/server-reference
 
-
 #### Plugin Structure  
 - `plugin.json` - Manifest (id/version)
 - `server/` - Go server implementation
@@ -84,6 +84,7 @@ Legacy `build-dev.sh` and the old Makefile have been removed in favor of the rep
   - Database connection strings (e.g., `DATABASE_URL`)
   - External service URLs (e.g., `MATTERMOST_API_URL`)
   - Ports and hostnames
+  - Long-running external operation timeouts (e.g., `ATTACHMENT_URL_TIMEOUT_SECONDS` for large Slack attachment streaming via plugin; default 600s)
 - Debugging or performance-tuning options should not be managed by environment variables in production code. If such functionality is needed, it should be exposed via dedicated debug endpoints or logging configurations.
 
 ### Docker Development Environment
