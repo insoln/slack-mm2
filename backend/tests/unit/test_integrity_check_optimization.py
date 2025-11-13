@@ -18,9 +18,11 @@ async def test_integrity_check_can_be_skipped(monkeypatch):
     monkeypatch.setattr(messages_import.glob, "glob", lambda p: [])
 
     # Mock the database session to ensure integrity check is NOT executed
+    mock_session_instance = MagicMock()
+    mock_session_instance.execute = AsyncMock()
+
     mock_session = MagicMock()
-    mock_execute = AsyncMock()
-    mock_session.__aenter__ = AsyncMock(return_value=mock_execute)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session_instance)
     mock_session.__aexit__ = AsyncMock()
 
     with patch("app.models.base.SessionLocal", return_value=mock_session):
@@ -32,7 +34,7 @@ async def test_integrity_check_can_be_skipped(monkeypatch):
         assert isinstance(result, dict)
 
         # The execute method should NOT be called if integrity checks are skipped
-        mock_execute.execute.assert_not_called()
+        mock_session_instance.execute.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -110,9 +112,11 @@ async def test_integrity_check_environment_variable_variations(monkeypatch):
         monkeypatch.setattr(messages_import.os.path, "isdir", lambda p: False)
         monkeypatch.setattr(messages_import.glob, "glob", lambda p: [])
 
+        mock_session_instance = MagicMock()
+        mock_session_instance.execute = AsyncMock()
+
         mock_session = MagicMock()
-        mock_execute = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_execute)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session_instance)
         mock_session.__aexit__ = AsyncMock()
 
         with patch("app.models.base.SessionLocal", return_value=mock_session):
@@ -124,4 +128,4 @@ async def test_integrity_check_environment_variable_variations(monkeypatch):
 
             # If should_skip is True, execute should not be called
             if should_skip:
-                mock_execute.execute.assert_not_called()
+                mock_session_instance.execute.assert_not_called()
