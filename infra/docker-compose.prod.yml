@@ -39,7 +39,8 @@ services:
     ports:
       - "${BACKEND_HTTP_PORT:-8000}:8000"
     restart: unless-stopped
-    init: true
+    # NOTE: Image already uses Tini as ENTRYPOINT. Avoid a second init layer to prevent
+    # duplicate non-PID1 Tini warnings and redundant process. (See dev compose change / PR #25.)
     healthcheck:
       test:
         - CMD
@@ -55,12 +56,12 @@ services:
   frontend:
     build:
       context: ../frontend
-      dockerfile: Dockerfile.prod
+      dockerfile: Dockerfile
     depends_on:
       backend:
         condition: service_healthy
     ports:
-      - "${FRONTEND_HTTP_PORT:-8080}:80"
+      - "5173:5173"
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget --spider --quiet http://127.0.0.1 || exit 1"]

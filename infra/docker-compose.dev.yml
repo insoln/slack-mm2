@@ -21,7 +21,9 @@ services:
       context: ..
       dockerfile: backend/Dockerfile
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "${UVICORN_LOG_LEVEL:-info}", "--access-log"]
-    init: true
+    # NOTE: Do not use 'init: true' here because the backend image already wraps
+    # the process with Tini via its Dockerfile ENTRYPOINT. Enabling both causes a
+    # second non-PID1 Tini instance and noisy warning logs. See PR #25 optimization context.
     stop_signal: SIGTERM
     stop_grace_period: 5s
     # Предотвращение осиротевших процессов

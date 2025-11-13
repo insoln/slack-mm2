@@ -83,9 +83,12 @@ def run_migrations_online() -> None:
 
     with connectable.connect() as connection:
         context.configure(
-            connection=connection,  # target_metadata=target_metadata # Removed as per edit hint
+            connection=connection,
+            transaction_per_migration=True,  # allow autocommit_block inside individual revisions
         )
 
+        # Wrap all migrations in a transaction; revisions needing CONCURRENTLY will
+        # use op.get_context().autocommit_block() to temporarily break out.
         with context.begin_transaction():
             context.run_migrations()
 
