@@ -87,8 +87,10 @@ def run_migrations_online() -> None:
             transaction_per_migration=True,  # allow autocommit_block inside individual revisions
         )
 
-        # Wrap all migrations in a transaction; revisions needing CONCURRENTLY will
-        # use op.get_context().autocommit_block() to temporarily break out.
+        # Wrap all migrations in a transaction. However, PostgreSQL requires
+        # CONCURRENTLY operations (e.g., CREATE INDEX CONCURRENTLY) to run outside
+        # a transaction block. Revisions needing this use op.get_context().autocommit_block()
+        # to temporarily break out of the transaction for those operations.
         with context.begin_transaction():
             context.run_migrations()
 
