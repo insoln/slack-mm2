@@ -166,10 +166,10 @@ async def list_jobs(limit: int = 50):
                                 else:
                                     # per-channel daily JSON: any *.json placed under some folder (channel/chat)
                                     # Exclude FC: directories (file comments) as they don't contain message data
-                                    parent_dir = parts[-2] if len(parts) >= 2 else ""
+                                    top_dir = parts[0] if len(parts) >= 1 else ""
                                     if fname.lower().endswith(
                                         ".json"
-                                    ) and not parent_dir.startswith("FC:"):
+                                    ) and not top_dir.startswith("FC:"):
                                         total += 1
                         if total > 0:
                             meta["json_files_total"] = int(total)
