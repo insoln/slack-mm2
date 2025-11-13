@@ -88,16 +88,17 @@ Legacy `build-dev.sh` and the old Makefile have been removed in favor of the rep
 
 ### Docker Development Environment
 
-#### Creating Required .env File
-Before using Docker Compose, create `infra/.env`:
+#### Creating Required .env.dev File
+Before using Docker Compose, create `infra/.env.dev`:
 ```bash
 cd infra
-cat > .env << EOF
+cat > .env.dev << EOF
 SLACK_VERIFICATION_TOKEN=test_token
 SLACK_BOT_TOKEN=test_bot_token  
 SLACK_SIGNING_SECRET=test_signing_secret
 EOF
 ```
+For production compose runs use `infra/.env.prod` with real Mattermost credentials.
 
 #### Development Environment (docker-compose.dev.yml)
 - **Start all services**: `cd infra && docker compose -f docker-compose.dev.yml up --build`

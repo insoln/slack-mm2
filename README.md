@@ -50,9 +50,9 @@ Backend поддерживает опциональный `PLUGIN_BUNDLE_URL`. �
   pip install -r backend/requirements.txt
   npm -C frontend ci
   ```
-2. Создайте `.env` для dev (токены фиктивны, используются только локально):
+2. Создайте `.env.dev` для dev (токены фиктивны, используются только локально):
   ```bash
-  cat > infra/.env <<EOF
+  cat > infra/.env.dev <<EOF
   SLACK_VERIFICATION_TOKEN=test_token
   SLACK_BOT_TOKEN=test_bot_token
   SLACK_SIGNING_SECRET=test_signing_secret

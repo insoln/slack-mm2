@@ -37,11 +37,13 @@ infra/plugin/webapp/.eslintignore
 
 # Secrets / env files
 .env
+.env.*
 *.env
 **/.env
 .env.local
 .env.*.local
 infra/.env
+infra/.env.*
 backend/.env
 frontend/.env
 
