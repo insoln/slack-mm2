@@ -18,8 +18,6 @@ def _sync_database_url() -> str:
         # Convert common async driver specifiers to psycopg2 for migrations.
         if env_url.startswith("postgresql+asyncpg"):
             return env_url.replace("postgresql+asyncpg", "postgresql+psycopg2", 1)
-        if env_url.startswith("postgresql+psycopg"):
-            return env_url  # Already sync-friendly (psycopg3)
         return env_url
     cfg_url = config.get_main_option("sqlalchemy.url")
     if not cfg_url:
