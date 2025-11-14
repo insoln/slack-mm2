@@ -3,7 +3,10 @@
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 import os
-from app.services.export.attachment_exporter import AttachmentExporter
+from app.services.export.attachment_exporter import (
+    AttachmentExporter,
+    normalize_slack_file_url,
+)
 from app.models.entity import Entity
 
 
@@ -246,3 +249,107 @@ class TestAttachmentExporter:
             mock_api_call.assert_called_once()
             mock_set_status.assert_called_once_with("success")
             assert entity.mattermost_id == "mattermost_file_timeout"
+
+    @pytest.mark.asyncio
+    async def test_export_entity_strips_query_from_url(self):
+        """Test that query parameters are stripped from url_private before sending to plugin."""
+        # Setup entity with URL containing expired token
+        raw_data = {
+            "name": "test-document.pdf",
+            "url_private": "https://files.slack.com/files-pri/T123/F123/test-document.pdf?t=xoxe-expired-token-123",
+            "size": 2048,
+        }
+        entity = self.create_mock_attachment_entity(raw_data)
+
+        exporter = AttachmentExporter(entity)
+
+        # Mock dependencies
+        with patch.object(
+            exporter,
+            "_resolve_mm_channel_id_for_attachment",
+            return_value="mm_channel_123",
+        ), patch.object(
+            exporter, "_resolve_mm_user_id_for_attachment", return_value="mm_user_123"
+        ), patch.object(
+            exporter, "set_status", new_callable=AsyncMock
+        ) as mock_set_status, patch.object(
+            exporter, "log_export"
+        ), patch.object(
+            exporter, "mm_api_post_attachment_from_url", new_callable=AsyncMock
+        ) as mock_api_call, patch.dict(
+            os.environ, {"SLACK_BOT_TOKEN": "xoxb-test-token"}
+        ):
+
+            # Setup successful API response
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {"file_id": "mattermost_file_123"}
+            mock_api_call.return_value = mock_response
+
+            # Execute
+            await exporter.export_entity()
+
+            # Verify API was called with normalized URL (no query params)
+            mock_api_call.assert_called_once_with(
+                "mm_channel_123",
+                "test-document.pdf",
+                "https://files.slack.com/files-pri/T123/F123/test-document.pdf",  # No ?t= query
+                "Bearer xoxb-test-token",
+                "mm_user_123",
+            )
+
+            # Verify success status was set
+            mock_set_status.assert_called_once_with("success")
+            assert entity.mattermost_id == "mattermost_file_123"
+
+
+class TestNormalizeSlackFileUrl:
+    """Test URL normalization utility function."""
+
+    def test_normalize_url_with_query_params(self):
+        """Test that query parameters are stripped from Slack file URLs."""
+        url = "https://files.slack.com/files-pri/T123/F456/file.pdf?t=xoxe-123-456&other=param"
+        expected = "https://files.slack.com/files-pri/T123/F456/file.pdf"
+        assert normalize_slack_file_url(url) == expected
+
+    def test_normalize_url_without_query_params(self):
+        """Test that URLs without query parameters are unchanged."""
+        url = "https://files.slack.com/files-pri/T123/F456/file.pdf"
+        assert normalize_slack_file_url(url) == url
+
+    def test_normalize_url_with_only_question_mark(self):
+        """Test URL with question mark but no parameters."""
+        url = "https://files.slack.com/files-pri/T123/F456/file.pdf?"
+        expected = "https://files.slack.com/files-pri/T123/F456/file.pdf"
+        assert normalize_slack_file_url(url) == expected
+
+    def test_normalize_url_preserves_scheme_host_path(self):
+        """Test that scheme, host, and path are preserved."""
+        url = "https://files.slack.com/files-tmb/T123/F456/thumb.jpg?t=abc123"
+        result = normalize_slack_file_url(url)
+        assert result.startswith("https://files.slack.com/")
+        assert "thumb.jpg" in result
+        assert "?" not in result
+
+    def test_normalize_url_with_fragment(self):
+        """Test that fragments are preserved (though rare in Slack URLs)."""
+        url = "https://files.slack.com/files-pri/T123/F456/file.pdf?t=abc#section"
+        # URL normalization should strip query but keep fragment
+        expected = "https://files.slack.com/files-pri/T123/F456/file.pdf#section"
+        assert normalize_slack_file_url(url) == expected
+
+    def test_normalize_url_non_slack_domain(self):
+        """Test that non-Slack URLs are handled correctly."""
+        url = "http://test-files:9000/slack-mini-backup/file1.png?param=value"
+        expected = "http://test-files:9000/slack-mini-backup/file1.png"
+        assert normalize_slack_file_url(url) == expected
+
+    def test_normalize_url_empty_string(self):
+        """Test that empty string returns empty string."""
+        assert normalize_slack_file_url("") == ""
+
+    def test_normalize_url_with_port(self):
+        """Test URL with explicit port number."""
+        url = "https://files.slack.com:443/files-pri/T123/F456/file.pdf?t=xyz"
+        expected = "https://files.slack.com:443/files-pri/T123/F456/file.pdf"
+        assert normalize_slack_file_url(url) == expected

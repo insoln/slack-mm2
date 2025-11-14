@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 import asyncio
+from urllib.parse import urlparse, urlunparse
 
 from .base_exporter import ExporterBase, LoggingMixin
 from .mm_api_mixin import MMApiMixin
@@ -10,6 +11,32 @@ from app.logging_config import backend_logger
 from sqlalchemy import select
 from app.models.base import SessionLocal
 from app.models.entity import Entity
+
+
+def normalize_slack_file_url(url: str) -> str:
+    """
+    Normalize Slack file URL by removing query parameters.
+
+    Slack's url_private URLs contain temporary ?t= tokens that expire over time.
+    These expired tokens cause 404 errors even with valid Bearer auth headers.
+    Stripping the query parameters allows the Slack API to authenticate using
+    the Bearer token alone, resolving download failures.
+
+    Args:
+        url: The Slack file URL, potentially with query parameters
+
+    Returns:
+        The normalized URL without query parameters
+    """
+    if not url:
+        return url
+
+    parsed = urlparse(url)
+    # Reconstruct URL without query parameters, preserving fragment if present
+    normalized = urlunparse(
+        (parsed.scheme, parsed.netloc, parsed.path, "", "", parsed.fragment)
+    )
+    return normalized
 
 
 class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
@@ -65,6 +92,9 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 error="No content source: neither url_private nor url_private_download",
             )
             return
+
+        # Normalize URL: strip query parameters (expired ?t= tokens cause 404s)
+        url = normalize_slack_file_url(url)
 
         slack_token = os.environ.get("SLACK_BOT_TOKEN") or os.environ.get("SLACK_TOKEN")
         if not slack_token:
