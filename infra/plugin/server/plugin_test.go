@@ -61,3 +61,36 @@ func TestUploadAttachmentFromURL_InvalidJSON(t *testing.T) {
 	result := w.Result()
 	assert.Equal(t, http.StatusBadRequest, result.StatusCode)
 }
+
+func TestUnarchiveChannel_EmptyBody(t *testing.T) {
+	plugin := Plugin{}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/channel/unarchive", nil)
+
+	plugin.UnarchiveChannel(w, r)
+
+	result := w.Result()
+	assert.Equal(t, http.StatusBadRequest, result.StatusCode)
+}
+
+func TestUnarchiveChannel_InvalidJSON(t *testing.T) {
+	plugin := Plugin{}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/channel/unarchive", strings.NewReader("invalid json"))
+
+	plugin.UnarchiveChannel(w, r)
+
+	result := w.Result()
+	assert.Equal(t, http.StatusBadRequest, result.StatusCode)
+}
+
+func TestUnarchiveChannel_MissingChannelID(t *testing.T) {
+	plugin := Plugin{}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/channel/unarchive", strings.NewReader("{}"))
+
+	plugin.UnarchiveChannel(w, r)
+
+	result := w.Result()
+	assert.Equal(t, http.StatusBadRequest, result.StatusCode)
+}
