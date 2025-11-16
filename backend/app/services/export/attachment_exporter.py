@@ -17,8 +17,9 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
     Exports a Slack attachment to Mattermost via plugin direct download and stores returned file_id.
     - Reads Slack file info from entity.raw_data (expects id, url_private, name/filename)
     - Resolves target channel from the message relation (posted_in) or raw_data['channel_id']
+    - Resolves parent message's mattermost_id to attach the file to
     - Sends file URL and auth token to plugin via /plugins/mm-importer/api/v1/attachment_from_url
-    - Plugin downloads content from Slack directly and uploads to Mattermost
+    - Plugin downloads content from Slack directly, uploads to Mattermost, and attaches to the post
     - On success sets entity.mattermost_id and marks status=success
     """
 
@@ -51,6 +52,15 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
             # Best-effort; don't block export on config errors
             pass
 
+        # Resolve parent message's mattermost_id (post_id) to attach to
+        post_id = await self._resolve_parent_message_mm_id()
+        if not post_id:
+            await self.set_status(
+                "skipped",
+                error="Parent message not yet exported or missing mattermost_id",
+            )
+            return
+
         # Determine channel_id where to upload: prefer message relation, fallback to raw_data.channel_id
         channel_id = await self._resolve_mm_channel_id_for_attachment()
         if not channel_id:
@@ -76,13 +86,13 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
         # Try to resolve the actual user who uploaded the attachment
         user_id = await self._resolve_mm_user_id_for_attachment()
 
-        # Send URL to plugin for direct download and upload
+        # Send URL to plugin for direct download, upload, and attachment to post
         async def _retry_plugin_post(attempts=3, base_delay=1.0):
             last_err = None
             for i in range(attempts):
                 try:
                     resp = await self.mm_api_post_attachment_from_url(
-                        channel_id, filename, url, auth_header, user_id
+                        channel_id, filename, url, auth_header, user_id, post_id
                     )
                     # retry on 5xx/429; accept 2xx
                     if 200 <= resp.status_code < 300:
@@ -119,7 +129,9 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 return
             self.entity.mattermost_id = file_id
             await self.set_status("success")
-            backend_logger.debug(f"Attachment uploaded via URL, file_id={file_id}")
+            backend_logger.debug(
+                f"Attachment uploaded and attached to post {post_id}, file_id={file_id}"
+            )
         except Exception as e:  # noqa: BLE001
             await self.set_status("failed", error=str(e))
 
@@ -180,6 +192,29 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
                         if isinstance(mmid2, str) and mmid2:
                             return mmid2
 
+        return None
+
+    async def _resolve_parent_message_mm_id(self) -> Optional[str]:
+        """Find the Mattermost post_id of the parent message this attachment belongs to.
+        Strategy: traverse attached_to relation to find the message entity and return its mattermost_id.
+        """
+        async with SessionLocal() as session:
+            from app.models.entity_relation import EntityRelation
+
+            q = await session.execute(
+                select(EntityRelation, Entity)
+                .join(Entity, Entity.id == EntityRelation.to_entity_id)
+                .where(
+                    (EntityRelation.from_entity_id == self.entity.id)
+                    & (EntityRelation.relation_type == "attached_to")
+                )
+            )
+            row = q.first()
+            if row:
+                _, msg_entity = row
+                mmid = getattr(msg_entity, "mattermost_id", None)
+                if isinstance(mmid, str) and mmid:
+                    return mmid
         return None
 
     async def _resolve_mm_user_id_for_attachment(self) -> Optional[str]:

@@ -61,3 +61,32 @@ func TestUploadAttachmentFromURL_InvalidJSON(t *testing.T) {
 	result := w.Result()
 	assert.Equal(t, http.StatusBadRequest, result.StatusCode)
 }
+
+func TestUploadAttachmentFromURL_WithPostID(t *testing.T) {
+	// Test that post_id field is accepted in the request (basic validation)
+	// We mock a simple HTTP server to avoid nil httpClient panic
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound) // Return 404 so we fail at validation, not at nil client
+	}))
+	defer mockServer.Close()
+
+	plugin := Plugin{
+		httpClient: mockServer.Client(),
+	}
+	w := httptest.NewRecorder()
+	reqBody := `{
+		"channel_id": "ch123",
+		"filename": "test.txt",
+		"file_url": "` + mockServer.URL + `/file.txt",
+		"auth_header": "Bearer token",
+		"post_id": "post123"
+	}`
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/attachment_from_url", strings.NewReader(reqBody))
+
+	plugin.UploadAttachmentFromURL(w, r)
+
+	result := w.Result()
+	// Should get BadRequest (400) from download failure (404 response)
+	assert.Equal(t, http.StatusBadRequest, result.StatusCode)
+}
+
