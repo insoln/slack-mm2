@@ -11,6 +11,7 @@ A Mattermost plugin for importing messages and metadata from external sources as
 - Add channel members in bulk
 - Create/resolve DM and Group DM channels
 - Import reactions
+- **Automatic mark-as-read**: Imported posts are automatically marked as read for all channel members to prevent false notifications during bulk imports
 
 ## API Endpoints (implemented here)
 
@@ -202,3 +203,30 @@ Backend status will surface `remote_bundle_available=true` if the HEAD probe suc
 
 ### How do I build the plugin with unminified JavaScript?
 Setting the `MM_DEBUG` environment variable will invoke the debug builds. The simplist way to do this is to simply include this variable in your calls to `make` (e.g. `make dist MM_DEBUG=1`).
+
+## Testing
+
+### Mark-as-Read Functionality
+
+The plugin includes functionality to automatically mark imported posts as read for all channel members. To test this:
+
+1. Set up test environment variables:
+```bash
+export MATTERMOST_URL="http://localhost:8065"
+export MATTERMOST_TOKEN="your-admin-token"
+export TEST_CHANNEL_ID="your-channel-id"
+export TEST_USER_ID="your-user-id"
+```
+
+2. Run the test script:
+```bash
+./infra/plugin/test-mark-as-read.sh
+```
+
+The script will:
+- Create a test post via the plugin import endpoint
+- Verify that the `LastViewedAt` timestamp is updated
+- Verify that mention counts are reset to 0
+- Clean up the test post
+
+For more details on the mark-as-read implementation, see [MARK_AS_READ.md](./MARK_AS_READ.md).
