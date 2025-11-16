@@ -393,8 +393,8 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                             exporter = UserExporter(saved_entity)
                             await exporter.export_entity()
                             # Перезагружаем entity для получения mattermost_id
-                            await session.refresh(saved_entity)
-                            mm_id = getattr(saved_entity, "mattermost_id", None)
+                            reloaded_entity = await session.get(Entity, saved_entity.id)
+                            mm_id = getattr(reloaded_entity, "mattermost_id", None)
                             if mm_id:
                                 mm_ids.append(mm_id)
                                 backend_logger.info(
