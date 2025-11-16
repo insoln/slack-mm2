@@ -735,34 +735,34 @@ func (p *Plugin) markPostAsReadForChannelMembers(channelID string, postCreateAt 
 	// Get all channel members (paginated)
 	const maxPerPage = 200
 	page := 0
-	
+
 	for {
 		members, appErr := p.API.GetChannelMembers(channelID, page, maxPerPage)
 		if appErr != nil {
 			return appErr
 		}
-		
+
 		if len(members) == 0 {
 			break
 		}
-		
+
 		// Update each member's LastViewedAt timestamp
 		for _, member := range members {
 			if err := p.updateMemberLastViewedAt(channelID, member.UserId, postCreateAt); err != nil {
-				p.API.LogWarn("Failed to update LastViewedAt for member", 
-					"channel_id", channelID, 
-					"user_id", member.UserId, 
+				p.API.LogWarn("Failed to update LastViewedAt for member",
+					"channel_id", channelID,
+					"user_id", member.UserId,
 					"error", err.Error())
 				// Continue with other members even if one fails
 			}
 		}
-		
+
 		if len(members) < maxPerPage {
 			break
 		}
 		page++
 	}
-	
+
 	return nil
 }
 
@@ -775,19 +775,19 @@ func (p *Plugin) updateMemberLastViewedAt(channelID, userID string, timestamp in
 	if p.client == nil {
 		return nil
 	}
-	
+
 	// Get current member state
 	member, appErr := p.API.GetChannelMember(channelID, userID)
 	if appErr != nil {
 		return appErr
 	}
-	
+
 	// Only update if the new timestamp is greater than current LastViewedAt
 	// This ensures we don't accidentally mark newer posts as unread
 	if member.LastViewedAt >= timestamp {
 		return nil // Already viewed more recently
 	}
-	
+
 	// Use the Store layer to update the member
 	// Note: pluginapi.Client wraps store operations but may not expose all methods
 	// We'll use a workaround by directly updating through the preferences or using a helper
@@ -803,7 +803,7 @@ func (p *Plugin) updateLastViewedAtDirectly(channelID, userID string, timestamp 
 		p.API.LogDebug("Driver not available, skipping LastViewedAt update")
 		return nil
 	}
-	
+
 	// Get a database connection
 	connID, err := p.Driver.Conn(false) // false = not in transaction
 	if err != nil {
@@ -812,7 +812,7 @@ func (p *Plugin) updateLastViewedAtDirectly(channelID, userID string, timestamp 
 	defer func() {
 		_ = p.Driver.ConnClose(connID)
 	}()
-	
+
 	// Prepare the UPDATE query
 	// We update LastViewedAt and reset mention counts when marking as read
 	// Using positional parameters that work with both PostgreSQL and MySQL
@@ -821,21 +821,21 @@ func (p *Plugin) updateLastViewedAtDirectly(channelID, userID string, timestamp 
 	              MentionCount = 0,
 	              MentionCountRoot = 0
 	          WHERE ChannelId = ? AND UserId = ?`
-	
+
 	// Prepare arguments as driver.NamedValue slice
 	args := p.makeDriverArgs(timestamp, channelID, userID)
-	
+
 	// Execute the query
 	_, err = p.Driver.ConnExec(connID, query, args)
 	if err != nil {
 		return err
 	}
-	
+
 	p.API.LogDebug("Successfully updated LastViewedAt for channel member",
 		"channel_id", channelID,
 		"user_id", userID,
 		"timestamp", timestamp)
-	
+
 	return nil
 }
 

@@ -64,10 +64,10 @@ func TestUploadAttachmentFromURL_InvalidJSON(t *testing.T) {
 
 func TestMakeDriverArgs(t *testing.T) {
 	plugin := Plugin{}
-	
+
 	// Test with various types of arguments
 	args := plugin.makeDriverArgs(int64(123456789), "channel-id", "user-id")
-	
+
 	assert.Equal(t, 3, len(args))
 	assert.Equal(t, 1, args[0].Ordinal)
 	assert.Equal(t, int64(123456789), args[0].Value)
@@ -76,4 +76,3 @@ func TestMakeDriverArgs(t *testing.T) {
 	assert.Equal(t, 3, args[2].Ordinal)
 	assert.Equal(t, "user-id", args[2].Value)
 }
-
