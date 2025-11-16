@@ -350,7 +350,7 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                         try:
                             await exporter.export_entity()
                             # Перезагружаем entity для получения обновленного mattermost_id
-                            await session.refresh(ent)
+                            ent = await session.get(Entity, ent.id)
                             mm_id = getattr(ent, "mattermost_id", None)
                             if mm_id:
                                 mm_ids.append(mm_id)
