@@ -1,0 +1,14 @@
+[
+  {
+    "type": "message",
+    "user": "U0001",
+    "text": "Hello from Alice to missing user",
+    "ts": "1735862400.000001"
+  },
+  {
+    "type": "message",
+    "user": "UMISSING",
+    "text": "Response from missing user (should be placeholder)",
+    "ts": "1735862500.000002"
+  }
+]

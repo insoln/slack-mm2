@@ -10,9 +10,9 @@ set -euo pipefail
 #  5. Scan logs for errors and validate admin user mapping
 #  6. Tear down services
 # Expected counts (derived from current mini dataset, strict deterministic):
-#   users=3 (2 real + 1 bot; admin UADMIN present)
-#   channels=3 (public + private + DM)
-#   messages=17 (all messages including thread replies; deleted tombstone still counted for determinism)
+#   users=4 (2 real + 1 bot + 1 placeholder for UMISSING; admin UADMIN present)
+#   channels=4 (public + private + 2 DMs: D0001 existing users, D0002 with placeholder)
+#   messages=19 (all messages including thread replies; deleted tombstone still counted for determinism)
 #   attachments=3 (three test-files hosted attachments with allowed url_private prefixes)
 #     - public-channel day1: example.txt (FTXT1)
 #     - private-channel day1: image.png
@@ -20,9 +20,9 @@ set -euo pipefail
 #   reactions=1
 
 # Expected counts (allow override via env for flexibility)
-: "${EXPECTED_USERS:=3}"
-: "${EXPECTED_CHANNELS:=3}"
-: "${EXPECTED_MESSAGES:=17}"
+: "${EXPECTED_USERS:=4}"
+: "${EXPECTED_CHANNELS:=4}"
+: "${EXPECTED_MESSAGES:=19}"
 : "${EXPECTED_ATTACHMENTS:=3}"
 : "${EXPECTED_REACTIONS:=0}"
 
