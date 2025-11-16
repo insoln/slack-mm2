@@ -487,25 +487,11 @@ async def test_resolve_mm_user_ids_creates_placeholder():
         mock_session = AsyncMock()
         mock_session_local.return_value.__aenter__.return_value = mock_session
 
-        # Track calls to execute to simulate: first query returns None, second returns entity with MM ID
-        call_count = [0]
+        # Simulate: user not found in DB (always return None)
 
         async def mock_execute(query):
-            call_count[0] += 1
             mock_result = MagicMock()
-
-            if call_count[0] == 1:
-                # First query: user not found
-                mock_result.scalar_one_or_none.return_value = None
-            else:
-                # Second query (after creation): user found with MM ID
-                fake_entity = StubEntity(
-                    slack_id="U_MISSING",
-                    entity_type="user",
-                    mattermost_id="mm_u_missing",
-                )
-                mock_result.scalar_one_or_none.return_value = fake_entity
-
+            mock_result.scalar_one_or_none.return_value = None
             return mock_result
 
         mock_session.execute.side_effect = mock_execute
