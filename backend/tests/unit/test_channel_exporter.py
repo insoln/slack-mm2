@@ -495,7 +495,15 @@ async def test_resolve_mm_user_ids_creates_placeholder():
             return mock_result
 
         mock_session.execute.side_effect = mock_execute
-        mock_session.refresh = AsyncMock()
+
+        # Track the saved entity so session.get can return the updated version
+        saved_entities = {}
+
+        # Mock session.get() to return the tracked entity
+        async def mock_session_get(entity_class, entity_id):
+            return saved_entities.get(entity_id)
+
+        mock_session.get = AsyncMock(side_effect=mock_session_get)
 
         # Mock User.save_to_db
         async def mock_user_save(self):
@@ -505,6 +513,9 @@ async def test_resolve_mm_user_ids_creates_placeholder():
                 mattermost_id=None,
                 raw_data=self.raw_data,
             )
+            # Set the id attribute so session.get can work
+            fake_entity.id = 1
+            saved_entities[1] = fake_entity
             return fake_entity
 
         # Mock UserExporter.export_entity
