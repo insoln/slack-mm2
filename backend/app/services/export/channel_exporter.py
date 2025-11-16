@@ -314,11 +314,13 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
             await self.set_status("failed", error=str(e))
 
     async def _resolve_mm_user_ids(self, slack_user_ids):
-        """Получить Mattermost ID для списка Slack user ids из таблицы Entity.
+        """
+        Получить Mattermost ID для списка Slack user ids из таблицы Entity.
 
-        Если пользователь отсутствует в таблице entities, создается placeholder-запись
-        с минимальными данными (username=slack_id, email=slack_id@placeholder.local)
-        и немедленно экспортируется в Mattermost.
+        Обрабатываются три случая для каждого пользователя:
+        1. Если сущность пользователя существует и уже содержит Mattermost ID — возвращается существующий ID.
+        2. Если сущность пользователя существует, но Mattermost ID отсутствует — пользователь экспортируется в Mattermost, возвращается новый ID.
+        3. Если пользователь отсутствует в таблице entities — создается placeholder-запись с минимальными данными (username=slack_id, email=slack_id@placeholder.local), пользователь экспортируется в Mattermost, возвращается новый ID.
         """
         from app.models.base import SessionLocal
         from sqlalchemy import select
