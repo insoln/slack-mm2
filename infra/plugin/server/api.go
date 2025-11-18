@@ -1,10 +1,13 @@
 package main
 
 import (
+	"database/sql/driver"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gorilla/mux"
 	"github.com/mattermost/mattermost/server/public/model"
@@ -138,6 +141,13 @@ func (p *Plugin) ImportPost(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(ImportPostResponse{Error: appErr.Error()})
 		return
 	}
+
+	// Mark the post as read for all channel members
+	if err := p.markPostAsReadForChannelMembers(req.ChannelID, created.CreateAt); err != nil {
+		p.API.LogWarn("Failed to mark post as read for channel members", "channel_id", req.ChannelID, "post_id", created.Id, "error", err.Error())
+		// Don't fail the request if marking as read fails - the post was created successfully
+	}
+
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(ImportPostResponse{PostID: created.Id})
 }
@@ -718,4 +728,100 @@ func (p *Plugin) CreateGroupChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(CreateGDMResponse{ChannelID: ch.Id})
+}
+
+// markPostAsReadForChannelMembers updates LastViewedAt for all members of a channel in a single SQL statement.
+// This prevents false notifications during bulk import operations without issuing N API/database calls.
+func (p *Plugin) markPostAsReadForChannelMembers(channelID string, postCreateAt int64) error {
+	if p.Driver == nil {
+		p.API.LogDebug("Driver not available, skipping LastViewedAt update", "channel_id", channelID)
+		return nil
+	}
+
+	connID, err := p.Driver.Conn(false) // false = not in transaction
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = p.Driver.ConnClose(connID)
+	}()
+
+	includeMsgCounts := false
+	var channelMsgCount int64
+	var channelMsgCountRoot int64
+
+	if p.API != nil {
+		if ch, appErr := p.API.GetChannel(channelID); appErr == nil && ch != nil {
+			channelMsgCount = ch.TotalMsgCount
+			channelMsgCountRoot = ch.TotalMsgCountRoot
+			includeMsgCounts = true
+		} else if appErr != nil {
+			p.API.LogWarn("Unable to fetch channel totals for mark-as-read",
+				"channel_id", channelID,
+				"error", appErr.Error())
+		}
+	}
+
+	query := `UPDATE ChannelMembers
+			  SET LastViewedAt = CASE WHEN LastViewedAt < $1 THEN $1 ELSE LastViewedAt END,
+			      MentionCount = 0,
+			      MentionCountRoot = 0`
+
+	// Parameter order keeps $1 bound to the post timestamp and $2 to the ChannelId used in the WHERE clause.
+	args := p.makeDriverArgs(postCreateAt, channelID)
+	whereParts := []string{"LastViewedAt < $1", "MentionCount <> 0", "MentionCountRoot <> 0"}
+
+	if includeMsgCounts {
+		nextIdx := len(args) + 1
+		query += fmt.Sprintf(",\n                  MsgCount = $%d,\n                  MsgCountRoot = $%d", nextIdx, nextIdx+1)
+		args = append(args,
+			driver.NamedValue{Ordinal: nextIdx, Value: channelMsgCount},
+			driver.NamedValue{Ordinal: nextIdx + 1, Value: channelMsgCountRoot},
+		)
+		whereParts = append(whereParts,
+			fmt.Sprintf("MsgCount <> $%d", nextIdx),
+			fmt.Sprintf("MsgCountRoot <> $%d", nextIdx+1),
+		)
+	}
+
+	query += fmt.Sprintf(`
+			  WHERE ChannelId = $2 AND (%s)`, strings.Join(whereParts, " OR "))
+
+	result, err := p.Driver.ConnExec(connID, query, args)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffectedError != nil {
+		return result.RowsAffectedError
+	}
+
+	rowsAffected := result.RowsAffected
+	if rowsAffected == 0 {
+		p.API.LogDebug("No channel members required mark-as-read update",
+			"channel_id", channelID,
+			"timestamp", postCreateAt)
+		return nil
+	}
+
+	logFields := []interface{}{"channel_id", channelID, "timestamp", postCreateAt, "rows_affected", rowsAffected}
+	if includeMsgCounts {
+		logFields = append(logFields, "msg_count", channelMsgCount, "msg_count_root", channelMsgCountRoot)
+	}
+
+	p.API.LogDebug("Marked posts as read for channel members", logFields...)
+
+	return nil
+}
+
+// makeDriverArgs converts variadic arguments to driver.NamedValue slice
+func (p *Plugin) makeDriverArgs(values ...interface{}) []driver.NamedValue {
+	args := make([]driver.NamedValue, len(values))
+	for i, v := range values {
+		args[i] = driver.NamedValue{
+			Ordinal: i + 1,
+			Value:   v,
+		}
+	}
+	return args
 }
