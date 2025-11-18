@@ -1,0 +1,15 @@
+[
+  {
+    "type": "message",
+    "user": "UADMIN",
+    "text": "Archived private channel ping with reactions",
+    "ts": "1735939200.000900",
+    "reactions": [
+      {
+        "name": "white_check_mark",
+        "users": ["UADMIN", "U0001"],
+        "count": 2
+      }
+    ]
+  }
+]

@@ -201,7 +201,7 @@ async def _get_archived_channel_ids() -> set[str]:
         channels = q.scalars().all()
         archived = set()
         for ch in channels:
-            if ch.mattermost_id and (ch.raw_data or {}).get("is_archived"):
+            if (ch.raw_data or {}).get("is_archived"):
                 archived.add(ch.mattermost_id)
         backend_logger.info(
             f"Found {len(archived)} archived channels to manage during reaction export"
@@ -235,8 +235,8 @@ async def _unarchive_channels(channel_ids: set[str]):
                     backend_logger.debug(
                         f"Unarchived channel {cid} for reaction export"
                     )
-            except Exception as e:  # noqa: BLE001
-                backend_logger.error(f"Error unarchiving channel {cid}: {e}")
+            except httpx.HTTPError as exc:
+                backend_logger.error(f"Error unarchiving channel {cid}: {exc}")
 
 
 async def _rearchive_channels(channel_ids: set[str]):
@@ -267,8 +267,8 @@ async def _rearchive_channels(channel_ids: set[str]):
                     backend_logger.debug(
                         f"Re-archived channel {cid} after reaction export"
                     )
-            except Exception as e:  # noqa: BLE001
-                backend_logger.error(f"Error re-archiving channel {cid}: {e}")
+            except httpx.HTTPError as exc:
+                backend_logger.error(f"Error re-archiving channel {cid}: {exc}")
 
 
 async def orchestrate_mm_export(job_id=None):

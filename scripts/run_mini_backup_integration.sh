@@ -11,20 +11,20 @@ set -euo pipefail
 #  6. Tear down services
 # Expected counts (derived from current mini dataset, strict deterministic):
 #   users=4 (2 real + 1 bot + 1 placeholder UMISSING that now counts toward totals)
-#   channels=5 (public + private + 2 DMs + 1 MPDM)
-#   messages=17 (all messages including thread replies; deleted tombstone still counted for determinism)
+#   channels=7 (2 public + 2 private + 2 DMs + 1 MPDM; archived public/private carry reactions)
+#   messages=19 (all baseline messages + archived reaction posts; deleted tombstone still counted for determinism)
 #   attachments=3 (three test-files hosted attachments with allowed url_private prefixes)
 #     - public-channel day1: example.txt (FTXT1)
 #     - private-channel day1: image.png
 #     - private-channel day2: archive.zip
-#   reactions=0
+#   reactions=4 (per-user events from archived public/private reactions)
 
 # Expected counts (allow override via env for flexibility)
 : "${EXPECTED_USERS:=4}"
-: "${EXPECTED_CHANNELS:=5}"
-: "${EXPECTED_MESSAGES:=17}"
+: "${EXPECTED_CHANNELS:=7}"
+: "${EXPECTED_MESSAGES:=19}"
 : "${EXPECTED_ATTACHMENTS:=3}"
-: "${EXPECTED_REACTIONS:=0}"
+: "${EXPECTED_REACTIONS:=4}"
 
 # Compose file, services list, dataset, and log capture paths (override allowed)
 : "${COMPOSE_FILE:=infra/docker-compose.dev.yml}"

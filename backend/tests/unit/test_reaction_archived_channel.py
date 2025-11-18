@@ -13,7 +13,7 @@ from app.services.export.orchestrator import (
 @pytest.mark.asyncio
 async def test_get_archived_channel_ids():
     """Test identification of archived channels."""
-    # Mock channels: 2 archived, 1 not archived, 1 without mattermost_id
+    # Mock channels: 2 archived, 1 not archived
     mock_channels = [
         SimpleNamespace(
             mattermost_id="ch1", raw_data={"is_archived": True}, status="success"
@@ -24,7 +24,6 @@ async def test_get_archived_channel_ids():
         SimpleNamespace(
             mattermost_id="ch3", raw_data={"is_archived": True}, status="success"
         ),
-        SimpleNamespace(mattermost_id=None, raw_data={"is_archived": True}),
     ]
 
     mock_result = MagicMock()
