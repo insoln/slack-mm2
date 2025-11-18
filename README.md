@@ -103,7 +103,13 @@ Backend поддерживает опциональный `PLUGIN_BUNDLE_URL`. �
   - Обновить раздел «Мини-набор (эталон)» и этот раздел.
 4. Никаких временных правок для отладки: используйте отдельный архив вне репозитория.
 5. `url_private` файлов должны начинаться с одного из `IMPORT_URL_PREFIXES` (по умолчанию: `https://files.slack.com,http://test-files:9000`) — иначе вложение будет отфильтровано и нарушит счётчик.
-6. Текущие эталонные значения (финальные totals): users=3, channels=3, messages=17, attachments=3, reactions=1.
+6. Текущие эталонные значения (финальные totals): users=4, channels=7, messages=19, attachments=3, reactions=4.
+  - users=4: 2 real users (U0001=alice, UADMIN=admin), 1 bot (B0001=mini-bot), 1 placeholder (UMISSING created automatically for D0002)
+  - channels=7: 2 public (public-channel, archived-public-reactions), 2 private (private-channel, archived-private-reactions), 2 DMs (D0001 with existing users, D0002 с placeholder пользователем), 1 MPDM (`mpdm-alice--admin--mini.bot-1`)
+  - messages=19: публичные/приватные ветки + обе DM ветки + MPDM + ветка комментариев к файлу `F0001`, включая «dup variants», плюс по одному посту в каждом архивном канале для сценария реакций
+  - attachments=3: `FTXT1` (example.txt), `FIMG1` (image.png), `FZIP1` (archive.zip)
+  - reactions=4: архивные публичный/приватный каналы содержат реакции (`thumbsup`, `eyes`, `white_check_mark`) для проверки временного unarchive → export → rearchive цикла
+  - DM D0002 tests automatic placeholder user creation when a DM references a user not in users.json
 7. Добавление нового типа сущности / счётчика в mini-backup делается только вместе с обновлением тестов, README и интеграционного скрипта (ранний успех не должен ломаться).
 8. Контент детерминирован: никаких timestamp-зависимых генераций. Пересборка архива без правок даёт идентичный файл (исключая метаданные zip уровня времени модификации — это допустимо).
 
@@ -122,7 +128,7 @@ Checklist обновления mini-backup:
 2. Прозрачность: «сырой» Slack экспорт трактуется как источник истины; любое смещение чисел требует явного изменения данных, а не кода.
 3. Тестовая устойчивость: регрессия фокусируется на точности парсинга и атомарности счётчиков, а не на бизнес-логике очистки.
 
-Следствие: если в будущем понадобится слой дедупликации, он будет реализован как отдельная пост‑обработка, НЕ влияющая на канонические baseline‑счётчики mini-backup. На момент текущей версии baseline (users=3, channels=3, messages=17, attachments=3, reactions=1) — все 17 сообщений учитывают «dup variants». 
+Следствие: если в будущем понадобится слой дедупликации, он будет реализован как отдельная пост‑обработка, НЕ влияющая на канонические baseline‑счётчики mini-backup. На момент текущей версии baseline (users=4, channels=7, messages=19, attachments=3, reactions=4) — все 19 сообщений учитывают «dup variants» и включают тестовый DM с placeholder-пользователем.
 
 ### Roadmap улучшений (не блокирует текущий baseline)
 
@@ -201,11 +207,11 @@ ss -tnlp | grep :8000 || true
 Мини-набор (эталон для регрессии) — ожидаемые финальные значения:
 
 ```
-users=3
-channels=3
-messages=17
+users=4
+channels=7
+messages=19
 attachments=3
-reactions=1
+reactions=4
 ```
 
 При запуске мини-интеграции финальные цифры появляются уже на раннем POLL (обычно второй опрос) в стадии `exporting` — это считается «ранним успехом» (см. ниже).

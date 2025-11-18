@@ -1,5 +1,6 @@
 import os
 from app.logging_config import backend_logger
+from app.services.backup.meta_utils import merge_job_meta
 from .base_exporter import ExporterBase, LoggingMixin
 from .mm_api_mixin import MMApiMixin
 
@@ -314,10 +315,19 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
             await self.set_status("failed", error=str(e))
 
     async def _resolve_mm_user_ids(self, slack_user_ids):
-        """Получить Mattermost ID для списка Slack user ids из таблицы Entity."""
+        """
+        Получить Mattermost ID для списка Slack user ids из таблицы Entity.
+
+        Обрабатываются три случая для каждого пользователя:
+        1. Если сущность пользователя существует и уже содержит Mattermost ID — возвращается существующий ID.
+        2. Если сущность пользователя существует, но Mattermost ID отсутствует — пользователь экспортируется в Mattermost, возвращается новый ID.
+        3. Если пользователь отсутствует в таблице entities — создается placeholder-запись с минимальными данными (username=slack_id, email=slack_id@placeholder.local), пользователь экспортируется в Mattermost, возвращается новый ID.
+        """
         from app.models.base import SessionLocal
         from sqlalchemy import select
         from app.models.entity import Entity
+        from app.services.entities.user import User
+        from app.services.export.user_exporter import UserExporter
 
         mm_ids = []
         async with SessionLocal() as session:
@@ -332,9 +342,100 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     mm_id = getattr(ent, "mattermost_id", None)
                     if mm_id:
                         mm_ids.append(mm_id)
+                    else:
+                        # Сущность есть, но MM ID отсутствует - экспортируем
+                        backend_logger.info(
+                            f"Entity exists for {sid} but MM ID missing, attempting export"
+                        )
+                        exporter = UserExporter(ent)
+                        try:
+                            await exporter.export_entity()
+                            # Перезагружаем entity для получения обновленного mattermost_id
+                            ent = await session.get(Entity, ent.id)
+                            mm_id = getattr(ent, "mattermost_id", None)
+                            if mm_id:
+                                mm_ids.append(mm_id)
+                            else:
+                                backend_logger.warning(
+                                    f"Export completed but MM ID still missing for {sid}"
+                                )
+                        except Exception as e:
+                            backend_logger.error(f"Error exporting user {sid}: {e}")
                 else:
-                    backend_logger.warning(f"MM user id not found for Slack user {sid}")
+                    backend_logger.warning(
+                        f"User entity not found for Slack user {sid}, creating placeholder"
+                    )
+                    # Создаем placeholder user entity
+                    placeholder_raw_data = {
+                        "id": sid,
+                        "name": sid,
+                        "profile": {
+                            "email": f"{sid}@placeholder.local",
+                            "first_name": "Placeholder",
+                            "last_name": "User",
+                        },
+                        "is_placeholder": True,
+                    }
+                    placeholder_user = User(
+                        slack_id=sid,
+                        mattermost_id=None,
+                        raw_data=placeholder_raw_data,
+                        status="pending",
+                        auto_save=False,
+                        job_id=getattr(self.entity, "job_id", None),
+                    )
+                    try:
+                        # Сохраняем placeholder в БД
+                        saved_entity = await placeholder_user.save_to_db()
+                        if saved_entity:
+                            backend_logger.info(
+                                f"Created placeholder user entity for Slack user {sid}"
+                            )
+                            # Немедленно экспортируем placeholder пользователя в MM
+                            exporter = UserExporter(saved_entity)
+                            await exporter.export_entity()
+                            # Перезагружаем entity для получения mattermost_id
+                            reloaded_entity = await session.get(Entity, saved_entity.id)
+                            mm_id = getattr(reloaded_entity, "mattermost_id", None)
+                            if mm_id:
+                                mm_ids.append(mm_id)
+                                backend_logger.info(
+                                    f"Successfully exported placeholder user {sid} to MM with ID {mm_id}"
+                                )
+                                await self._record_placeholder_user_creation()
+                            else:
+                                backend_logger.error(
+                                    f"Placeholder export completed but MM ID missing for {sid}"
+                                )
+                        else:
+                            backend_logger.error(
+                                f"Failed to create placeholder user entity for {sid}"
+                            )
+                    except Exception as e:
+                        backend_logger.error(
+                            f"Error creating/exporting placeholder user for {sid}: {e}"
+                        )
         return mm_ids
+
+    async def _record_placeholder_user_creation(self) -> None:
+        job_id = getattr(self.entity, "job_id", None)
+        if not job_id:
+            return
+        try:
+            await merge_job_meta(
+                job_id,
+                incr={
+                    "users_discovered": 1,
+                    "users_created": 1,
+                    "users_processed": 1,
+                },
+            )
+        except Exception as exc:  # pragma: no cover
+            backend_logger.warning(
+                "Failed to bump placeholder user counters for job %s: %s",
+                job_id,
+                exc,
+            )
 
     async def _get_mm_team_id(self):
         """Определить ID команды Mattermost:

@@ -1,0 +1,16 @@
+[
+  {
+    "type": "message",
+    "user": "U0001",
+    "text": "Comment on file example.txt",
+    "file": "FTXT1",
+    "ts": "1735689600.020001"
+  },
+  {
+    "type": "message",
+    "user": "UADMIN",
+    "text": "Reply to file comment",
+    "file": "FTXT1",
+    "ts": "1735689700.020002"
+  }
+]

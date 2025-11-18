@@ -10,21 +10,21 @@ set -euo pipefail
 #  5. Scan logs for errors and validate admin user mapping
 #  6. Tear down services
 # Expected counts (derived from current mini dataset, strict deterministic):
-#   users=3 (2 real + 1 bot; admin UADMIN present)
-#   channels=3 (public + private + DM)
-#   messages=17 (all messages including thread replies; deleted tombstone still counted for determinism)
+#   users=4 (2 real + 1 bot + 1 placeholder UMISSING that now counts toward totals)
+#   channels=7 (2 public + 2 private + 2 DMs + 1 MPDM; archived public/private carry reactions)
+#   messages=19 (all baseline messages + archived reaction posts; deleted tombstone still counted for determinism)
 #   attachments=3 (three test-files hosted attachments with allowed url_private prefixes)
 #     - public-channel day1: example.txt (FTXT1)
 #     - private-channel day1: image.png
 #     - private-channel day2: archive.zip
-#   reactions=1
+#   reactions=4 (per-user events from archived public/private reactions)
 
 # Expected counts (allow override via env for flexibility)
-: "${EXPECTED_USERS:=3}"
-: "${EXPECTED_CHANNELS:=3}"
-: "${EXPECTED_MESSAGES:=17}"
+: "${EXPECTED_USERS:=4}"
+: "${EXPECTED_CHANNELS:=7}"
+: "${EXPECTED_MESSAGES:=19}"
 : "${EXPECTED_ATTACHMENTS:=3}"
-: "${EXPECTED_REACTIONS:=0}"
+: "${EXPECTED_REACTIONS:=4}"
 
 # Compose file, services list, dataset, and log capture paths (override allowed)
 : "${COMPOSE_FILE:=infra/docker-compose.dev.yml}"
@@ -379,6 +379,14 @@ if [[ "$ADMIN_DB_ID" != "$EXPECTED_ADMIN_MM_ID" ]]; then
   exit 1
 fi
 echo "[INFO] Admin user mapping OK ($ADMIN_DB_ID)"
+
+echo "[STEP] Validating placeholder user export"
+PLACEHOLDER_DB_ID=$(docker compose -f "$COMPOSE_FILE" exec -T db psql -U slack-mm -d slack-mm -P pager=off -t -c "SELECT mattermost_id FROM entities WHERE entity_type='user' AND slack_id='UMISSING';" | tr -d '[:space:]') || true
+if [[ -z "$PLACEHOLDER_DB_ID" ]]; then
+  echo "Placeholder user UMISSING not found in entities table" >&2
+  exit 1
+fi
+echo "[INFO] Placeholder UMISSING exported with Mattermost ID $PLACEHOLDER_DB_ID"
 
 echo "[SUCCESS] Integration mini backup test passed."
 

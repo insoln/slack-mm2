@@ -1,0 +1,14 @@
+[
+  {
+    "type": "message",
+    "user": "U0001",
+    "text": "MPDM hello team",
+    "ts": "1735862400.010001"
+  },
+  {
+    "type": "message",
+    "user": "B0001",
+    "text": "Automated reminder in MPDM",
+    "ts": "1735862500.010002"
+  }
+]

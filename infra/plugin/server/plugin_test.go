@@ -63,16 +63,13 @@ func TestUploadAttachmentFromURL_InvalidJSON(t *testing.T) {
 }
 
 func TestUploadAttachmentFromURL_WithPostID(t *testing.T) {
-	// Test that post_id field is accepted in the request (basic validation)
-	// We mock a simple HTTP server to avoid nil httpClient panic
+	// Ensure post_id is accepted without crashing; request fails during download
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound) // Return 404 so we fail at validation, not at nil client
+		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer mockServer.Close()
 
-	plugin := Plugin{
-		httpClient: mockServer.Client(),
-	}
+	plugin := Plugin{httpClient: mockServer.Client()}
 	w := httptest.NewRecorder()
 	reqBody := `{
 		"channel_id": "ch123",
@@ -86,7 +83,52 @@ func TestUploadAttachmentFromURL_WithPostID(t *testing.T) {
 	plugin.UploadAttachmentFromURL(w, r)
 
 	result := w.Result()
-	// Should get BadRequest (400) from download failure (404 response)
 	assert.Equal(t, http.StatusBadRequest, result.StatusCode)
 }
 
+func TestUnarchiveChannel_EmptyBody(t *testing.T) {
+	plugin := Plugin{}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/channel/unarchive", nil)
+
+	plugin.UnarchiveChannel(w, r)
+
+	result := w.Result()
+	assert.Equal(t, http.StatusBadRequest, result.StatusCode)
+}
+
+func TestUnarchiveChannel_InvalidJSON(t *testing.T) {
+	plugin := Plugin{}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/channel/unarchive", strings.NewReader("invalid json"))
+
+	plugin.UnarchiveChannel(w, r)
+
+	result := w.Result()
+	assert.Equal(t, http.StatusBadRequest, result.StatusCode)
+}
+
+func TestUnarchiveChannel_MissingChannelID(t *testing.T) {
+	plugin := Plugin{}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/channel/unarchive", strings.NewReader("{}"))
+
+	plugin.UnarchiveChannel(w, r)
+
+	result := w.Result()
+	assert.Equal(t, http.StatusBadRequest, result.StatusCode)
+}
+
+func TestMakeDriverArgs(t *testing.T) {
+	plugin := Plugin{}
+
+	args := plugin.makeDriverArgs(int64(123456789), "channel-id", "user-id")
+
+	assert.Equal(t, 3, len(args))
+	assert.Equal(t, 1, args[0].Ordinal)
+	assert.Equal(t, int64(123456789), args[0].Value)
+	assert.Equal(t, 2, args[1].Ordinal)
+	assert.Equal(t, "channel-id", args[1].Value)
+	assert.Equal(t, 3, args[2].Ordinal)
+	assert.Equal(t, "user-id", args[2].Value)
+}

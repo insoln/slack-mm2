@@ -186,6 +186,91 @@ async def export_worker(queue, mm_user_id):
         queue.task_done()
 
 
+async def _get_archived_channel_ids() -> set[str]:
+    """Get all channel entity IDs that were archived (is_archived in raw_data).
+    Returns set of mattermost_id strings for channels that should be kept archived.
+    """
+    async with SessionLocal() as session:
+        q = await session.execute(
+            select(Entity).where(
+                (Entity.entity_type == "channel")
+                & (Entity.status == MappingStatus.success)
+                & (Entity.mattermost_id.is_not(None))
+            )
+        )
+        channels = q.scalars().all()
+        archived = set()
+        for ch in channels:
+            if (ch.raw_data or {}).get("is_archived"):
+                archived.add(ch.mattermost_id)
+        backend_logger.info(
+            f"Found {len(archived)} archived channels to manage during reaction export"
+        )
+        return archived
+
+
+async def _unarchive_channels(channel_ids: set[str]):
+    """Unarchive specified channels via plugin API."""
+    if not channel_ids:
+        return
+    mm_url = os.environ.get("MM_URL")
+    mm_token = os.environ.get("MM_TOKEN")
+    if not mm_url or not mm_token:
+        backend_logger.warning("MM_URL or MM_TOKEN not set, skipping channel unarchive")
+        return
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        for cid in channel_ids:
+            try:
+                resp = await client.post(
+                    f"{mm_url}/plugins/mm-importer/api/v1/channel/unarchive",
+                    json={"channel_id": cid},
+                    headers={"Authorization": f"Bearer {mm_token}"},
+                )
+                if resp.status_code not in (200, 201):
+                    backend_logger.warning(
+                        f"Failed to unarchive channel {cid}: {resp.status_code} {resp.text[:200]}"
+                    )
+                else:
+                    backend_logger.debug(
+                        f"Unarchived channel {cid} for reaction export"
+                    )
+            except httpx.HTTPError as exc:
+                backend_logger.error(f"Error unarchiving channel {cid}: {exc}")
+
+
+async def _rearchive_channels(channel_ids: set[str]):
+    """Re-archive specified channels via plugin API."""
+    if not channel_ids:
+        return
+    mm_url = os.environ.get("MM_URL")
+    mm_token = os.environ.get("MM_TOKEN")
+    if not mm_url or not mm_token:
+        backend_logger.warning(
+            "MM_URL or MM_TOKEN not set, skipping channel re-archive"
+        )
+        return
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        for cid in channel_ids:
+            try:
+                resp = await client.post(
+                    f"{mm_url}/plugins/mm-importer/api/v1/channel/archive",
+                    json={"channel_id": cid},
+                    headers={"Authorization": f"Bearer {mm_token}"},
+                )
+                if resp.status_code not in (200, 201):
+                    backend_logger.warning(
+                        f"Failed to re-archive channel {cid}: {resp.status_code} {resp.text[:200]}"
+                    )
+                else:
+                    backend_logger.debug(
+                        f"Re-archived channel {cid} after reaction export"
+                    )
+            except httpx.HTTPError as exc:
+                backend_logger.error(f"Error re-archiving channel {cid}: {exc}")
+
+
 async def orchestrate_mm_export(job_id=None):
     # Ensure only one export runs at a time across the process
     async with EXPORT_LOCK:
@@ -371,6 +456,16 @@ async def orchestrate_mm_export(job_id=None):
                 f"Запуск экспорта с глобальным барьером типов для {len(jobs)} задач"
             )
             for entity_type, exporter_cls in EXPORT_ORDER:
+                # Special handling for reactions: unarchive channels before, re-archive after
+                archived_channel_ids: set[str] = set()
+                if entity_type == "reaction":
+                    archived_channel_ids = await _get_archived_channel_ids()
+                    if archived_channel_ids:
+                        backend_logger.info(
+                            f"Unarchiving {len(archived_channel_ids)} channels for reaction export"
+                        )
+                        await _unarchive_channels(archived_channel_ids)
+
                 # Repeat the type until no exporting job has pending/skipped entities of this type
                 while True:
                     jobs = await _fetch_exporting_jobs()
@@ -496,6 +591,13 @@ async def orchestrate_mm_export(job_id=None):
                     jobs = await _fetch_exporting_jobs()
                     if not await _has_pending_for_type(entity_type, jobs):
                         break
+
+                # After completing reaction export, re-archive channels that were originally archived
+                if entity_type == "reaction" and archived_channel_ids:
+                    backend_logger.info(
+                        f"Re-archiving {len(archived_channel_ids)} channels after reaction export"
+                    )
+                    await _rearchive_channels(archived_channel_ids)
 
             # After completing all types for these jobs, perform cleanup & mark them done
             try:

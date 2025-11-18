@@ -49,3 +49,44 @@ async def test_parse_channel_messages_creates_entities(monkeypatch):
                 mock_msg.create_posted_in_relation.assert_any_call("C123")
                 mock_msg.create_posted_by_relation.assert_any_call()
                 mock_msg.create_thread_relation.assert_any_call()
+
+
+@pytest.mark.asyncio
+async def test_create_emojis_skips_without_catalog():
+    seen = {"thumbsup", "eyes"}
+    with patch(
+        "app.services.backup.messages_import.backend_logger"
+    ) as mock_logger, patch(
+        "app.services.backup.messages_import.CustomEmoji"
+    ) as mock_emoji:
+        created = await messages_import._create_emojis(seen, None)
+
+    assert created == 0
+    mock_emoji.assert_not_called()
+    mock_logger.info.assert_any_call(
+        "Slack emoji catalog unavailable; skipping custom emoji persistence"
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_emojis_requires_url():
+    seen = {"custom_1", "thumbsup"}
+    emoji_list = {"custom_1": "https://example.com/emoji.png", "thumbsup": ""}
+
+    created_slack_ids = []
+
+    def _emoji_factory(**kwargs):
+        inst = MagicMock()
+        inst.save_to_db = AsyncMock(return_value=object())
+        created_slack_ids.append(kwargs["slack_id"])
+        return inst
+
+    with patch(
+        "app.services.backup.messages_import.CustomEmoji",
+        side_effect=lambda **kwargs: _emoji_factory(**kwargs),
+    ) as mock_emoji:
+        created = await messages_import._create_emojis(seen, emoji_list)
+
+    assert created == 1
+    assert created_slack_ids == ["custom_1"]
+    assert mock_emoji.call_count == 1

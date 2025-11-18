@@ -131,6 +131,9 @@ For production compose runs use `infra/.env.prod` with real Mattermost credentia
 - If you encounter legacy code or features, document them and consider refactoring or removing them in future updates.
 - If you make a feture legacy, please document it clearly in the code comments.
 
+### Documentation Policy
+- Follow `docs/documentation-policy.md` whenever you add or update feature-specific Markdown files. Keep component READMEs concise and link out to deeper docs for complex subsystems.
+
 ## Validation and Testing
 
 ### Manual Validation Scenarios
