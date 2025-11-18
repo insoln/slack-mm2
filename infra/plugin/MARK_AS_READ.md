@@ -39,8 +39,8 @@ This document describes the implementation of the "mark as read" functionality f
 │  1. Ensure Driver is available                                 │
 │  2. Open DB connection via p.Driver.Conn()                       │
 │  3. Execute SQL UPDATE targeting all members in one statement    │
-│     (WHERE ChannelId = ? AND LastViewedAt < ?)                   │
-│  4. Reset mention counters + LastViewedAt                        │
+│     (WHERE ChannelId = ? AND needsRefresh = TRUE)                │
+│  4. Reset counters + clamp LastViewedAt to at least post ts      │
 │  5. Log rows affected / close connection                         │
 └─────────────────────────────────────────────────────────────────┘
             │
@@ -91,7 +91,7 @@ During synchronization, messages imported or created in Mattermost through the p
 
 ## Solution
 
-The implementation updates the `LastViewedAt` timestamp in the `ChannelMembers` table for all members of a channel whenever a post is imported. This timestamp determines which posts are considered "read" by each user.
+The implementation updates the `LastViewedAt` timestamp in the `ChannelMembers` table for all members of a channel whenever a post is imported and also resets their message counters (`MsgCount`, `MsgCountRoot`) to the channel's current totals. These fields drive the unread badge calculations in the client.
 
 ## Implementation Details
 
@@ -100,8 +100,9 @@ The implementation updates the `LastViewedAt` timestamp in the `ChannelMembers` 
 #### `markPostAsReadForChannelMembers(channelID string, postCreateAt int64)`
 - Called after successful post creation in `ImportPost`
 - Executes a **single** SQL `UPDATE` via the plugin `Driver` to touch every member row in one shot
-- Updates only members whose `LastViewedAt` is older than the imported post timestamp, preserving concurrency safety
-- Resets `MentionCount` / `MentionCountRoot` alongside `LastViewedAt`
+- Clamps `LastViewedAt` to the greater of the existing value and the imported post timestamp to avoid regressions when timestamps arrive out of order
+- Resets `MentionCount`, `MentionCountRoot`, `MsgCount`, and `MsgCountRoot` alongside `LastViewedAt`
+- Pulls the latest `TotalMsgCount`/`TotalMsgCountRoot` from the channel to ensure counters stay consistent with the server's aggregates
 - Logs the number of affected rows to aid diagnostics but never fails the request
 
 #### `makeDriverArgs(values ...interface{})`
@@ -112,10 +113,19 @@ The implementation updates the `LastViewedAt` timestamp in the `ChannelMembers` 
 
 ```sql
 UPDATE ChannelMembers
-SET LastViewedAt = ?,
-  MentionCount = 0,
-  MentionCountRoot = 0
-WHERE ChannelId = ? AND LastViewedAt < ?
+SET LastViewedAt = CASE WHEN LastViewedAt < $1 THEN $1 ELSE LastViewedAt END,
+    MentionCount = 0,
+    MentionCountRoot = 0,
+    MsgCount = $3,
+    MsgCountRoot = $4
+WHERE ChannelId = $2
+  AND (
+        LastViewedAt < $1
+        OR MentionCount <> 0
+        OR MentionCountRoot <> 0
+        OR MsgCount <> $3
+        OR MsgCountRoot <> $4
+      );
 ```
 
 ## Why Direct Database Access?
@@ -206,6 +216,27 @@ After the post is created, all channel members will have their `LastViewedAt` up
 - Uses a single batch update regardless of channel size; runtime is proportional to the database engine's ability to update matching rows
 - Eliminates the old N+1 pattern of `GetChannelMembers` + per-member updates, dramatically improving throughput on large channels
 - Atomic WHERE clause ensures no race condition when concurrent imports target the same channel
+
+## Validating the Update
+
+Use the following SQL snippet inside the Mattermost database to surface any member rows whose counters still diverge from their channel totals:
+
+```sql
+SELECT c.displayname,
+     cm.userid,
+     c.totalmsgcount - cm.msgcount   AS msg_delta,
+     c.totalmsgcountroot - cm.msgcountroot AS root_delta,
+     to_timestamp(cm.lastviewedat/1000) AS last_viewed,
+     to_timestamp(c.lastpostat/1000)   AS last_post
+FROM channelmembers cm
+JOIN channels c ON cm.channelid = c.id
+WHERE cm.msgcount <> c.totalmsgcount
+  OR cm.msgcountroot <> c.totalmsgcountroot
+ORDER BY msg_delta DESC
+LIMIT 20;
+```
+
+With the new predicate, rerunning the importer (or calling `/api/v1/import` for additional posts) will reconcile any rows reported by this query.
 
 ## Future Improvements
 

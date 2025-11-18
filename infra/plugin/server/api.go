@@ -4,8 +4,10 @@ import (
 	"database/sql/driver"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gorilla/mux"
 	"github.com/mattermost/mattermost/server/public/model"
@@ -744,12 +746,45 @@ func (p *Plugin) markPostAsReadForChannelMembers(channelID string, postCreateAt 
 		_ = p.Driver.ConnClose(connID)
 	}()
 
+	includeMsgCounts := false
+	var channelMsgCount int64
+	var channelMsgCountRoot int64
+
+	if p.API != nil {
+		if ch, appErr := p.API.GetChannel(channelID); appErr == nil && ch != nil {
+			channelMsgCount = ch.TotalMsgCount
+			channelMsgCountRoot = ch.TotalMsgCountRoot
+			includeMsgCounts = true
+		} else if appErr != nil {
+			p.API.LogWarn("Unable to fetch channel totals for mark-as-read",
+				"channel_id", channelID,
+				"error", appErr.Error())
+		}
+	}
+
 	query := `UPDATE ChannelMembers
-	          SET LastViewedAt = ?,
-	              MentionCount = 0,
-	              MentionCountRoot = 0
-	          WHERE ChannelId = ? AND LastViewedAt < ?`
-	args := p.makeDriverArgs(postCreateAt, channelID, postCreateAt)
+			  SET LastViewedAt = CASE WHEN LastViewedAt < $1 THEN $1 ELSE LastViewedAt END,
+			      MentionCount = 0,
+			      MentionCountRoot = 0`
+
+	args := p.makeDriverArgs(postCreateAt, channelID)
+	whereParts := []string{"LastViewedAt < $1", "MentionCount <> 0", "MentionCountRoot <> 0"}
+
+	if includeMsgCounts {
+		nextIdx := len(args) + 1
+		query += fmt.Sprintf(",\n                  MsgCount = $%d,\n                  MsgCountRoot = $%d", nextIdx, nextIdx+1)
+		args = append(args,
+			driver.NamedValue{Ordinal: nextIdx, Value: channelMsgCount},
+			driver.NamedValue{Ordinal: nextIdx + 1, Value: channelMsgCountRoot},
+		)
+		whereParts = append(whereParts,
+			fmt.Sprintf("MsgCount <> $%d", nextIdx),
+			fmt.Sprintf("MsgCountRoot <> $%d", nextIdx+1),
+		)
+	}
+
+	query += fmt.Sprintf(`
+			  WHERE ChannelId = $2 AND (%s)`, strings.Join(whereParts, " OR "))
 
 	result, err := p.Driver.ConnExec(connID, query, args)
 	if err != nil {
@@ -768,10 +803,12 @@ func (p *Plugin) markPostAsReadForChannelMembers(channelID string, postCreateAt 
 		return nil
 	}
 
-	p.API.LogDebug("Marked posts as read for channel members",
-		"channel_id", channelID,
-		"timestamp", postCreateAt,
-		"rows_affected", rowsAffected)
+	logFields := []interface{}{"channel_id", channelID, "timestamp", postCreateAt, "rows_affected", rowsAffected}
+	if includeMsgCounts {
+		logFields = append(logFields, "msg_count", channelMsgCount, "msg_count_root", channelMsgCountRoot)
+	}
+
+	p.API.LogDebug("Marked posts as read for channel members", logFields...)
 
 	return nil
 }
