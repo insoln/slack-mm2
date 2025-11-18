@@ -1,0 +1,11 @@
+[
+  {
+    "id": "mpdm-alice--admin--mini.bot-1",
+    "name": "mpdm-alice--admin--mini.bot-1",
+    "is_mpim": true,
+    "created": 1736467400,
+    "members": ["U0001", "UADMIN", "B0001"],
+    "topic": {"value": "Tri-party planning", "creator": "U0001", "last_set": 1736467400},
+    "purpose": {"value": "Discuss cross-cutting topics", "creator": "UADMIN", "last_set": 1736467400}
+  }
+]

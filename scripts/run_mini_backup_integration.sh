@@ -10,9 +10,9 @@ set -euo pipefail
 #  5. Scan logs for errors and validate admin user mapping
 #  6. Tear down services
 # Expected counts (derived from current mini dataset, strict deterministic):
-#   users=4 (2 real + 1 bot + 1 placeholder for UMISSING; admin UADMIN present)
-#   channels=4 (public + private + 2 DMs: D0001 existing users, D0002 with placeholder)
-#   messages=19 (all messages including thread replies; deleted tombstone still counted for determinism)
+#   users=3 (2 real + 1 bot; UMISSING purposely absent to exercise placeholder creation)
+#   channels=5 (public + private + 2 DMs + 1 MPDM)
+#   messages=17 (all messages including thread replies; deleted tombstone still counted for determinism)
 #   attachments=3 (three test-files hosted attachments with allowed url_private prefixes)
 #     - public-channel day1: example.txt (FTXT1)
 #     - private-channel day1: image.png
@@ -20,9 +20,9 @@ set -euo pipefail
 #   reactions=1
 
 # Expected counts (allow override via env for flexibility)
-: "${EXPECTED_USERS:=4}"
-: "${EXPECTED_CHANNELS:=4}"
-: "${EXPECTED_MESSAGES:=19}"
+: "${EXPECTED_USERS:=3}"
+: "${EXPECTED_CHANNELS:=5}"
+: "${EXPECTED_MESSAGES:=17}"
 : "${EXPECTED_ATTACHMENTS:=3}"
 : "${EXPECTED_REACTIONS:=0}"
 
@@ -379,6 +379,14 @@ if [[ "$ADMIN_DB_ID" != "$EXPECTED_ADMIN_MM_ID" ]]; then
   exit 1
 fi
 echo "[INFO] Admin user mapping OK ($ADMIN_DB_ID)"
+
+echo "[STEP] Validating placeholder user export"
+PLACEHOLDER_DB_ID=$(docker compose -f "$COMPOSE_FILE" exec -T db psql -U slack-mm -d slack-mm -P pager=off -t -c "SELECT mattermost_id FROM entities WHERE entity_type='user' AND slack_id='UMISSING';" | tr -d '[:space:]') || true
+if [[ -z "$PLACEHOLDER_DB_ID" ]]; then
+  echo "Placeholder user UMISSING not found in entities table" >&2
+  exit 1
+fi
+echo "[INFO] Placeholder UMISSING exported with Mattermost ID $PLACEHOLDER_DB_ID"
 
 echo "[SUCCESS] Integration mini backup test passed."
 
