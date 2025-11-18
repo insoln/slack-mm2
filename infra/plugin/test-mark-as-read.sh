@@ -80,17 +80,28 @@ echo "  Created post: $POST_ID"
 echo "  Post timestamp: $TIMESTAMP"
 echo ""
 
-# Wait a moment for database updates to complete
-echo "Step 4: Waiting for updates to complete..."
-sleep 2
+# Wait for database updates to complete by polling for LastViewedAt change
+echo "Step 4: Waiting for updates to complete (polling LastViewedAt >= post timestamp)..."
+MAX_ATTEMPTS=20  # 20 * 0.5s = 10 seconds max wait
+SLEEP_INTERVAL=0.5
+ATTEMPT=0
+LAST_VIEWED_AFTER=$LAST_VIEWED_BEFORE
+MENTION_COUNT=0
+while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+    MEMBER_AFTER=$(curl -s -H "Authorization: Bearer $MATTERMOST_TOKEN" \
+        "$MATTERMOST_URL/api/v4/channels/$TEST_CHANNEL_ID/members/$TEST_USER_ID")
+    LAST_VIEWED_AFTER=$(echo "$MEMBER_AFTER" | jq -r '.last_viewed_at')
+    MENTION_COUNT=$(echo "$MEMBER_AFTER" | jq -r '.mention_count')
+    if [ "$LAST_VIEWED_AFTER" != "null" ] && [ "$LAST_VIEWED_AFTER" -ge "$TIMESTAMP" ]; then
+        break
+    fi
+    sleep "$SLEEP_INTERVAL"
+    ATTEMPT=$((ATTEMPT + 1))
+done
 echo ""
 
-# Step 5: Check member's LastViewedAt after post creation
+# Step 5: Report member's LastViewedAt after post creation
 echo "Step 5: Checking member's LastViewedAt after post..."
-MEMBER_AFTER=$(curl -s -H "Authorization: Bearer $MATTERMOST_TOKEN" \
-    "$MATTERMOST_URL/api/v4/channels/$TEST_CHANNEL_ID/members/$TEST_USER_ID")
-LAST_VIEWED_AFTER=$(echo "$MEMBER_AFTER" | jq -r '.last_viewed_at')
-MENTION_COUNT=$(echo "$MEMBER_AFTER" | jq -r '.mention_count')
 echo "  LastViewedAt after: $LAST_VIEWED_AFTER"
 echo "  MentionCount: $MENTION_COUNT"
 echo ""
@@ -119,10 +130,16 @@ echo ""
 
 # Step 7: Cleanup - delete test post
 echo "Step 7: Cleaning up test post..."
-curl -s -X DELETE \
+DELETE_RESPONSE=$(curl -s -w "\n%{http_code}" -X DELETE \
     -H "Authorization: Bearer $MATTERMOST_TOKEN" \
-    "$MATTERMOST_URL/api/v4/posts/$POST_ID" > /dev/null
-echo "  Test post deleted"
+    "$MATTERMOST_URL/api/v4/posts/$POST_ID")
+DELETE_HTTP_CODE=$(echo "$DELETE_RESPONSE" | tail -n1)
+if [ "$DELETE_HTTP_CODE" != "200" ]; then
+    echo "  ⚠ WARNING: Failed to delete test post (HTTP $DELETE_HTTP_CODE)"
+    echo "  Post ID $POST_ID may require manual cleanup"
+else
+    echo "  Test post deleted"
+fi
 echo ""
 
 echo "=== Test Complete ==="

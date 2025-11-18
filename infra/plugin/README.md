@@ -99,7 +99,7 @@ The version format is `MAJOR.MINOR.PATCH`.
     - Performance improvements.
     - Security patches.
 
-After updating the version, a new plugin bundle must be built and deployed for the changes to take effect.
+After updating the version, a new plugin bundle must be built and deployed for the changes to take effect. Release-by-release notes live in [`CHANGELOG.md`](./CHANGELOG.md).
 
 ### Build (Multi-Stage Docker) — Preferred
 
@@ -202,7 +202,10 @@ PLUGIN_BUNDLE_URL=http://test-files:9000/plugin-bundles/latest.tar.gz
 Backend status will surface `remote_bundle_available=true` if the HEAD probe succeeds.
 
 ### How do I build the plugin with unminified JavaScript?
-Setting the `MM_DEBUG` environment variable will invoke the debug builds. The simplist way to do this is to simply include this variable in your calls to `make` (e.g. `make dist MM_DEBUG=1`).
+Setting the `MM_DEBUG` environment variable will invoke the debug builds. The simplest way to do this is to simply include this variable in your calls to `make` (e.g. `make dist MM_DEBUG=1`).
+
+### Additional design docs
+- [`MARK_AS_READ.md`](./MARK_AS_READ.md) — rationale, sequence diagrams, SQL batching, and operational guidance for the auto mark-as-read flow.
 
 ## Testing
 
