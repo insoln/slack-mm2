@@ -30,6 +30,11 @@ async def _create_emojis(seen: Set[str], emoji_list: Optional[dict]) -> int:
     """
     if not seen:
         return 0
+    if not emoji_list:
+        backend_logger.info(
+            "Slack emoji catalog unavailable; skipping custom emoji persistence"
+        )
+        return 0
     created = 0
     for name in sorted(seen):
         if emoji_list and not emoji_list.get(name):
