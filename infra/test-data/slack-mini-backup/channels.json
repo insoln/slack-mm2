@@ -11,5 +11,18 @@
     "topic": {"value": "Public discussion", "creator": "U0001", "last_set": 1736467200},
     "purpose": {"value": "General public channel", "creator": "U0001", "last_set": 1736467200},
     "members": ["U0001", "UADMIN"]
+  },
+  {
+    "id": "CARCH1",
+    "name": "archived-public-reactions",
+    "is_channel": true,
+    "is_group": false,
+    "is_private": false,
+    "is_archived": true,
+    "created": 1736553600,
+    "creator": "UADMIN",
+    "topic": {"value": "Archived public experiments", "creator": "UADMIN", "last_set": 1736553600},
+    "purpose": {"value": "Baseline for unarchive reaction flow", "creator": "UADMIN", "last_set": 1736553600},
+    "members": ["U0001", "UADMIN"]
   }
 ]

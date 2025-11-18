@@ -11,5 +11,18 @@
     "topic": {"value": "Private strategy", "creator": "UADMIN", "last_set": 1736467200},
     "purpose": {"value": "Internal private channel", "creator": "UADMIN", "last_set": 1736467200},
     "members": ["U0001", "UADMIN"]
+  },
+  {
+    "id": "GARCH1",
+    "name": "archived-private-reactions",
+    "is_channel": false,
+    "is_group": true,
+    "is_private": true,
+    "is_archived": true,
+    "created": 1736553600,
+    "creator": "U0001",
+    "topic": {"value": "Archived private experiments", "creator": "U0001", "last_set": 1736553600},
+    "purpose": {"value": "Validate unarchive logic for reactions", "creator": "U0001", "last_set": 1736553600},
+    "members": ["U0001", "UADMIN"]
   }
 ]

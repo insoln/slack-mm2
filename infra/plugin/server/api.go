@@ -44,6 +44,7 @@ func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Req
 	apiRouter.HandleFunc("/channel", p.CreateOrGetChannel).Methods(http.MethodPost)
 	apiRouter.HandleFunc("/channel/members", p.AddChannelMembers).Methods(http.MethodPost)
 	apiRouter.HandleFunc("/channel/archive", p.ArchiveChannel).Methods(http.MethodPost)
+	apiRouter.HandleFunc("/channel/unarchive", p.UnarchiveChannel).Methods(http.MethodPost)
 
 	// DM/GDM helpers
 	apiRouter.HandleFunc("/dm", p.CreateDirectChannel).Methods(http.MethodPost)
@@ -652,6 +653,51 @@ func (p *Plugin) ArchiveChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(ArchiveChannelResponse{})
+}
+
+type UnarchiveChannelRequest struct {
+	ChannelID string `json:"channel_id"`
+}
+
+type UnarchiveChannelResponse struct {
+	Error string `json:"error,omitempty"`
+}
+
+func (p *Plugin) UnarchiveChannel(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(UnarchiveChannelResponse{Error: "Failed to read body"})
+		return
+	}
+	var req UnarchiveChannelRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(UnarchiveChannelResponse{Error: "Invalid JSON"})
+		return
+	}
+	if req.ChannelID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(UnarchiveChannelResponse{Error: "channel_id is required"})
+		return
+	}
+	// Get the channel first
+	channel, appErr := p.API.GetChannel(req.ChannelID)
+	if appErr != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(UnarchiveChannelResponse{Error: appErr.Error()})
+		return
+	}
+	// Unarchive by setting DeleteAt to 0
+	channel.DeleteAt = 0
+	_, appErr = p.API.UpdateChannel(channel)
+	if appErr != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(UnarchiveChannelResponse{Error: appErr.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(UnarchiveChannelResponse{})
 }
 
 // ---------------- DM / GDM ----------------

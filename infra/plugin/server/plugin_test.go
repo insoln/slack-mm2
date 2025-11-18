@@ -62,6 +62,39 @@ func TestUploadAttachmentFromURL_InvalidJSON(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, result.StatusCode)
 }
 
+<<<<<<< HEAD
+func TestUnarchiveChannel_EmptyBody(t *testing.T) {
+	plugin := Plugin{}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/channel/unarchive", nil)
+
+	plugin.UnarchiveChannel(w, r)
+
+	result := w.Result()
+	assert.Equal(t, http.StatusBadRequest, result.StatusCode)
+}
+
+func TestUnarchiveChannel_InvalidJSON(t *testing.T) {
+	plugin := Plugin{}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/channel/unarchive", strings.NewReader("invalid json"))
+
+	plugin.UnarchiveChannel(w, r)
+
+	result := w.Result()
+	assert.Equal(t, http.StatusBadRequest, result.StatusCode)
+}
+
+func TestUnarchiveChannel_MissingChannelID(t *testing.T) {
+	plugin := Plugin{}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/channel/unarchive", strings.NewReader("{}"))
+
+	plugin.UnarchiveChannel(w, r)
+
+	result := w.Result()
+	assert.Equal(t, http.StatusBadRequest, result.StatusCode)
+=======
 func TestMakeDriverArgs(t *testing.T) {
 	plugin := Plugin{}
 
@@ -75,4 +108,5 @@ func TestMakeDriverArgs(t *testing.T) {
 	assert.Equal(t, "channel-id", args[1].Value)
 	assert.Equal(t, 3, args[2].Ordinal)
 	assert.Equal(t, "user-id", args[2].Value)
+>>>>>>> origin/master
 }

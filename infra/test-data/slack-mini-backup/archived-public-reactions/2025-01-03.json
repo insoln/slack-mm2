@@ -1,0 +1,20 @@
+[
+  {
+    "type": "message",
+    "user": "U0001",
+    "text": "Archived public channel ping with reactions",
+    "ts": "1735939200.000700",
+    "reactions": [
+      {
+        "name": "thumbsup",
+        "users": ["UADMIN"],
+        "count": 1
+      },
+      {
+        "name": "eyes",
+        "users": ["U0001"],
+        "count": 1
+      }
+    ]
+  }
+]
