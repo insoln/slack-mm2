@@ -767,6 +767,7 @@ func (p *Plugin) markPostAsReadForChannelMembers(channelID string, postCreateAt 
 			      MentionCount = 0,
 			      MentionCountRoot = 0`
 
+	// Parameter order keeps $1 bound to the post timestamp and $2 to the ChannelId used in the WHERE clause.
 	args := p.makeDriverArgs(postCreateAt, channelID)
 	whereParts := []string{"LastViewedAt < $1", "MentionCount <> 0", "MentionCountRoot <> 0"}
 
