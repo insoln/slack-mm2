@@ -1,5 +1,6 @@
 import os
 from app.logging_config import backend_logger
+from app.services.backup.meta_utils import merge_job_meta
 from .base_exporter import ExporterBase, LoggingMixin
 from .mm_api_mixin import MMApiMixin
 
@@ -373,6 +374,7 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                             "first_name": "Placeholder",
                             "last_name": "User",
                         },
+                        "is_placeholder": True,
                     }
                     placeholder_user = User(
                         slack_id=sid,
@@ -380,7 +382,7 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                         raw_data=placeholder_raw_data,
                         status="pending",
                         auto_save=False,
-                        job_id=None,
+                        job_id=getattr(self.entity, "job_id", None),
                     )
                     try:
                         # Сохраняем placeholder в БД
@@ -400,6 +402,7 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                                 backend_logger.info(
                                     f"Successfully exported placeholder user {sid} to MM with ID {mm_id}"
                                 )
+                                await self._record_placeholder_user_creation()
                             else:
                                 backend_logger.error(
                                     f"Placeholder export completed but MM ID missing for {sid}"
@@ -413,6 +416,26 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                             f"Error creating/exporting placeholder user for {sid}: {e}"
                         )
         return mm_ids
+
+    async def _record_placeholder_user_creation(self) -> None:
+        job_id = getattr(self.entity, "job_id", None)
+        if not job_id:
+            return
+        try:
+            await merge_job_meta(
+                job_id,
+                incr={
+                    "users_discovered": 1,
+                    "users_created": 1,
+                    "users_processed": 1,
+                },
+            )
+        except Exception as exc:  # pragma: no cover
+            backend_logger.warning(
+                "Failed to bump placeholder user counters for job %s: %s",
+                job_id,
+                exc,
+            )
 
     async def _get_mm_team_id(self):
         """Определить ID команды Mattermost:
