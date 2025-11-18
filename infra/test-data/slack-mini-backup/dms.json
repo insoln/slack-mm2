@@ -6,5 +6,13 @@
     "created": 1736467200,
     "is_user_deleted": false,
     "members": ["U0001", "UADMIN"]
+  },
+  {
+    "id": "D0002",
+    "is_im": true,
+    "user": "U0001",
+    "created": 1736467300,
+    "is_user_deleted": false,
+    "members": ["U0001", "UMISSING"]
   }
 ]
