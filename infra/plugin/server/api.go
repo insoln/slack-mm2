@@ -319,6 +319,12 @@ func (p *Plugin) attachFileToPost(postID, channelID, fileID string) error {
 	if appErr != nil {
 		return appErr
 	}
+	originalMessage := post.Message
+	targetEditAt := post.EditAt
+	targetUpdateAt := post.UpdateAt
+	if targetUpdateAt == 0 {
+		targetUpdateAt = post.CreateAt
+	}
 
 	// Validate post is in the same channel to prevent cross-channel leakage
 	if post.ChannelId != channelID {
@@ -336,7 +342,7 @@ func (p *Plugin) attachFileToPost(postID, channelID, fileID string) error {
 	post.FileIds = append(post.FileIds, fileID)
 
 	// Update the post
-	_, appErr = p.API.UpdatePost(post)
+	updatedPost, appErr := p.API.UpdatePost(post)
 	if appErr != nil {
 		p.API.LogError("Failed to update post with file attachment",
 			"postId", postID,
@@ -344,12 +350,71 @@ func (p *Plugin) attachFileToPost(postID, channelID, fileID string) error {
 			"error", appErr)
 		return appErr
 	}
+	if updatedPost != nil {
+		post = updatedPost
+	}
+	p.restoreOriginalPostTimestamps(post, originalMessage, targetEditAt, targetUpdateAt)
 
 	p.API.LogDebug("Successfully attached file to existing post",
 		"postId", postID,
 		"fileId", fileID,
 		"channelId", channelID)
 	return nil
+}
+
+// restoreOriginalPostTimestamps resets EditAt/UpdateAt after UpdatePost forces a fresh timestamp.
+// We only run this when the post message text is unchanged to avoid hiding legitimate edits.
+func (p *Plugin) restoreOriginalPostTimestamps(post *model.Post, originalMessage string, targetEditAt, targetUpdateAt int64) {
+	if p.Driver == nil || p.API == nil || post == nil {
+		return
+	}
+	if targetUpdateAt == 0 {
+		targetUpdateAt = post.CreateAt
+	}
+	if post.Message != originalMessage {
+		return
+	}
+	if post.EditAt == targetEditAt && post.UpdateAt == targetUpdateAt {
+		return
+	}
+	connID, err := p.Driver.Conn(false)
+	if err != nil {
+		p.API.LogWarn("restoreOriginalPostTimestamps: failed to acquire connection",
+			"postId", post.Id,
+			"error", err.Error())
+		return
+	}
+	defer func() {
+		_ = p.Driver.ConnClose(connID)
+	}()
+
+	query := `UPDATE Posts
+			SET EditAt = $1,
+			    UpdateAt = $2
+			WHERE Id = $3
+			  AND Message = $4
+			  AND (EditAt <> $1 OR UpdateAt <> $2)`
+	args := p.makeDriverArgs(targetEditAt, targetUpdateAt, post.Id, originalMessage)
+	result, execErr := p.Driver.ConnExec(connID, query, args)
+	if execErr != nil {
+		p.API.LogWarn("restoreOriginalPostTimestamps: update failed",
+			"postId", post.Id,
+			"error", execErr.Error())
+		return
+	}
+	if result.RowsAffectedError != nil {
+		p.API.LogWarn("restoreOriginalPostTimestamps: rows affected error",
+			"postId", post.Id,
+			"error", result.RowsAffectedError)
+		return
+	}
+	if result.RowsAffected > 0 {
+		p.API.LogDebug("Restored original post timestamps after attachment",
+			"postId", post.Id,
+			"editAt", targetEditAt,
+			"updateAt", targetUpdateAt,
+			"rows", result.RowsAffected)
+	}
 }
 
 // UploadAttachmentFromURL downloads a file from the specified URL and uploads it to Mattermost.
