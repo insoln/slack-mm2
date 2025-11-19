@@ -9,12 +9,16 @@ from sqlalchemy.exc import IntegrityError
 from app.logging_config import backend_logger
 from sqlalchemy import select
 from sqlalchemy import func as _sa_func
-from typing import List, Optional, Dict, Set, Tuple, cast
+from typing import List, Optional, Dict, Tuple, cast
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 
 class BaseMapping:
     entity_type = None  # Должен быть определён в наследнике
+    _TAKEOVER_STATUSES = {
+        MappingStatus.failed,
+        MappingStatus.skipped,
+    }
 
     def __init__(
         self,
@@ -49,6 +53,8 @@ class BaseMapping:
             )
             existing = query.scalar_one_or_none()
             if existing:
+                if self._takeover_existing_entity(existing):
+                    await session.commit()
                 self.id = existing.id
                 backend_logger.debug(
                     f"{self.entity_type} already exists: slack_id={self.slack_id}"
@@ -177,10 +183,39 @@ class BaseMapping:
             try:
                 bind = session.get_bind()
                 is_sqlite = bool(bind and bind.dialect.name == "sqlite")
+                existing_entities: Dict[Tuple[str, str], Entity] = {}
+                for entity_type, type_mappings in grouped_mappings.items():
+                    slack_ids = list({m.slack_id for m in type_mappings})
+                    if not slack_ids:
+                        continue
+                    query = await session.execute(
+                        select(Entity).where(
+                            (Entity.entity_type == entity_type)
+                            & (Entity.slack_id.in_(slack_ids))
+                        )
+                    )
+                    for existing in query.scalars().all():
+                        existing_entities[(entity_type, existing.slack_id)] = existing
+
+                takeover_count = 0
+
+                pending_mappings: List["BaseMapping"] = []
+                for mapping in mappings:
+                    key = (mapping.entity_type, mapping.slack_id)
+                    existing = existing_entities.get(key)
+                    if existing:
+                        if BaseMapping._apply_takeover(existing, mapping):
+                            takeover_count += 1
+                            continue
+                        mapping.id = existing.id
+                        existing_count += 1
+                        continue
+                    pending_mappings.append(mapping)
+                saved_count = takeover_count
                 # Fast path with ON CONFLICT for Postgres
                 if not is_sqlite:
                     rows = []
-                    for m in mappings:
+                    for m in pending_mappings:
                         status_value = m.status
                         if not isinstance(status_value, MappingStatus):
                             try:
@@ -223,53 +258,31 @@ class BaseMapping:
                                     "Entity row returned without entity_type; possible database constraint or ORM mapping issue"
                                 )
                             inserted_map[(etype, sid)] = rid
-                        saved_count = len(inserted_map)
+                        saved_count += len(inserted_map)
 
-                        for m in mappings:
+                        for m in pending_mappings:
                             key = (m.entity_type, m.slack_id)
                             if key in inserted_map:
                                 m.id = inserted_map[key]
-                            else:
-                                existing_count += 1
-
                         await session.commit()
-                        backend_logger.debug(
-                            f"Batch saved {saved_count} new mappings, existing={existing_count}"
-                        )
+                    elif takeover_count:
+                        await session.commit()
+                    backend_logger.debug(
+                        f"Batch saved {saved_count} new mappings (takeover={takeover_count}), existing={existing_count}"
+                    )
                 else:
                     # SQLite fallback: previous approach (no ON CONFLICT support here)
-                    existing_entities: Set[Tuple[str, str]] = set()
-                    for entity_type, type_mappings in grouped_mappings.items():
-                        slack_ids = [m.slack_id for m in type_mappings]
-                        query = await session.execute(
-                            select(Entity).where(
-                                (Entity.entity_type == entity_type)
-                                & (Entity.slack_id.in_(slack_ids))
-                            )
-                        )
-                        existing_results = query.scalars().all()
-                        for existing in existing_results:
-                            existing_entities.add(
-                                (str(existing.entity_type), str(existing.slack_id))
-                            )
-                            for mapping in type_mappings:
-                                if mapping.slack_id == existing.slack_id:
-                                    mapping.id = existing.id
-                                    break
                     new_entities = []
-                    for m in mappings:
-                        if (m.entity_type, m.slack_id) in existing_entities:
-                            existing_count += 1
-                        else:
-                            entity = Entity(
-                                entity_type=m.entity_type,
-                                slack_id=m.slack_id,
-                                mattermost_id=m.mattermost_id,
-                                raw_data=m.raw_data,
-                                job_id=m.job_id,
-                                status=m.status,
-                            )
-                            new_entities.append((entity, m))
+                    for m in pending_mappings:
+                        entity = Entity(
+                            entity_type=m.entity_type,
+                            slack_id=m.slack_id,
+                            mattermost_id=m.mattermost_id,
+                            raw_data=m.raw_data,
+                            job_id=m.job_id,
+                            status=m.status,
+                        )
+                        new_entities.append((entity, m))
                     if new_entities:
                         curmax = await session.execute(select(_sa_func.max(Entity.id)))
                         base = curmax.scalar() or 0
@@ -280,6 +293,8 @@ class BaseMapping:
                         for e, m in new_entities:
                             m.id = e.id
                             saved_count += 1
+                    if takeover_count and not new_entities:
+                        await session.commit()
             except Exception as e:  # noqa: BLE001
                 await session.rollback()
                 backend_logger.error(f"[BATCH_ERR] Batch save failed: {e}")
@@ -344,3 +359,58 @@ class BaseMapping:
                 backend_logger.error(
                     f"Не найдена запись для обновления статуса: {self.entity_type} {self.slack_id}"
                 )
+
+    @staticmethod
+    def _coerce_status(value) -> Optional[MappingStatus]:
+        if isinstance(value, MappingStatus):
+            return value
+        try:
+            return MappingStatus(value)
+        except Exception:  # pragma: no cover
+            return None
+
+    @classmethod
+    def _should_takeover(cls, status) -> bool:
+        status_enum = cls._coerce_status(status)
+        return bool(status_enum and status_enum in cls._TAKEOVER_STATUSES)
+
+    def _takeover_existing_entity(self, existing: Entity) -> bool:
+        if not self._should_takeover(existing.status):
+            return False
+        pending = MappingStatus.pending
+        existing.status = pending
+        existing.error_message = None
+        if self.job_id is not None:
+            existing.job_id = self.job_id
+        if self.raw_data is not None:
+            existing.raw_data = self.raw_data
+        existing.mattermost_id = self.mattermost_id
+        self.status = pending
+        self.id = existing.id
+        if self.job_id is None:
+            self.job_id = existing.job_id
+        backend_logger.debug(
+            f"Takeover existing mapping {self.entity_type} slack_id={self.slack_id} -> job_id={existing.job_id}"
+        )
+        return True
+
+    @classmethod
+    def _apply_takeover(cls, existing: Entity, mapping: "BaseMapping") -> bool:
+        if not cls._should_takeover(existing.status):
+            return False
+        pending = MappingStatus.pending
+        existing.status = pending
+        existing.error_message = None
+        if mapping.job_id is not None:
+            existing.job_id = mapping.job_id
+        if mapping.raw_data is not None:
+            existing.raw_data = mapping.raw_data
+        existing.mattermost_id = mapping.mattermost_id
+        mapping.status = pending
+        mapping.id = existing.id
+        if mapping.job_id is None:
+            mapping.job_id = existing.job_id
+        backend_logger.debug(
+            f"Batch takeover {mapping.entity_type} slack_id={mapping.slack_id} -> job_id={existing.job_id}"
+        )
+        return True

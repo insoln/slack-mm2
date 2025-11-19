@@ -59,7 +59,8 @@ class MessageExporter(ExporterBase, LoggingMixin, MMApiMixin):
             await self.set_status("failed", error="No author (user_id) for message")
             return
 
-        file_ids = await self._collect_file_ids()
+        # Messages now export without attachments; attachments are added later
+        file_ids = []
 
         # Build message text with rich-text conversion when possible
         text = await self._build_message_text(raw)

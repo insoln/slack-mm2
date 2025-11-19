@@ -303,9 +303,142 @@ type UploadAttachmentFromURLRequest struct {
 	FileURL    string `json:"file_url"`
 	AuthHeader string `json:"auth_header"`
 	UserID     string `json:"user_id,omitempty"`
+	PostID     string `json:"post_id,omitempty"` // Optional: attach to existing post
 }
 
-// UploadAttachmentFromURL downloads a file from the specified URL and uploads it to Mattermost
+// validatePostForAttachment checks if a post exists and belongs to the specified channel.
+// This should be called before uploading files to avoid orphaned files if attachment fails.
+func (p *Plugin) validatePostForAttachment(postID, channelID string) error {
+	if p.API == nil {
+		return nil // Skip validation in test mode
+	}
+
+	post, appErr := p.API.GetPost(postID)
+	if appErr != nil {
+		p.API.LogError("Post validation failed", "postId", postID, "error", appErr)
+		return appErr
+	}
+
+	if post.ChannelId != channelID {
+		p.API.LogError("Post channel mismatch during validation",
+			"postId", postID,
+			"postChannelId", post.ChannelId,
+			"requestedChannelId", channelID)
+		return &model.AppError{Message: "Post does not belong to the specified channel"}
+	}
+
+	return nil
+}
+
+// attachFileToPost appends a file_id to an existing post's FileIds.
+// Assumes post has already been validated via validatePostForAttachment.
+// Returns error if update fails.
+func (p *Plugin) attachFileToPost(postID, fileID string) error {
+	if p.API == nil {
+		return nil // Skip attachment in test mode
+	}
+
+	// Fetch the post (we know it exists from validation)
+	post, appErr := p.API.GetPost(postID)
+	if appErr != nil {
+		return appErr
+	}
+	originalMessage := post.Message
+	targetEditAt := post.EditAt
+	targetUpdateAt := post.UpdateAt
+	if targetUpdateAt == 0 {
+		targetUpdateAt = post.CreateAt
+	}
+
+	// Append file to the post's FileIds
+	if post.FileIds == nil {
+		post.FileIds = []string{}
+	}
+	post.FileIds = append(post.FileIds, fileID)
+
+	// Update the post
+	updatedPost, appErr := p.API.UpdatePost(post)
+	if appErr != nil {
+		p.API.LogError("Failed to update post with file attachment",
+			"postId", postID,
+			"fileId", fileID,
+			"error", appErr)
+		return appErr
+	}
+	if updatedPost != nil {
+		post = updatedPost
+	}
+	p.restoreOriginalPostTimestamps(post, originalMessage, targetEditAt, targetUpdateAt)
+
+	p.API.LogDebug("Successfully attached file to existing post",
+		"postId", postID,
+		"fileId", fileID)
+	return nil
+}
+
+// restoreOriginalPostTimestamps resets EditAt/UpdateAt after UpdatePost forces a fresh timestamp.
+// We only run this when the post message text is unchanged to avoid hiding legitimate edits.
+func (p *Plugin) restoreOriginalPostTimestamps(post *model.Post, originalMessage string, targetEditAt, targetUpdateAt int64) {
+	if p.Driver == nil || p.API == nil || post == nil {
+		return
+	}
+	if targetUpdateAt == 0 {
+		targetUpdateAt = post.CreateAt
+	}
+	if post.Message != originalMessage {
+		// Log when restoration is skipped due to message changes so admins can identify
+		// posts with legitimate vs. spurious edit timestamps
+		p.API.LogDebug("restoreOriginalPostTimestamps: skipped due to message change",
+			"postId", post.Id,
+			"originalLength", len(originalMessage),
+			"currentLength", len(post.Message))
+		return
+	}
+	if post.EditAt == targetEditAt && post.UpdateAt == targetUpdateAt {
+		return
+	}
+	connID, err := p.Driver.Conn(false)
+	if err != nil {
+		p.API.LogWarn("restoreOriginalPostTimestamps: failed to acquire connection",
+			"postId", post.Id,
+			"error", err.Error())
+		return
+	}
+	defer func() {
+		_ = p.Driver.ConnClose(connID)
+	}()
+
+	query := `UPDATE Posts
+			SET EditAt = $1,
+			    UpdateAt = $2
+			WHERE Id = $3
+			  AND Message = $4
+			  AND (EditAt <> $1 OR UpdateAt <> $2)`
+	args := p.makeDriverArgs(targetEditAt, targetUpdateAt, post.Id, originalMessage)
+	result, execErr := p.Driver.ConnExec(connID, query, args)
+	if execErr != nil {
+		p.API.LogWarn("restoreOriginalPostTimestamps: update failed",
+			"postId", post.Id,
+			"error", execErr.Error())
+		return
+	}
+	if result.RowsAffectedError != nil {
+		p.API.LogWarn("restoreOriginalPostTimestamps: rows affected error",
+			"postId", post.Id,
+			"error", result.RowsAffectedError)
+		return
+	}
+	if result.RowsAffected > 0 {
+		p.API.LogDebug("Restored original post timestamps after attachment",
+			"postId", post.Id,
+			"editAt", targetEditAt,
+			"updateAt", targetUpdateAt,
+			"rows", result.RowsAffected)
+	}
+}
+
+// UploadAttachmentFromURL downloads a file from the specified URL and uploads it to Mattermost.
+// If post_id is provided, the file is attached to that existing post after upload.
 func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -323,6 +456,15 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "channel_id, filename, file_url and auth_header are required"})
 		return
+	}
+
+	// Validate post exists and belongs to channel before uploading to avoid orphaned files
+	if req.PostID != "" {
+		if err := p.validatePostForAttachment(req.PostID, req.ChannelID); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: err.Error()})
+			return
+		}
 	}
 
 	// Use the shared plugin HTTP client to download the file
@@ -365,6 +507,16 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 			_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: appErr.Error()})
 			return
 		}
+
+		// Attach to existing post if post_id provided
+		if req.PostID != "" {
+			if err := p.attachFileToPost(req.PostID, fi.Id); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: err.Error()})
+				return
+			}
+		}
+
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{FileID: fi.Id})
 		return
@@ -417,29 +569,49 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 		p.API.LogDebug("Creating upload session", "userId", userId, "channelId", req.ChannelID, "filename", req.Filename, "fileSize", contentLength, "originalUserId", req.UserID)
 	}
 
-	us, err := p.API.CreateUploadSession(uploadSession)
-	if err != nil {
-		// Fallback: read entire body and use legacy UploadFile path so we don't fail the whole attachment.
-		if p.API != nil {
-			p.API.LogWarn("CreateUploadSession failed, falling back to legacy UploadFile", "error", err.Error(), "channelId", req.ChannelID, "filename", req.Filename, "fileSize", contentLength, "userIdEffective", userId, "userIdRequested", req.UserID)
-		}
-		data, rerr := io.ReadAll(resp.Body)
-		if rerr != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Failed to read downloaded file (fallback)"})
+	// Create upload session if API available
+	var us *model.UploadSession
+	if p.API != nil {
+		var err error
+		us, err = p.API.CreateUploadSession(uploadSession)
+		if err != nil {
+			// Fallback: read entire body and use legacy UploadFile path so we don't fail the whole attachment.
+			if p.API != nil {
+				p.API.LogWarn("CreateUploadSession failed, falling back to legacy UploadFile", "error", err.Error(), "channelId", req.ChannelID, "filename", req.Filename, "fileSize", contentLength, "userIdEffective", userId, "userIdRequested", req.UserID)
+			}
+			data, rerr := io.ReadAll(resp.Body)
+			if rerr != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Failed to read downloaded file (fallback)"})
+				return
+			}
+			fi, appErr := p.API.UploadFile(data, req.ChannelID, req.Filename)
+			if appErr != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: appErr.Error()})
+				return
+			}
+			if p.API != nil {
+				p.API.LogInfo("Fallback UploadFile succeeded", "channelId", req.ChannelID, "filename", req.Filename, "bytes", len(data), "fileId", fi.Id)
+			}
+
+			// Attach to existing post if post_id provided
+			if req.PostID != "" {
+				if err := p.attachFileToPost(req.PostID, fi.Id); err != nil {
+					w.WriteHeader(http.StatusBadRequest)
+					_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: err.Error()})
+					return
+				}
+			}
+
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{FileID: fi.Id})
 			return
 		}
-		fi, appErr := p.API.UploadFile(data, req.ChannelID, req.Filename)
-		if appErr != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: appErr.Error()})
-			return
-		}
-		if p.API != nil {
-			p.API.LogInfo("Fallback UploadFile succeeded", "channelId", req.ChannelID, "filename", req.Filename, "bytes", len(data), "fileId", fi.Id)
-		}
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{FileID: fi.Id})
+	} else {
+		// Test mode without API
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "API not available (test mode)"})
 		return
 	}
 
@@ -456,6 +628,16 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 				if p.API != nil {
 					p.API.LogInfo("Fallback after stream succeeded", "channelId", req.ChannelID, "filename", req.Filename, "fileId", fi2.Id)
 				}
+
+				// Attach to existing post if post_id provided
+				if req.PostID != "" {
+					if err := p.attachFileToPost(req.PostID, fi2.Id); err != nil {
+						w.WriteHeader(http.StatusBadRequest)
+						_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: err.Error()})
+						return
+					}
+				}
+
 				w.WriteHeader(http.StatusOK)
 				_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{FileID: fi2.Id})
 				return
@@ -468,6 +650,16 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 	if p.API != nil {
 		p.API.LogDebug("Streaming upload succeeded", "channelId", req.ChannelID, "filename", req.Filename, "fileId", fi.Id)
 	}
+
+	// Attach to existing post if post_id provided
+	if req.PostID != "" {
+		if err := p.attachFileToPost(req.PostID, fi.Id); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: err.Error()})
+			return
+		}
+	}
+
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{FileID: fi.Id})
 }

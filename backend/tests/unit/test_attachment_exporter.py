@@ -40,8 +40,12 @@ class TestAttachmentExporter:
 
         exporter = AttachmentExporter(entity)
 
-        # Mock dependencies including user resolution
+        # Mock dependencies including user resolution and parent message
         with patch.object(
+            exporter,
+            "_resolve_parent_message_mm_id",
+            return_value="mm_post_123",
+        ), patch.object(
             exporter,
             "_resolve_mm_channel_id_for_attachment",
             return_value="mm_channel_123",
@@ -66,13 +70,14 @@ class TestAttachmentExporter:
             # Execute
             await exporter.export_entity()
 
-            # Verify API was called with correct parameters
+            # Verify API was called with correct parameters (now includes post_id)
             mock_api_call.assert_called_once_with(
                 "mm_channel_123",
                 "test-document.pdf",
                 "https://files.slack.com/files-pri/T123/F123/test-document.pdf",
                 "Bearer xoxb-test-token",
                 "mm_user_123",
+                "mm_post_123",
             )
 
             # Verify success status was set
@@ -96,6 +101,10 @@ class TestAttachmentExporter:
 
         # Mock dependencies
         with patch.object(
+            exporter,
+            "_resolve_parent_message_mm_id",
+            return_value="mm_post_123",
+        ), patch.object(
             exporter,
             "_resolve_mm_channel_id_for_attachment",
             return_value="mm_channel_123",
@@ -124,6 +133,10 @@ class TestAttachmentExporter:
         # Mock dependencies with no SLACK_BOT_TOKEN
         with patch.object(
             exporter,
+            "_resolve_parent_message_mm_id",
+            return_value="mm_post_123",
+        ), patch.object(
+            exporter,
             "_resolve_mm_channel_id_for_attachment",
             return_value="mm_channel_123",
         ), patch.object(
@@ -151,6 +164,10 @@ class TestAttachmentExporter:
 
         # Mock dependencies
         with patch.object(
+            exporter,
+            "_resolve_parent_message_mm_id",
+            return_value="mm_post_123",
+        ), patch.object(
             exporter,
             "_resolve_mm_channel_id_for_attachment",
             return_value="mm_channel_123",
@@ -221,6 +238,10 @@ class TestAttachmentExporter:
         exporter = AttachmentExporter(entity)
         with patch.object(
             exporter,
+            "_resolve_parent_message_mm_id",
+            return_value="mm_post_123",
+        ), patch.object(
+            exporter,
             "_resolve_mm_channel_id_for_attachment",
             return_value="mm_channel_123",
         ), patch.object(
@@ -246,3 +267,30 @@ class TestAttachmentExporter:
             mock_api_call.assert_called_once()
             mock_set_status.assert_called_once_with("success")
             assert entity.mattermost_id == "mattermost_file_timeout"
+
+    @pytest.mark.asyncio
+    async def test_export_entity_missing_parent_message(self):
+        """Test that export is skipped when parent message has no mattermost_id."""
+        entity = self.create_mock_attachment_entity()
+
+        exporter = AttachmentExporter(entity)
+
+        # Mock parent message resolution to return None
+        with patch.object(
+            exporter,
+            "_resolve_parent_message_mm_id",
+            return_value=None,
+        ), patch.object(
+            exporter, "set_status", new_callable=AsyncMock
+        ) as mock_set_status, patch.object(
+            exporter, "log_export"
+        ):
+
+            # Execute
+            await exporter.export_entity()
+
+            # Verify skipped status was set with appropriate error
+            mock_set_status.assert_called_once_with(
+                "skipped",
+                error="Parent message not yet exported or missing mattermost_id",
+            )

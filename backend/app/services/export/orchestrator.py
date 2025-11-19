@@ -28,9 +28,9 @@ EXPORT_ORDER = [
     ("user", UserExporter),
     ("custom_emoji", CustomEmojiExporter),
     ("channel", ChannelExporter),
-    # Upload attachments before messages so message payloads can include file_ids
-    ("attachment", AttachmentExporter),
+    # Ship messages first so attachments can be linked to existing posts
     ("message", MessageExporter),
+    ("attachment", AttachmentExporter),
     ("reaction", ReactionExporter),
 ]
 

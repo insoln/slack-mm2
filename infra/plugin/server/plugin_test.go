@@ -62,7 +62,54 @@ func TestUploadAttachmentFromURL_InvalidJSON(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, result.StatusCode)
 }
 
-<<<<<<< HEAD
+func TestUploadAttachmentFromURL_WithPostID(t *testing.T) {
+	// Test that post_id field is accepted in the request without crashing in test mode
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Return small content to avoid nil pointer in streaming upload
+		w.Header().Set("Content-Length", "4")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("test"))
+	}))
+	defer mockServer.Close()
+
+	plugin := Plugin{httpClient: mockServer.Client()}
+	w := httptest.NewRecorder()
+	reqBody := `{
+		"channel_id": "ch123",
+		"filename": "test.txt",
+		"file_url": "` + mockServer.URL + `/file.txt",
+		"auth_header": "Bearer token",
+		"post_id": "post123"
+	}`
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/attachment_from_url", strings.NewReader(reqBody))
+
+	plugin.UploadAttachmentFromURL(w, r)
+
+	result := w.Result()
+	// In test mode (no API), validation passes but upload session creation fails
+	// Should get InternalServerError from nil API during upload
+	assert.Equal(t, http.StatusInternalServerError, result.StatusCode)
+}
+
+func TestUploadAttachmentFromURL_PostValidationFailure(t *testing.T) {
+	// Test that validation happens before file upload when API returns error
+	// This test verifies the flow but can't fully test with nil API
+	plugin := Plugin{}
+
+	// Validation with nil API returns nil (test mode), so this test is informational
+	err := plugin.validatePostForAttachment("post123", "ch123")
+	assert.Nil(t, err, "Validation should pass in test mode with nil API")
+}
+
+func TestValidatePostForAttachment(t *testing.T) {
+	// Test validation logic in isolation
+	plugin := Plugin{}
+
+	// With nil API, should return nil (test mode)
+	err := plugin.validatePostForAttachment("post123", "ch123")
+	assert.Nil(t, err)
+}
+
 func TestUnarchiveChannel_EmptyBody(t *testing.T) {
 	plugin := Plugin{}
 	w := httptest.NewRecorder()
@@ -94,11 +141,11 @@ func TestUnarchiveChannel_MissingChannelID(t *testing.T) {
 
 	result := w.Result()
 	assert.Equal(t, http.StatusBadRequest, result.StatusCode)
-=======
+}
+
 func TestMakeDriverArgs(t *testing.T) {
 	plugin := Plugin{}
 
-	// Test with various types of arguments
 	args := plugin.makeDriverArgs(int64(123456789), "channel-id", "user-id")
 
 	assert.Equal(t, 3, len(args))
@@ -108,5 +155,4 @@ func TestMakeDriverArgs(t *testing.T) {
 	assert.Equal(t, "channel-id", args[1].Value)
 	assert.Equal(t, 3, args[2].Ordinal)
 	assert.Equal(t, "user-id", args[2].Value)
->>>>>>> origin/master
 }

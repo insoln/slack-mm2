@@ -225,8 +225,11 @@ class MMApiMixin:
         file_url: str,
         auth_header: str,
         user_id: str | None = None,
+        post_id: str | None = None,
     ):
-        """Send attachment URL to plugin for direct download and upload to Mattermost."""
+        """Send attachment URL to plugin for direct download and upload to Mattermost.
+        If post_id is provided, the plugin will attach the file to that existing post.
+        """
         payload = {
             "channel_id": channel_id,
             "filename": filename,
@@ -235,6 +238,8 @@ class MMApiMixin:
         }
         if user_id:
             payload["user_id"] = user_id
+        if post_id:
+            payload["post_id"] = post_id
         return await self.mm_api_post(
             "/plugins/mm-importer/api/v1/attachment_from_url", payload
         )
