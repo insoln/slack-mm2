@@ -10,6 +10,7 @@ from app.logging_config import backend_logger
 from sqlalchemy import select
 from app.models.base import SessionLocal
 from app.models.entity import Entity
+from app.utils.env import env_is_truthy
 
 
 class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
@@ -25,6 +26,12 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
 
     async def export_entity(self) -> None:
         self.log_export(f"Экспорт аттачмента {self.entity.slack_id}")
+
+        if env_is_truthy("SKIP_ATTACHMENT_EXPORT"):
+            reason = "Attachment export disabled via SKIP_ATTACHMENT_EXPORT"
+            backend_logger.info(f"Skip attachment {self.entity.slack_id}: {reason}")
+            await self.set_status("skipped", error=reason)
+            return
 
         raw = self.entity.raw_data or {}
         filename = (

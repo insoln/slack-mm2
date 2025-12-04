@@ -294,3 +294,21 @@ class TestAttachmentExporter:
                 "skipped",
                 error="Parent message not yet exported or missing mattermost_id",
             )
+
+    @pytest.mark.asyncio
+    async def test_export_entity_skipped_via_env_flag(self):
+        """Attachment exporter should short-circuit when SKIP_ATTACHMENT_EXPORT is set."""
+        entity = self.create_mock_attachment_entity()
+        exporter = AttachmentExporter(entity)
+
+        with patch.object(
+            exporter, "set_status", new_callable=AsyncMock
+        ) as mock_set_status, patch.object(exporter, "log_export"), patch.dict(
+            os.environ, {"SKIP_ATTACHMENT_EXPORT": "1"}
+        ):
+            await exporter.export_entity()
+
+        mock_set_status.assert_called_once_with(
+            "skipped",
+            error="Attachment export disabled via SKIP_ATTACHMENT_EXPORT",
+        )
