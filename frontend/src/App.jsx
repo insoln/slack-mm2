@@ -14,6 +14,7 @@ function App() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [exportStatus, setExportStatus] = useState(null);
   const [exportError, setExportError] = useState(null);
+  const [exportConfig, setExportConfig] = useState({ loading:false, data:null, error:null });
   const [stats, setStats] = useState({ loading:false, data:null, error:null });
   const [jobs, setJobs] = useState({ loading:false, data:[], error:null });
   const [jobStats, setJobStats] = useState({});
@@ -110,6 +111,32 @@ function App() {
     }
   };
   useEffect(() => { refreshPluginStatus(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Export configuration (feature toggles)
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setExportConfig((prev) => ({ ...prev, loading: true }));
+      try {
+        const res = await fetch('/api/export/config');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'export config');
+        if (!cancelled) {
+          setExportConfig({ loading: false, data, error: null });
+          handleNetworkSuccess();
+        }
+      } catch (e) {
+        if (!cancelled) {
+          const friendlyError = handleNetworkError(e, 'конфигурация экспорта');
+          setExportConfig({ loading: false, data: null, error: friendlyError });
+        }
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Mapping stats snapshot (manual refresh + initial auto)
   const refreshStats = async () => {
@@ -650,6 +677,30 @@ function App() {
             </div>
             <div id="export" className="col" style={{gridColumn:'span 12'}}>
               <Card title="Экспорт в Mattermost" actions={<Button onClick={handleExport}>Запустить экспорт</Button>}>
+                {exportConfig.loading && (
+                  <div className="small" style={{color:'#9ca3af'}}>Загрузка конфигурации экспорта…</div>
+                )}
+                {exportConfig.error && (
+                  <div style={{color:'#f87171'}}>Ошибка чтения конфигурации: {exportConfig.error}</div>
+                )}
+                {exportConfig.data?.skip_attachment_export && (
+                  <div
+                    style={{
+                      border:'1px solid #f97316',
+                      background:'rgba(249,115,22,0.15)',
+                      color:'#fbbf24',
+                      padding:'10px 12px',
+                      borderRadius:8,
+                      marginBottom:12,
+                      fontSize:13,
+                    }}
+                  >
+                    <div style={{fontWeight:600, color:'#fed7aa'}}>Экспорт вложений отключён</div>
+                    <div className="small" style={{color:'#fed7aa'}}>
+                      {exportConfig.data.attachment_skip_reason || 'Сервис пропускает стадию attachment и не будет переносить файлы в Mattermost.'}
+                    </div>
+                  </div>
+                )}
                 {exportStatus && <div style={{color:'#34d399'}}>{exportStatus}</div>}
                 {exportError && <div style={{color:'#f87171'}}>Ошибка экспорта: {exportError}</div>}
               </Card>

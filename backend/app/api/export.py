@@ -1,6 +1,7 @@
 from fastapi import APIRouter, BackgroundTasks, Query
 from app.services.export.orchestrator import orchestrate_mm_export
 from app.logging_config import backend_logger
+from app.utils.env import env_is_truthy
 
 router = APIRouter()
 
@@ -26,3 +27,16 @@ async def start_export(
         "status": "export_started",
         "message": "Экспорт (global) запущен в фоновом режиме",
     }
+
+
+@router.get("/export/config")
+async def get_export_config():
+    skip_attachments = env_is_truthy("SKIP_ATTACHMENT_EXPORT")
+    payload = {
+        "skip_attachment_export": skip_attachments,
+    }
+    if skip_attachments:
+        payload["attachment_skip_reason"] = (
+            "Attachment export disabled via SKIP_ATTACHMENT_EXPORT"
+        )
+    return payload

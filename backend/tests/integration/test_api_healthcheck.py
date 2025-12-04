@@ -13,6 +13,15 @@ def test_healthcheck():
     assert response.json() == {"status": "ok"}
 
 
+def test_export_config(monkeypatch):
+    monkeypatch.setenv("SKIP_ATTACHMENT_EXPORT", "1")
+    response = client.get("/api/export/config")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["skip_attachment_export"] is True
+    assert data["attachment_skip_reason"].startswith("Attachment export disabled")
+
+
 @pytest.mark.skipif(
     not os.getenv("MATTERMOST_API_TOKEN") or not os.getenv("MATTERMOST_API_URL"),
     reason="MATTERMOST_API_TOKEN and MATTERMOST_API_URL must be set in environment",
