@@ -80,7 +80,11 @@ async def get_entities_to_export(entity_type: str, job_id=None):
         cond = (Entity.entity_type == entity_type) & (
             Entity.status == MappingStatus.pending
         )
-        # job_scoped_condition now a no-op; we ignore job scoping for global uniqueness
+        # For job-scoped types (message, reaction, attachment), filter by job_id
+        # to prevent cross-job export issues where reactions from future jobs
+        # get picked up prematurely and skipped due to unmet dependencies
+        if entity_type in ("message", "reaction", "attachment") and job_id is not None:
+            cond = cond & (Entity.job_id == job_id)
 
         query = await session.execute(select(Entity).where(cond))
         entities = query.scalars().all()
