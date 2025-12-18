@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 # Установка tini для корректного управления процессами
 RUN apt-get update && apt-get install -y tini && rm -rf /var/lib/apt/lists/*
