@@ -1,13 +1,8 @@
-import os
 import json
 from pathlib import Path
-from fastapi.testclient import TestClient
-from app.main import app
-
-client = TestClient(app)
 
 
-def test_bundle_info_404_when_absent(monkeypatch):
+def test_bundle_info_404_when_absent(monkeypatch, client):
     monkeypatch.setenv("MM_URL", "http://localhost:65500")
     monkeypatch.setenv("MM_TOKEN", "dummy")
     # Force plugin repo path to temp area without bundle
@@ -21,7 +16,7 @@ def test_bundle_info_404_when_absent(monkeypatch):
     assert r.json()["error"] == "Bundle not found"
 
 
-def test_bundle_info_present(monkeypatch):
+def test_bundle_info_present(monkeypatch, client):
     monkeypatch.setenv("MM_URL", "http://localhost:65500")
     monkeypatch.setenv("MM_TOKEN", "dummy")
     tmp = Path("/tmp/test_plugin_repo_with_bundle")

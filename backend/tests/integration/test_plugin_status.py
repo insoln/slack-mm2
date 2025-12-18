@@ -1,11 +1,4 @@
-import os
-from fastapi.testclient import TestClient
-from app.main import app
-
-client = TestClient(app)
-
-
-def test_plugin_status_shape_no_mm_env(monkeypatch):
+def test_plugin_status_shape_no_mm_env(monkeypatch, client):
     # Ensure MM env vars absent to trigger error path
     monkeypatch.delenv("MM_URL", raising=False)
     monkeypatch.delenv("MM_TOKEN", raising=False)
@@ -32,7 +25,7 @@ def test_plugin_status_shape_no_mm_env(monkeypatch):
     assert data.get("error") is not None
 
 
-def test_plugin_status_with_fake_mm_env(monkeypatch):
+def test_plugin_status_with_fake_mm_env(monkeypatch, client):
     # Provide fake env so compute_status tries to call remote; we monkeypatch network layer if needed.
     monkeypatch.setenv(
         "MM_URL", "http://localhost:65500"

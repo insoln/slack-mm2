@@ -1,19 +1,15 @@
 import pytest
-from fastapi.testclient import TestClient
-from app.main import app
 import os
 import requests
 
-client = TestClient(app)
 
-
-def test_healthcheck():
+def test_healthcheck(client):
     response = client.get("/healthcheck")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
 
-def test_export_config(monkeypatch):
+def test_export_config(monkeypatch, client):
     monkeypatch.setenv("SKIP_ATTACHMENT_EXPORT", "1")
     response = client.get("/api/export/config")
     assert response.status_code == 200
