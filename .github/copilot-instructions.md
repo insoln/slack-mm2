@@ -12,7 +12,7 @@ Slack-MM2 Sync is a monorepo for one-way data synchronization from Slack to Matt
 ## Working Effectively
 
 ### Initial Setup and Dependencies
-- **Python**: Version 3.11+ required (project tested with Python 3.12)
+- **Python**: Version 3.14+ required (project tested with Python 3.14)
 - **Node.js**: Version 20+ required (tested with Node.js 20.19.5, npm 10.8.2)
 - **Go**: Version 1.22+ required (tested with Go 1.24.7)
 - **Docker**: Required for full development environment
