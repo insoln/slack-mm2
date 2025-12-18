@@ -231,7 +231,12 @@ async def test_get_entities_to_export_reaction_without_job_id():
 
 @pytest.mark.asyncio
 async def test_get_entities_to_export_only_pending_status():
-    """Test that only pending entities are returned, not skipped/failed."""
+    """Test that only pending entities are returned, not skipped/failed.
+
+    The function should filter for status=pending in the database query,
+    so entities with skipped or failed status should not be included in results.
+    """
+    # Mock only returns pending entities (skipped/failed filtered by DB query)
     reactions = [
         SimpleNamespace(
             id=1,
@@ -240,25 +245,9 @@ async def test_get_entities_to_export_only_pending_status():
             status=MappingStatus.pending,
             job_id=1,
         ),
-        # These should not be in the result
-        # SimpleNamespace(
-        #     id=2,
-        #     entity_type="reaction",
-        #     slack_id="reaction2",
-        #     status=MappingStatus.skipped,
-        #     job_id=1,
-        # ),
-        # SimpleNamespace(
-        #     id=3,
-        #     entity_type="reaction",
-        #     slack_id="reaction3",
-        #     status=MappingStatus.failed,
-        #     job_id=1,
-        # ),
     ]
 
     mock_result = MagicMock()
-    # Mock returns only pending entities (skipped/failed filtered by query)
     mock_result.scalars.return_value.all.return_value = reactions
 
     with patch("app.services.export.orchestrator.SessionLocal") as mock_session_local:
