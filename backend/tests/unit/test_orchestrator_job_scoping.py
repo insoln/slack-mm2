@@ -32,17 +32,6 @@ async def test_get_entities_to_export_reaction_with_job_id():
             job_id=1,
         ),
     ]
-    job2_reactions = [
-        SimpleNamespace(
-            id=3,
-            entity_type="reaction",
-            slack_id="reaction3",
-            status=MappingStatus.pending,
-            job_id=2,
-        ),
-    ]
-
-    all_reactions = job1_reactions + job2_reactions
 
     mock_result = MagicMock()
     mock_result.scalars.return_value.all.return_value = job1_reactions
@@ -65,16 +54,7 @@ async def test_get_entities_to_export_reaction_with_job_id():
 @pytest.mark.asyncio
 async def test_get_entities_to_export_attachment_with_job_id():
     """Test that attachments are filtered by job_id when provided."""
-    # Create mock entities from two different jobs
-    job1_attachments = [
-        SimpleNamespace(
-            id=1,
-            entity_type="attachment",
-            slack_id="attach1",
-            status=MappingStatus.pending,
-            job_id=1,
-        ),
-    ]
+    # Create mock entities from job 2
     job2_attachments = [
         SimpleNamespace(
             id=2,
@@ -108,6 +88,45 @@ async def test_get_entities_to_export_attachment_with_job_id():
         # Should only return attachments from job 2
         assert len(result) == 2
         assert all(r.job_id == 2 for r in result)
+
+
+@pytest.mark.asyncio
+async def test_get_entities_to_export_message_with_job_id():
+    """Test that messages are filtered by job_id when provided."""
+    # Create mock message entities from two different jobs
+    job1_messages = [
+        SimpleNamespace(
+            id=1,
+            entity_type="message",
+            slack_id="1234567890.123456",
+            status=MappingStatus.pending,
+            job_id=1,
+        ),
+        SimpleNamespace(
+            id=2,
+            entity_type="message",
+            slack_id="1234567891.123456",
+            status=MappingStatus.pending,
+            job_id=1,
+        ),
+    ]
+
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = job1_messages
+
+    with patch("app.services.export.orchestrator.SessionLocal") as mock_session_local:
+        mock_session = AsyncMock()
+        mock_session.__aenter__.return_value = mock_session
+        mock_session.__aexit__.return_value = None
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_session_local.return_value = mock_session
+
+        # Request messages for job_id=1
+        result = await get_entities_to_export("message", job_id=1)
+
+        # Should only return messages from job 1
+        assert len(result) == 2
+        assert all(r.job_id == 1 for r in result)
 
 
 @pytest.mark.asyncio
@@ -189,6 +208,48 @@ async def test_get_entities_to_export_channel_ignores_job_id():
         result = await get_entities_to_export("channel", job_id=1)
 
         # Should return all channels, not just from job 1
+        assert len(result) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_entities_to_export_custom_emoji_ignores_job_id():
+    """Test that global entity types (custom_emoji) ignore job_id filtering."""
+    # Create mock custom_emoji entities from different jobs
+    custom_emojis = [
+        SimpleNamespace(
+            id=1,
+            entity_type="custom_emoji",
+            slack_id="emoji1",
+            status=MappingStatus.pending,
+            job_id=1,
+            mattermost_id=None,
+            raw_data={"name": "emoji1", "url": "http://example.com/emoji1.png"},
+        ),
+        SimpleNamespace(
+            id=2,
+            entity_type="custom_emoji",
+            slack_id="emoji2",
+            status=MappingStatus.pending,
+            job_id=2,
+            mattermost_id=None,
+            raw_data={"name": "emoji2", "url": "http://example.com/emoji2.png"},
+        ),
+    ]
+
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = custom_emojis
+
+    with patch("app.services.export.orchestrator.SessionLocal") as mock_session_local:
+        mock_session = AsyncMock()
+        mock_session.__aenter__.return_value = mock_session
+        mock_session.__aexit__.return_value = None
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_session_local.return_value = mock_session
+
+        # Request custom_emoji with job_id=1 (should be ignored, returning all emojis)
+        result = await get_entities_to_export("custom_emoji", job_id=1)
+
+        # Should return all custom_emoji, not just from job 1
         assert len(result) == 2
 
 
