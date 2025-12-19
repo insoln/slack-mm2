@@ -6,6 +6,7 @@ from app.models.job_status_enum import JobStatus
 from app.models.entity import Entity
 from app.models.status_enum import MappingStatus
 from app.logging_config import backend_logger
+from app.services.export.orchestrator import orchestrate_mm_export
 import os
 import glob
 import zipfile
@@ -438,7 +439,7 @@ async def restart_job(job_id: int, background_tasks: BackgroundTasks):
         if job.status not in {JobStatus.success, JobStatus.failed}:
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot restart job in status '{job.status}'. Only completed (success/failed) jobs can be restarted.",
+                detail=f"cannot restart job in status '{job.status}'. only completed (success/failed) jobs can be restarted.",
             )
 
         # Check if there are any failed or skipped entities worth retrying
@@ -454,7 +455,7 @@ async def restart_job(job_id: int, background_tasks: BackgroundTasks):
         if count == 0:
             raise HTTPException(
                 status_code=400,
-                detail="No failed or skipped entities to retry. Job has no retryable items.",
+                detail="no failed or skipped entities to retry. job has no retryable items.",
             )
 
         # Reset failed/skipped entities to pending
@@ -483,8 +484,6 @@ async def restart_job(job_id: int, background_tasks: BackgroundTasks):
         )
 
     # Trigger export orchestrator in background for this job
-    from app.services.export.orchestrator import orchestrate_mm_export
-
     background_tasks.add_task(orchestrate_mm_export, job_id=job_id)
 
     return {

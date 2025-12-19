@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, patch, MagicMock
 from fastapi import HTTPException
 from app.api.jobs import restart_job
 from app.models.job_status_enum import JobStatus
-from app.models.status_enum import MappingStatus
 
 
 @pytest.mark.asyncio
@@ -50,7 +49,7 @@ async def test_restart_job_invalid_status():
             await restart_job(1, background_tasks)
 
         assert exc_info.value.status_code == 400
-        assert "Cannot restart" in exc_info.value.detail
+        assert "cannot restart" in exc_info.value.detail
 
 
 @pytest.mark.asyncio
@@ -79,7 +78,7 @@ async def test_restart_job_no_retryable_entities():
             await restart_job(1, background_tasks)
 
         assert exc_info.value.status_code == 400
-        assert "No failed or skipped" in exc_info.value.detail
+        assert "no failed or skipped" in exc_info.value.detail
 
 
 @pytest.mark.asyncio

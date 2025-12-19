@@ -695,7 +695,7 @@ function App() {
                                             disabled={isRestarting}
                                             style={{fontSize:12}}
                                           >
-                                            {isRestarting ? 'Перезапуск…' : 'Перезапустить failed/skipped'}
+                                            {isRestarting ? 'Перезапуск…' : 'Перезапустить неуспешные'}
                                           </Button>
                                         </div>
                                       );
