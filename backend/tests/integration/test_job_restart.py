@@ -5,9 +5,13 @@ This test validates the complete restart workflow including:
 - Calling the restart endpoint
 - Verifying entities are reset to pending
 - Verifying job status is updated
+
+Note: These tests require a database and are skipped in CI.
+They can be run locally with a properly configured database.
 """
 
 import pytest
+import os
 from httpx import AsyncClient
 from app.main import app
 from app.models.base import SessionLocal
@@ -16,6 +20,14 @@ from app.models.job_status_enum import JobStatus
 from app.models.entity import Entity
 from app.models.status_enum import MappingStatus
 from sqlalchemy import select
+
+
+# Skip these tests if no database is available (e.g., in CI)
+pytestmark = pytest.mark.skipif(
+    os.getenv("DATABASE_URL", "").startswith("sqlite:///")
+    or not os.getenv("DATABASE_URL"),
+    reason="Integration tests require PostgreSQL database",
+)
 
 
 @pytest.mark.asyncio
@@ -133,7 +145,7 @@ async def test_restart_running_job_fails():
             response = await client.post(f"/api/jobs/{job_id}/restart")
             assert response.status_code == 400
             data = response.json()
-            assert "Cannot restart" in data["detail"]
+            assert "cannot restart" in data["detail"]
 
     finally:
         async with SessionLocal() as session:
@@ -170,7 +182,7 @@ async def test_restart_job_without_retryable_entities():
             response = await client.post(f"/api/jobs/{job_id}/restart")
             assert response.status_code == 400
             data = response.json()
-            assert "No failed or skipped" in data["detail"]
+            assert "no failed or skipped" in data["detail"]
 
     finally:
         async with SessionLocal() as session:

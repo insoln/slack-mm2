@@ -40,7 +40,7 @@ The restart button appears in the expanded view of job cards when:
 
 **User Experience:**
 1. User expands a completed job card to view detailed status breakdown
-2. If failed/skipped entities exist, a "Перезапустить failed/skipped" button appears
+2. If failed/skipped entities exist, a "Перезапустить неуспешные" button appears
 3. User clicks the button
 4. Button shows loading state ("Перезапуск…")
 5. Toast notification confirms success or shows error
