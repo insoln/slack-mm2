@@ -25,6 +25,7 @@ function App() {
   const [fixingPlugin, setFixingPlugin] = useState(false);
   const [lastEnsureSuccessTs, setLastEnsureSuccessTs] = useState(null);
   const [liveStats, setLiveStats] = useState(null);
+  const [restartingJobs, setRestartingJobs] = useState(new Set());
 
   // Export matrix ordering (kept consistent with backend exporter)
   const exportOrder = ['user','custom_emoji','attachment','channel','message','reaction'];
@@ -334,6 +335,34 @@ function App() {
     }
   };
 
+  const handleRestartJob = async (jobId) => {
+    setRestartingJobs(prev => new Set([...prev, jobId]));
+    try {
+      const response = await fetch(`/api/jobs/${jobId}/restart`, { method: 'POST' });
+      const data = await response.json();
+      if (response.ok) {
+        handleNetworkSuccess();
+        pushToast({ 
+          tone: 'success', 
+          title: 'Задача перезапущена', 
+          message: data.message || `Задача #${jobId} перезапущена: ${data.reset_count || 0} сущностей сброшено` 
+        });
+      } else {
+        const errorMsg = data.error || data.detail || 'Ошибка перезапуска задачи';
+        pushToast({ tone: 'error', title: 'Ошибка перезапуска', message: errorMsg });
+      }
+    } catch (err) {
+      const friendlyError = handleNetworkError(err, 'перезапуск задачи');
+      pushToast({ tone: 'error', title: 'Ошибка перезапуска', message: friendlyError });
+    } finally {
+      setRestartingJobs(prev => {
+        const next = new Set([...prev]);
+        next.delete(jobId);
+        return next;
+      });
+    }
+  };
+
   const handleEnsurePlugin = async () => {
     setFixingPlugin(true);
     try {
@@ -625,30 +654,53 @@ function App() {
                               <div style={{marginTop:10}}>
                                 {jobStats[j.id]?.error && <div className="tiny" style={{color:'#f87171'}}>Ошибка статистики: {jobStats[j.id].error}</div>}
                                 {jobStats[j.id]?.data && (
-                                  <div style={{overflowX:'auto', position:'relative'}}>
-                                    {jobStats[j.id]?.updating && (
-                                      <div style={{position:'absolute', top:2, right:4, fontSize:10, color:'#6b7280'}}>upd…</div>
-                                    )}
-                                    <table className="table tiny" style={{fontSize:11, transition:'opacity .15s'}}>
-                                      <thead>
-                                        <tr>
-                                          <th style={{textAlign:'left'}}>Тип</th>
-                                          {jobStats[j.id].data.statuses.map(s => <th key={s}>{s}</th>)}
-                                        </tr>
-                                      </thead>
-                                      <tbody>
-                                        {exportOrder.filter(t => (jobStats[j.id].data.types||[]).includes(t)).map(t => {
-                                          const row = jobStats[j.id].data.matrix[t] || {};
-                                          return (
-                                            <tr key={t}>
-                                              <td style={{textAlign:'left'}}>{labelMap[t] || t}</td>
-                                              {jobStats[j.id].data.statuses.map(s => <td key={s}>{row[s] || 0}</td>)}
-                                            </tr>
-                                          );
-                                        })}
-                                      </tbody>
-                                    </table>
-                                  </div>
+                                  <>
+                                    <div style={{overflowX:'auto', position:'relative'}}>
+                                      {jobStats[j.id]?.updating && (
+                                        <div style={{position:'absolute', top:2, right:4, fontSize:10, color:'#6b7280'}}>upd…</div>
+                                      )}
+                                      <table className="table tiny" style={{fontSize:11, transition:'opacity .15s'}}>
+                                        <thead>
+                                          <tr>
+                                            <th style={{textAlign:'left'}}>Тип</th>
+                                            {jobStats[j.id].data.statuses.map(s => <th key={s}>{s}</th>)}
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {exportOrder.filter(t => (jobStats[j.id].data.types||[]).includes(t)).map(t => {
+                                            const row = jobStats[j.id].data.matrix[t] || {};
+                                            return (
+                                              <tr key={t}>
+                                                <td style={{textAlign:'left'}}>{labelMap[t] || t}</td>
+                                                {jobStats[j.id].data.statuses.map(s => <td key={s}>{row[s] || 0}</td>)}
+                                              </tr>
+                                            );
+                                          })}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                    {/* Show restart button for completed jobs with failed/skipped entities */}
+                                    {(j.status === 'success' || j.status === 'failed') && (() => {
+                                      const matrix = jobStats[j.id].data.matrix || {};
+                                      const hasRetryable = Object.values(matrix).some(row => 
+                                        (row?.failed || 0) > 0 || (row?.skipped || 0) > 0
+                                      );
+                                      if (!hasRetryable) return null;
+                                      const isRestarting = restartingJobs.has(j.id);
+                                      return (
+                                        <div style={{marginTop:8}}>
+                                          <Button 
+                                            variant="secondary" 
+                                            onClick={() => handleRestartJob(j.id)}
+                                            disabled={isRestarting}
+                                            style={{fontSize:12}}
+                                          >
+                                            {isRestarting ? 'Перезапуск…' : 'Перезапустить неуспешные'}
+                                          </Button>
+                                        </div>
+                                      );
+                                    })()}
+                                  </>
                                 )}
                                 {!jobStats[j.id]?.data && !jobStats[j.id]?.error && (
                                   <div className="tiny" style={{color:'#9ca3af'}}>Загрузка…</div>
