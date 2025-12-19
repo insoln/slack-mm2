@@ -6,6 +6,7 @@ This test validates the complete restart workflow including:
 - Verifying entities are reset to pending
 - Verifying job status is updated
 """
+
 import pytest
 from httpx import AsyncClient
 from app.main import app
@@ -107,12 +108,10 @@ async def test_job_restart_integration():
     finally:
         # Cleanup
         async with SessionLocal() as session:
-            await session.execute(
-                f"DELETE FROM entities WHERE job_id = {job_id}"
-            )
-            await session.execute(
-                f"DELETE FROM import_jobs WHERE id = {job_id}"
-            )
+            from sqlalchemy import delete
+
+            await session.execute(delete(Entity).where(Entity.job_id == job_id))
+            await session.execute(delete(ImportJob).where(ImportJob.id == job_id))
             await session.commit()
 
 
@@ -138,9 +137,9 @@ async def test_restart_running_job_fails():
 
     finally:
         async with SessionLocal() as session:
-            await session.execute(
-                f"DELETE FROM import_jobs WHERE id = {job_id}"
-            )
+            from sqlalchemy import delete
+
+            await session.execute(delete(ImportJob).where(ImportJob.id == job_id))
             await session.commit()
 
 
@@ -175,10 +174,8 @@ async def test_restart_job_without_retryable_entities():
 
     finally:
         async with SessionLocal() as session:
-            await session.execute(
-                f"DELETE FROM entities WHERE job_id = {job_id}"
-            )
-            await session.execute(
-                f"DELETE FROM import_jobs WHERE id = {job_id}"
-            )
+            from sqlalchemy import delete
+
+            await session.execute(delete(Entity).where(Entity.job_id == job_id))
+            await session.execute(delete(ImportJob).where(ImportJob.id == job_id))
             await session.commit()
