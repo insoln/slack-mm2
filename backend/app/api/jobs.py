@@ -1,9 +1,11 @@
-from fastapi import APIRouter, HTTPException
-from sqlalchemy import select, func
+from fastapi import APIRouter, HTTPException, BackgroundTasks
+from sqlalchemy import select, func, update
 from app.models.base import SessionLocal
 from app.models.import_job import ImportJob
+from app.models.job_status_enum import JobStatus
 from app.models.entity import Entity
 from app.models.status_enum import MappingStatus
+from app.logging_config import backend_logger
 import os
 import glob
 import zipfile
@@ -418,3 +420,75 @@ async def audit_job(job_id: int):
             },
         }
     return payload
+
+
+@router.post("/jobs/{job_id}/restart")
+async def restart_job(job_id: int, background_tasks: BackgroundTasks):
+    """Restart a job by resetting failed/skipped entities to pending and re-triggering export.
+
+    This endpoint allows retrying failed/skipped mappings after a job has completed.
+    It resets the job to 'exporting' stage and triggers the export orchestrator.
+    """
+    async with SessionLocal() as session:
+        job = await session.get(ImportJob, job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+
+        # Only allow restart for completed jobs
+        if job.status not in {JobStatus.success, JobStatus.failed}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot restart job in status '{job.status}'. Only completed (success/failed) jobs can be restarted.",
+            )
+
+        # Check if there are any failed or skipped entities worth retrying
+        q_failed_skipped = await session.execute(
+            select(func.count())
+            .select_from(Entity)
+            .where(
+                (Entity.job_id == job_id)
+                & (Entity.status.in_([MappingStatus.failed, MappingStatus.skipped]))
+            )
+        )
+        count = int(q_failed_skipped.scalar_one())
+        if count == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="No failed or skipped entities to retry. Job has no retryable items.",
+            )
+
+        # Reset failed/skipped entities to pending
+        await session.execute(
+            update(Entity)
+            .where(
+                (Entity.job_id == job_id)
+                & (Entity.status.in_([MappingStatus.failed, MappingStatus.skipped]))
+            )
+            .values(status=MappingStatus.pending, error_message=None)
+        )
+
+        # Reset job to running/exporting state
+        await session.execute(
+            update(ImportJob)
+            .where(ImportJob.id == job_id)
+            .values(
+                status=JobStatus.running, current_stage="exporting", error_message=None
+            )
+        )
+
+        await session.commit()
+
+        backend_logger.info(
+            f"Restarting job_id={job_id}: reset {count} failed/skipped entities to pending"
+        )
+
+    # Trigger export orchestrator in background for this job
+    from app.services.export.orchestrator import orchestrate_mm_export
+
+    background_tasks.add_task(orchestrate_mm_export, job_id=job_id)
+
+    return {
+        "status": "restart_initiated",
+        "message": f"Job {job_id} restarted: {count} entities reset to pending and export triggered",
+        "reset_count": count,
+    }
