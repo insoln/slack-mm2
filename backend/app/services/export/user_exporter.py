@@ -131,10 +131,16 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
         return payload
 
     async def _find_existing_bot(self, username):
-        """Try to find an existing bot by username."""
+        """Try to find an existing bot by username.
+
+        Note: Mattermost doesn't have a direct bot lookup by username API,
+        so we need to list bots and search. This implementation uses a
+        reasonable limit of 200 bots per page, which should cover most cases.
+        For environments with >200 bots, pagination could be implemented.
+        """
         try:
-            # Mattermost doesn't have a direct bot lookup by username API,
-            # so we need to list bots and search
+            # List bots with a reasonable page size
+            # Most deployments have <200 bots, so this is typically sufficient
             resp = await self.mm_api_get("/api/v4/bots?per_page=200")
             if resp.status_code == 200:
                 bots = resp.json()
@@ -204,6 +210,8 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
 
             # Create new bot
             resp = await self.mm_api_post("/api/v4/bots", payload)
+            # Support both real httpx.Response and mocked coroutines in tests
+            # Some test mocks may accidentally return a coroutine object instead of Response
             if hasattr(resp, "__await__") and not hasattr(resp, "status_code"):
                 resp = await resp  # type: ignore
 

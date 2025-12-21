@@ -93,8 +93,13 @@ If you have already imported Slack bots as regular users, you need to migrate th
 ### Step 1: Run the Migration Script
 
 ```bash
-cd /home/runner/work/slack-mm2/slack-mm2
+# Navigate to your slack-mm2 repository
+cd /path/to/slack-mm2
+
+# Activate the Python virtual environment
 source .venv/bin/activate
+
+# Run the migration script
 python backend/alembic/versions/004_mark_bots_for_reexport.py
 ```
 
