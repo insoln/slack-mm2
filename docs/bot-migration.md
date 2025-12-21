@@ -86,6 +86,61 @@ To check if a bot already exists, the system:
 
 Note: Mattermost doesn't provide a direct bot lookup by username endpoint, so we need to list and search.
 
+## Mattermost Configuration: EnableBotAccountCreation
+
+The system automatically checks Mattermost's `EnableBotAccountCreation` configuration setting before attempting to create Bot Accounts. This ensures smooth imports regardless of the Mattermost server configuration.
+
+### Behavior Based on Configuration:
+
+1. **Bot creation enabled** (`EnableBotAccountCreation: true` - default):
+   - Slack bots are exported as Mattermost Bot Accounts via `/api/v4/bots`
+   - This is the recommended configuration for proper bot handling
+
+2. **Bot creation disabled** (`EnableBotAccountCreation: false`):
+   - Slack bots are automatically exported as regular users via `/api/v4/users`
+   - A warning is logged for each bot exported as a user
+   - Import continues successfully without manual intervention
+
+3. **Config check failure** (network error, permission issue, etc.):
+   - Assumes bot creation is enabled (fail-open approach)
+   - Attempts to create as Bot Account
+   - If creation fails, the error is logged
+
+### Configuration Caching:
+
+- The Mattermost config is retrieved once at the start of the export session
+- Result is cached in memory to avoid repeated API calls (class-level cache)
+- Cache persists for the lifetime of the export process
+
+### Logging Examples:
+
+```
+INFO: Mattermost EnableBotAccountCreation: true
+INFO: Бот B0001 создан в Mattermost как Bot Account с user_id: xyz123
+```
+
+```
+INFO: Mattermost EnableBotAccountCreation: false
+WARNING: Bot creation disabled in Mattermost config, exporting bot B0001 as regular user
+```
+
+### Enabling Bot Creation in Mattermost:
+
+If you want bots to be created as Bot Accounts, ensure this setting is enabled:
+
+1. **Via System Console**:
+   - Navigate to **System Console → Integrations → Bot Accounts**
+   - Enable **Bot Account Creation**
+
+2. **Via config.json**:
+   ```json
+   {
+     "ServiceSettings": {
+       "EnableBotAccountCreation": true
+     }
+   }
+   ```
+
 ## Handling Existing Data
 
 **Important:** This feature only affects **new imports**. Existing bots that were already imported as regular users will remain as regular users in the database and Mattermost.

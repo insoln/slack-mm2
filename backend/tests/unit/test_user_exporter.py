@@ -351,3 +351,191 @@ async def test_is_slack_bot_detection():
     no_bot_field_entity = DummyEntity("UUSER2", {"name": "user"})
     no_bot_exporter = UserExporter(no_bot_field_entity)
     assert no_bot_exporter._is_slack_bot() is False
+
+
+@pytest.mark.asyncio
+async def test_bot_creation_disabled_fallback_to_user():
+    """Test that bots are created as users when EnableBotAccountCreation is false."""
+    entity = DummyEntity(
+        "UBOT_DISABLED",
+        {
+            "name": "test_bot",
+            "is_bot": True,
+            "profile": {
+                "real_name": "Test Bot",
+                "email": "test@bot.com",
+            },
+        },
+    )
+
+    exporter = UserExporter(entity)
+    exporter.set_status = AsyncMock()
+    exporter.mm_api_post = AsyncMock()
+    exporter._upload_avatar = AsyncMock()
+    exporter._ensure_user_in_team = AsyncMock()
+
+    # Mock config check to return bot creation disabled
+    mock_config_resp = MagicMock()
+    mock_config_resp.status_code = 200
+    mock_config_resp.json = lambda: {
+        "ServiceSettings": {"EnableBotAccountCreation": False}
+    }
+
+    # Mock user creation success
+    mock_user_resp = MagicMock()
+    mock_user_resp.status_code = 201
+    mock_user_resp.json = lambda: {"id": "user-id-123", "username": "test_bot"}
+
+    # Mock for email/username lookups (return 404 - not found)
+    mock_not_found = MagicMock()
+    mock_not_found.status_code = 404
+
+    # Set up mock responses: first for config, then for user lookups
+    async def mock_get(path):
+        if path == "/api/v4/config":
+            return mock_config_resp
+        else:
+            return mock_not_found
+
+    exporter.mm_api_get = AsyncMock(side_effect=mock_get)
+    exporter.mm_api_post.return_value = mock_user_resp
+
+    # Reset cache before test
+    UserExporter._config_cache_checked = False
+    UserExporter._mm_config_cache = None
+
+    await exporter.export_entity()
+
+    # Verify config was checked
+    config_calls = [
+        call for call in exporter.mm_api_get.call_args_list if call[0][0] == "/api/v4/config"
+    ]
+    assert len(config_calls) == 1
+
+    # Verify bot was created as user (not via /api/v4/bots)
+    exporter.mm_api_post.assert_awaited_once()
+    call_args = exporter.mm_api_post.call_args
+    assert call_args[0][0] == "/api/v4/users"  # User endpoint, not bot endpoint
+
+    # Verify user was created successfully
+    assert entity.mattermost_id == "user-id-123"
+    exporter.set_status.assert_awaited_with("success")
+
+
+@pytest.mark.asyncio
+async def test_bot_creation_enabled_creates_bot():
+    """Test that bots are created as Bot Accounts when EnableBotAccountCreation is true."""
+    entity = DummyEntity(
+        "UBOT_ENABLED",
+        {
+            "name": "test_bot",
+            "is_bot": True,
+            "profile": {"real_name": "Test Bot"},
+        },
+    )
+
+    exporter = UserExporter(entity)
+    exporter.set_status = AsyncMock()
+    exporter._upload_avatar = AsyncMock()
+
+    # Mock config check to return bot creation enabled
+    mock_config_resp = MagicMock()
+    mock_config_resp.status_code = 200
+    mock_config_resp.json = lambda: {
+        "ServiceSettings": {"EnableBotAccountCreation": True}
+    }
+
+    # Mock bot listing (no existing bots)
+    mock_bot_list_resp = MagicMock()
+    mock_bot_list_resp.status_code = 200
+    mock_bot_list_resp.json = lambda: []
+
+    # Mock bot creation success
+    mock_bot_resp = MagicMock()
+    mock_bot_resp.status_code = 201
+    mock_bot_resp.json = lambda: {"user_id": "bot-user-id-456", "username": "test_bot"}
+
+    # Set up mock responses
+    async def mock_get(path):
+        if path == "/api/v4/config":
+            return mock_config_resp
+        elif path.startswith("/api/v4/bots"):
+            return mock_bot_list_resp
+        return MagicMock(status_code=404)
+
+    exporter.mm_api_get = AsyncMock(side_effect=mock_get)
+    exporter.mm_api_post = AsyncMock(return_value=mock_bot_resp)
+
+    # Reset cache before test
+    UserExporter._config_cache_checked = False
+    UserExporter._mm_config_cache = None
+
+    await exporter.export_entity()
+
+    # Verify config was checked
+    assert any(
+        call[0][0] == "/api/v4/config" for call in exporter.mm_api_get.call_args_list
+    )
+
+    # Verify bot was created via bot endpoint
+    exporter.mm_api_post.assert_awaited_once()
+    call_args = exporter.mm_api_post.call_args
+    assert call_args[0][0] == "/api/v4/bots"
+
+    # Verify bot was created successfully
+    assert entity.mattermost_id == "bot-user-id-456"
+    exporter.set_status.assert_awaited_with("success")
+
+
+@pytest.mark.asyncio
+async def test_config_check_failure_assumes_enabled():
+    """Test that config check failure assumes bot creation is enabled (fail open)."""
+    entity = DummyEntity(
+        "UBOT_CONFIG_FAIL",
+        {
+            "name": "test_bot",
+            "is_bot": True,
+            "profile": {"real_name": "Test Bot"},
+        },
+    )
+
+    exporter = UserExporter(entity)
+    exporter.set_status = AsyncMock()
+    exporter._upload_avatar = AsyncMock()
+
+    # Mock config check to fail
+    mock_config_resp = MagicMock()
+    mock_config_resp.status_code = 500
+
+    # Mock bot listing and creation
+    mock_bot_list_resp = MagicMock()
+    mock_bot_list_resp.status_code = 200
+    mock_bot_list_resp.json = lambda: []
+
+    mock_bot_resp = MagicMock()
+    mock_bot_resp.status_code = 201
+    mock_bot_resp.json = lambda: {"user_id": "bot-user-id-789", "username": "test_bot"}
+
+    async def mock_get(path):
+        if path == "/api/v4/config":
+            return mock_config_resp
+        elif path.startswith("/api/v4/bots"):
+            return mock_bot_list_resp
+        return MagicMock(status_code=404)
+
+    exporter.mm_api_get = AsyncMock(side_effect=mock_get)
+    exporter.mm_api_post = AsyncMock(return_value=mock_bot_resp)
+
+    # Reset cache before test
+    UserExporter._config_cache_checked = False
+    UserExporter._mm_config_cache = None
+
+    await exporter.export_entity()
+
+    # Should still try to create as bot (fail open)
+    exporter.mm_api_post.assert_awaited_once()
+    call_args = exporter.mm_api_post.call_args
+    assert call_args[0][0] == "/api/v4/bots"
+
+    assert entity.mattermost_id == "bot-user-id-789"
+    exporter.set_status.assert_awaited_with("success")

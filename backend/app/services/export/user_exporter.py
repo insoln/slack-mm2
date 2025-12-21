@@ -13,10 +13,58 @@ def calc_auth_data(username):
 
 
 class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
+    # Cache for Mattermost config to avoid repeated API calls
+    _mm_config_cache = None
+    _config_cache_checked = False
+
     def _is_slack_bot(self):
         """Check if the Slack user is a bot."""
         raw_data = self.entity.raw_data or {}
         return raw_data.get("is_bot", False)
+
+    async def _is_bot_creation_enabled(self) -> bool:
+        """Check if bot account creation is enabled in Mattermost config.
+
+        Returns True if EnableBotAccountCreation is true, False otherwise.
+        Caches the result to avoid repeated API calls.
+        """
+        # Return cached value if already checked
+        if UserExporter._config_cache_checked:
+            return UserExporter._mm_config_cache or False
+
+        try:
+            resp = await self.mm_api_get("/api/v4/config")
+            if resp.status_code == 200:
+                config = resp.json()
+                # Navigate nested config structure
+                service_settings = config.get("ServiceSettings", {})
+                bot_enabled = service_settings.get("EnableBotAccountCreation")
+
+                # Cache the result
+                UserExporter._mm_config_cache = bool(bot_enabled)
+                UserExporter._config_cache_checked = True
+
+                backend_logger.info(
+                    f"Mattermost EnableBotAccountCreation: {UserExporter._mm_config_cache}"
+                )
+                return UserExporter._mm_config_cache
+            else:
+                backend_logger.warning(
+                    f"Failed to get Mattermost config: status={resp.status_code}, "
+                    f"assuming bot creation is enabled"
+                )
+                # Assume enabled if we can't check (fail open)
+                UserExporter._mm_config_cache = True
+                UserExporter._config_cache_checked = True
+                return True
+        except Exception as e:
+            backend_logger.warning(
+                f"Error checking Mattermost config: {e}, assuming bot creation is enabled"
+            )
+            # Assume enabled if error occurs (fail open)
+            UserExporter._mm_config_cache = True
+            UserExporter._config_cache_checked = True
+            return True
 
     async def _get_mm_team_id(self):
         """Resolve Mattermost team ID from env or via API."""
@@ -188,7 +236,18 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
         is_bot = self._is_slack_bot()
 
         if is_bot:
-            await self._export_as_bot()
+            # Check if bot creation is enabled in Mattermost
+            bot_creation_enabled = await self._is_bot_creation_enabled()
+
+            if bot_creation_enabled:
+                # Try to export as bot
+                await self._export_as_bot()
+            else:
+                # Fallback: export bot as regular user when bot creation is disabled
+                backend_logger.warning(
+                    f"Bot creation disabled in Mattermost config, exporting bot {self.entity.slack_id} as regular user"
+                )
+                await self._export_as_user()
         else:
             await self._export_as_user()
 
