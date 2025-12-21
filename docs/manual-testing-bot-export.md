@@ -213,12 +213,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 ### Database shows bot but Mattermost doesn't
 
-The bot might have been created as a regular user before the fix. Run the migration:
-```bash
-python backend/alembic/versions/004_mark_bots_for_reexport.py
-```
-
-Then re-run the export process.
+This feature only affects new imports. If a bot was previously imported as a regular user, it will remain a regular user. The fix applies to new imports going forward.
 
 ## Cleanup
 

@@ -86,42 +86,14 @@ To check if a bot already exists, the system:
 
 Note: Mattermost doesn't provide a direct bot lookup by username endpoint, so we need to list and search.
 
-## Migration for Existing Data
+## Handling Existing Data
 
-If you have already imported Slack bots as regular users, you need to migrate them:
+**Important:** This feature only affects **new imports**. Existing bots that were already imported as regular users will remain as regular users in the database and Mattermost.
 
-### Step 1: Run the Migration Script
-
-```bash
-# Navigate to your slack-mm2 repository
-cd /path/to/slack-mm2
-
-# Activate the Python virtual environment
-source .venv/bin/activate
-
-# Run the migration script
-python backend/alembic/versions/004_mark_bots_for_reexport.py
-```
-
-This script:
-- Identifies all bot entities in the database (where `is_bot=true`)
-- Marks successfully exported bots as `pending` for re-export
-- Sets an error message explaining why they need re-export
-
-### Step 2: Re-export the Data
-
-Run your normal export process. The system will:
-- Re-create marked bots as Bot Accounts
-- Update the mapping with the new bot `user_id`
-
-### Step 3: Clean Up Old User Accounts
-
-Manually in Mattermost:
-1. Navigate to System Console → Users
-2. Search for the old bot accounts (they will appear as regular users)
-3. Deactivate or delete them
-
-The new Bot Accounts will be separate entities with their own IDs.
+If you need to convert existing bots:
+1. The old bot user accounts will remain as regular users in Mattermost
+2. New imports will correctly create bots as Bot Accounts
+3. You can manually deactivate old bot user accounts in Mattermost if desired (System Console → Users)
 
 ## Testing
 
@@ -212,8 +184,6 @@ Bot detection is done at export time by checking `raw_data.is_bot`.
    - Most deployments have <200 bots, so this is typically sufficient
 
 3. **Avatar Upload**: Avatar upload for bots works the same as for users, using the same endpoint.
-
-4. **Performance Note**: The migration script filters on JSON fields which may be slow on large datasets. For very large databases, consider adding an index on `(entity_type, (raw_data->>'is_bot'))`.
 
 ## References
 
