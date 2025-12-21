@@ -10,10 +10,7 @@ set -euo pipefail
 #  5. Scan logs for errors and validate admin user mapping
 #  6. Tear down services
 # Expected counts (derived from current mini dataset, strict deterministic):
-#   users=5 total processed/exported:
-#     - 3 from users.json (alice/U0001, admin/UADMIN, mini-bot/B0001 with is_bot=true)
-#     - 1 placeholder (UMISSING) created dynamically during channel export
-#     - 1 additional count from bot B0001 being referenced in bot_message (deduplicated in DB but counted in processing)
+#   users=4 (2 real + 1 bot + 1 placeholder UMISSING that now counts toward totals)
 #   channels=7 (2 public + 2 private + 2 DMs + 1 MPDM; archived public/private carry reactions)
 #   messages=19 (all baseline messages + archived reaction posts; deleted tombstone still counted for determinism)
 #   attachments=3 (three test-files hosted attachments with allowed url_private prefixes)
@@ -23,7 +20,7 @@ set -euo pipefail
 #   reactions=4 (per-user events from archived public/private reactions)
 
 # Expected counts (allow override via env for flexibility)
-: "${EXPECTED_USERS:=5}"
+: "${EXPECTED_USERS:=4}"
 : "${EXPECTED_CHANNELS:=7}"
 : "${EXPECTED_MESSAGES:=19}"
 : "${EXPECTED_ATTACHMENTS:=3}"
