@@ -206,9 +206,14 @@ Bot detection is done at export time by checking `raw_data.is_bot`.
 
 1. **No User-to-Bot Conversion**: Mattermost API doesn't support converting a regular user to a bot. Migration requires re-creating the bot and manually cleaning up the old user account.
 
-2. **Bot Listing Limitation**: Mattermost doesn't provide a direct bot lookup by username. We must list all bots and search, which may be slow if there are many bots (>200 requires pagination).
+2. **Bot Listing Pagination**: Mattermost doesn't provide a direct bot lookup by username API. The current implementation lists up to 200 bots and searches for matches. For deployments with >200 bots:
+   - Existing bots may not be found (will create duplicates)
+   - Consider implementing pagination if needed
+   - Most deployments have <200 bots, so this is typically sufficient
 
 3. **Avatar Upload**: Avatar upload for bots works the same as for users, using the same endpoint.
+
+4. **Performance Note**: The migration script filters on JSON fields which may be slow on large datasets. For very large databases, consider adding an index on `(entity_type, (raw_data->>'is_bot'))`.
 
 ## References
 
