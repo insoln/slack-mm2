@@ -408,7 +408,9 @@ async def test_bot_creation_disabled_fallback_to_user():
 
     # Verify config was checked
     config_calls = [
-        call for call in exporter.mm_api_get.call_args_list if call[0][0] == "/api/v4/config"
+        call
+        for call in exporter.mm_api_get.call_args_list
+        if call[0][0] == "/api/v4/config"
     ]
     assert len(config_calls) == 1
 
