@@ -13,6 +13,11 @@ def calc_auth_data(username):
 
 
 class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
+    def _is_slack_bot(self):
+        """Check if the Slack user is a bot."""
+        raw_data = self.entity.raw_data or {}
+        return raw_data.get("is_bot", False)
+
     async def _get_mm_team_id(self):
         """Resolve Mattermost team ID from env or via API."""
         import os
@@ -102,6 +107,45 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
         except Exception as e:
             backend_logger.error(f"Ошибка при загрузке аватарки: {e}")
 
+    def _build_bot_payload(self):
+        """Build payload for Mattermost Bot creation."""
+        raw_data = self.entity.raw_data or {}
+        profile = raw_data.get("profile") or {}
+        slack_id = self.entity.slack_id
+        username = raw_data.get("name") or slack_id
+
+        # For bots, use real_name or construct from first/last name
+        display_name = profile.get("real_name", "")
+        if not display_name:
+            first = profile.get("first_name", "")
+            last = profile.get("last_name", "")
+            display_name = f"{first} {last}".strip() or username
+
+        description = profile.get("title", "")
+
+        payload = {
+            "username": username,
+            "display_name": display_name,
+            "description": description,
+        }
+        return payload
+
+    async def _find_existing_bot(self, username):
+        """Try to find an existing bot by username."""
+        try:
+            # Mattermost doesn't have a direct bot lookup by username API,
+            # so we need to list bots and search
+            resp = await self.mm_api_get("/api/v4/bots?per_page=200")
+            if resp.status_code == 200:
+                bots = resp.json()
+                for bot in bots:
+                    if bot.get("username") == username:
+                        # Return the user_id associated with the bot
+                        return bot.get("user_id")
+        except Exception as e:
+            backend_logger.debug(f"Ошибка поиска существующего бота: {e}")
+        return None
+
     def _build_mm_payload(self):
         raw_data = self.entity.raw_data or {}
         profile = raw_data.get("profile") or {}
@@ -129,6 +173,76 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
 
     async def export_entity(self):
         self.log_export(f"Экспорт пользователя {self.entity.slack_id}")
+
+        # Check if this is a bot
+        is_bot = self._is_slack_bot()
+
+        if is_bot:
+            await self._export_as_bot()
+        else:
+            await self._export_as_user()
+
+    async def _export_as_bot(self):
+        """Export Slack bot as Mattermost Bot Account."""
+        payload = self._build_bot_payload()
+        username = payload.get("username")
+
+        try:
+            # Check if bot already exists
+            existing_bot_user_id = await self._find_existing_bot(username)
+            if existing_bot_user_id:
+                self.entity.mattermost_id = existing_bot_user_id
+                await self.set_status("success")
+                backend_logger.debug(
+                    f"Бот {self.entity.slack_id} уже существует в Mattermost с user_id: {existing_bot_user_id}"
+                )
+                # Upload avatar if available
+                avatar_url = self._get_avatar_url(self.entity.raw_data)
+                if avatar_url:
+                    await self._upload_avatar(existing_bot_user_id, avatar_url)
+                return
+
+            # Create new bot
+            resp = await self.mm_api_post("/api/v4/bots", payload)
+            if hasattr(resp, "__await__") and not hasattr(resp, "status_code"):
+                resp = await resp  # type: ignore
+
+            if resp.status_code == 201:
+                bot_data = resp.json()
+                # Bot response contains user_id field
+                mm_user_id = bot_data.get("user_id")
+                if mm_user_id:
+                    self.entity.mattermost_id = mm_user_id
+                    await self.set_status("success")
+                    backend_logger.debug(
+                        f"Бот {self.entity.slack_id} создан в Mattermost как Bot Account с user_id: {mm_user_id}"
+                    )
+                    # Upload avatar if available
+                    avatar_url = self._get_avatar_url(self.entity.raw_data)
+                    if avatar_url:
+                        await self._upload_avatar(mm_user_id, avatar_url)
+                    return
+                else:
+                    backend_logger.error(
+                        f"Бот создан, но user_id не найден в ответе: {bot_data}"
+                    )
+                    await self.set_status("failed", error="user_id not in bot response")
+                    return
+
+            # Handle errors
+            data = resp.json() if hasattr(resp, "json") else {}
+            error_msg = data.get("message", str(data))
+            backend_logger.error(
+                f"Ошибка создания бота {self.entity.slack_id}: {error_msg}; payload={payload}"
+            )
+            await self.set_status("failed", error=error_msg)
+
+        except Exception as e:
+            backend_logger.error(f"Ошибка экспорта бота {self.entity.slack_id}: {e}")
+            await self.set_status("failed", error=str(e))
+
+    async def _export_as_user(self):
+        """Export Slack user as regular Mattermost user."""
         payload = self._build_mm_payload()
         try:
             # Fast-path reuse lookup (email then username) BEFORE create attempt
