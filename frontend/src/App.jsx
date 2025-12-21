@@ -753,6 +753,26 @@ function App() {
                     </div>
                   </div>
                 )}
+                {exportConfig.data && exportConfig.data.bot_creation_mode && (
+                  <div
+                    style={{
+                      border: exportConfig.data.bot_creation_enabled ? '1px solid #10b981' : '1px solid #f59e0b',
+                      background: exportConfig.data.bot_creation_enabled ? 'rgba(16,185,129,0.15)' : 'rgba(245,158,11,0.15)',
+                      color: exportConfig.data.bot_creation_enabled ? '#34d399' : '#fbbf24',
+                      padding:'10px 12px',
+                      borderRadius:8,
+                      marginBottom:12,
+                      fontSize:13,
+                    }}
+                  >
+                    <div style={{fontWeight:600, color: exportConfig.data.bot_creation_enabled ? '#6ee7b7' : '#fed7aa'}}>
+                      {exportConfig.data.bot_creation_enabled ? '✓ Боты → Bot Accounts' : '⚠ Боты → Обычные пользователи'}
+                    </div>
+                    <div className="small" style={{color: exportConfig.data.bot_creation_enabled ? '#6ee7b7' : '#fed7aa'}}>
+                      {exportConfig.data.bot_creation_message}
+                    </div>
+                  </div>
+                )}
                 {exportStatus && <div style={{color:'#34d399'}}>{exportStatus}</div>}
                 {exportError && <div style={{color:'#f87171'}}>Ошибка экспорта: {exportError}</div>}
               </Card>

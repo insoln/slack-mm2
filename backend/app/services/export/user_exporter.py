@@ -13,10 +13,61 @@ def calc_auth_data(username):
 
 
 class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
+    # Cache for Mattermost config to avoid repeated API calls
+    _mm_config_cache = None
+    _config_cache_checked = False
+
+    def _is_slack_bot(self):
+        """Check if the Slack user is a bot."""
+        raw_data = self.entity.raw_data or {}
+        return raw_data.get("is_bot", False)
+
+    async def _is_bot_creation_enabled(self) -> bool:
+        """Check if bot account creation is enabled in Mattermost config.
+
+        Returns True if EnableBotAccountCreation is true, False otherwise.
+        Caches the result to avoid repeated API calls.
+        """
+        # Return cached value if already checked
+        if UserExporter._config_cache_checked:
+            return UserExporter._mm_config_cache
+
+        try:
+            resp = await self.mm_api_get("/api/v4/config")
+            if resp.status_code == 200:
+                config = resp.json()
+                # Navigate nested config structure
+                service_settings = config.get("ServiceSettings", {})
+                bot_enabled = service_settings.get("EnableBotAccountCreation")
+
+                # Cache the result
+                UserExporter._mm_config_cache = bool(bot_enabled)
+                UserExporter._config_cache_checked = True
+
+                backend_logger.info(
+                    f"Mattermost EnableBotAccountCreation: {UserExporter._mm_config_cache}"
+                )
+                return UserExporter._mm_config_cache
+            else:
+                backend_logger.warning(
+                    f"Failed to get Mattermost config: status={resp.status_code}, "
+                    f"assuming bot creation is enabled"
+                )
+                # Assume enabled if we can't check (fail open)
+                UserExporter._mm_config_cache = True
+                UserExporter._config_cache_checked = True
+                return True
+        except Exception as e:
+            backend_logger.warning(
+                f"Error checking Mattermost config: {e}, assuming bot creation is enabled"
+            )
+            # Assume enabled if error occurs (fail open)
+            UserExporter._mm_config_cache = True
+            UserExporter._config_cache_checked = True
+            return True
+
     async def _get_mm_team_id(self):
         """Resolve Mattermost team ID from env or via API."""
-        import os
-
         team_id = os.environ.get("MM_TEAM_ID")
         if team_id:
             return team_id
@@ -102,6 +153,57 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
         except Exception as e:
             backend_logger.error(f"Ошибка при загрузке аватарки: {e}")
 
+    async def _handle_avatar_upload(self, mm_user_id):
+        """Helper method to handle avatar upload if available."""
+        avatar_url = self._get_avatar_url(self.entity.raw_data)
+        if avatar_url:
+            await self._upload_avatar(mm_user_id, avatar_url)
+
+    def _build_bot_payload(self):
+        """Build payload for Mattermost Bot creation."""
+        raw_data = self.entity.raw_data or {}
+        profile = raw_data.get("profile") or {}
+        slack_id = self.entity.slack_id
+        username = raw_data.get("name") or slack_id
+
+        # For bots, use real_name or construct from first/last name
+        display_name = profile.get("real_name", "")
+        if not display_name:
+            first = profile.get("first_name", "")
+            last = profile.get("last_name", "")
+            display_name = f"{first} {last}".strip() or username
+
+        description = profile.get("title", "")
+
+        payload = {
+            "username": username,
+            "display_name": display_name,
+            "description": description,
+        }
+        return payload
+
+    async def _find_existing_bot(self, username):
+        """Try to find an existing bot by username.
+
+        Note: Mattermost doesn't have a direct bot lookup by username API,
+        so we need to list bots and search. This implementation uses a
+        reasonable limit of 200 bots per page, which should cover most cases.
+        For environments with >200 bots, pagination could be implemented.
+        """
+        try:
+            # List bots with a reasonable page size
+            # Most deployments have <200 bots, so this is typically sufficient
+            resp = await self.mm_api_get("/api/v4/bots?per_page=200")
+            if resp.status_code == 200:
+                bots = resp.json()
+                for bot in bots:
+                    if bot.get("username") == username:
+                        # Return the user_id associated with the bot
+                        return bot.get("user_id")
+        except Exception as e:
+            backend_logger.debug(f"Ошибка поиска существующего бота: {e}")
+        return None
+
     def _build_mm_payload(self):
         raw_data = self.entity.raw_data or {}
         profile = raw_data.get("profile") or {}
@@ -129,6 +231,101 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
 
     async def export_entity(self):
         self.log_export(f"Экспорт пользователя {self.entity.slack_id}")
+
+        # Check if this is a bot
+        is_bot = self._is_slack_bot()
+
+        if is_bot:
+            # Check if bot creation is enabled in Mattermost
+            bot_creation_enabled = await self._is_bot_creation_enabled()
+
+            if bot_creation_enabled:
+                # Try to export as bot
+                await self._export_as_bot()
+            else:
+                # Fallback: export bot as regular user when bot creation is disabled
+                backend_logger.warning(
+                    f"Bot creation disabled in Mattermost config, exporting bot {self.entity.slack_id} as regular user"
+                )
+                await self._export_as_user()
+        else:
+            await self._export_as_user()
+
+    async def _export_as_bot(self):
+        """Export Slack bot as Mattermost Bot Account."""
+        payload = self._build_bot_payload()
+        username = payload.get("username")
+
+        try:
+            # Check if bot already exists
+            existing_bot_user_id = await self._find_existing_bot(username)
+            if existing_bot_user_id:
+                self.entity.mattermost_id = existing_bot_user_id
+                await self.set_status("success")
+                backend_logger.debug(
+                    f"Бот {self.entity.slack_id} уже существует в Mattermost с user_id: {existing_bot_user_id}"
+                )
+                await self._handle_avatar_upload(existing_bot_user_id)
+                return
+
+            # Create new bot
+            resp = await self.mm_api_post("/api/v4/bots", payload)
+            # Support both real httpx.Response and mocked coroutines in tests
+            # Some test mocks may accidentally return a coroutine object instead of Response
+            if hasattr(resp, "__await__") and not hasattr(resp, "status_code"):
+                resp = await resp  # type: ignore
+
+            if resp.status_code == 201:
+                bot_data = resp.json()
+                # Bot response contains user_id field
+                mm_user_id = bot_data.get("user_id")
+                if mm_user_id:
+                    self.entity.mattermost_id = mm_user_id
+                    await self.set_status("success")
+                    backend_logger.debug(
+                        f"Бот {self.entity.slack_id} создан в Mattermost как Bot Account с user_id: {mm_user_id}"
+                    )
+                    await self._handle_avatar_upload(mm_user_id)
+                    return
+                else:
+                    backend_logger.error(
+                        f"Бот создан, но user_id не найден в ответе: {bot_data}"
+                    )
+                    await self.set_status("failed", error="user_id not in bot response")
+                    return
+
+            # Handle errors - including username conflicts
+            data = resp.json() if hasattr(resp, "json") else {}
+            error_id = data.get("id", "")
+            error_msg = data.get("message", str(data))
+
+            # Handle bot username already exists error by trying to retrieve existing bot
+            if (
+                "username" in error_msg.lower()
+                or error_id == "store.sql_user.save.username_exists.app_error"
+            ):
+                backend_logger.debug(
+                    f"Бот {username} уже существует, пытаюсь получить существующий"
+                )
+                # Try to find the bot again (may have been created outside the 200 bot limit)
+                existing_bot_user_id = await self._find_existing_bot(username)
+                if existing_bot_user_id:
+                    self.entity.mattermost_id = existing_bot_user_id
+                    await self.set_status("success")
+                    await self._handle_avatar_upload(existing_bot_user_id)
+                    return
+
+            backend_logger.error(
+                f"Ошибка создания бота {self.entity.slack_id}: {error_msg}; payload={payload}"
+            )
+            await self.set_status("failed", error=error_msg)
+
+        except Exception as e:
+            backend_logger.error(f"Ошибка экспорта бота {self.entity.slack_id}: {e}")
+            await self.set_status("failed", error=str(e))
+
+    async def _export_as_user(self):
+        """Export Slack user as regular Mattermost user."""
         payload = self._build_mm_payload()
         try:
             # Fast-path reuse lookup (email then username) BEFORE create attempt

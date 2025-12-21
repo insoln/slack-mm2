@@ -1,5 +1,6 @@
 from fastapi import APIRouter, BackgroundTasks, Query
 from app.services.export.orchestrator import orchestrate_mm_export
+from app.services.export.user_exporter import UserExporter
 from app.logging_config import backend_logger
 from app.utils.env import env_is_truthy
 
@@ -39,4 +40,40 @@ async def get_export_config():
         payload["attachment_skip_reason"] = (
             "Attachment export disabled via SKIP_ATTACHMENT_EXPORT"
         )
+
+    # Check bot creation configuration
+    try:
+        # Create temporary UserExporter instance to check config
+        # We don't need a real entity, just access to the config check method
+        class DummyEntity:
+            def __init__(self):
+                self.slack_id = "config_check"
+                self.raw_data = {}
+                self.mattermost_id = None
+                self.entity_type = "user"
+
+        dummy_entity = DummyEntity()
+        exporter = UserExporter(dummy_entity)
+        bot_creation_enabled = await exporter._is_bot_creation_enabled()
+
+        payload["bot_creation_enabled"] = bot_creation_enabled
+        if bot_creation_enabled:
+            payload["bot_creation_mode"] = "bot_accounts"
+            payload["bot_creation_message"] = (
+                "Slack-боты будут экспортироваться как Bot Accounts в Mattermost"
+            )
+        else:
+            payload["bot_creation_mode"] = "regular_users"
+            payload["bot_creation_message"] = (
+                "Slack-боты будут экспортироваться как обычные пользователи (EnableBotAccountCreation отключён в Mattermost)"
+            )
+    except Exception as e:
+        backend_logger.warning(f"Failed to check bot creation config: {e}")
+        # Default to enabled if check fails
+        payload["bot_creation_enabled"] = True
+        payload["bot_creation_mode"] = "bot_accounts"
+        payload["bot_creation_message"] = (
+            "Slack-боты будут экспортироваться как Bot Accounts в Mattermost"
+        )
+
     return payload
