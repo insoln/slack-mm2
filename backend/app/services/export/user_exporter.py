@@ -20,8 +20,6 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
 
     async def _get_mm_team_id(self):
         """Resolve Mattermost team ID from env or via API."""
-        import os
-
         team_id = os.environ.get("MM_TEAM_ID")
         if team_id:
             return team_id
@@ -106,6 +104,12 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     )
         except Exception as e:
             backend_logger.error(f"Ошибка при загрузке аватарки: {e}")
+
+    async def _handle_avatar_upload(self, mm_user_id):
+        """Helper method to handle avatar upload if available."""
+        avatar_url = self._get_avatar_url(self.entity.raw_data)
+        if avatar_url:
+            await self._upload_avatar(mm_user_id, avatar_url)
 
     def _build_bot_payload(self):
         """Build payload for Mattermost Bot creation."""
@@ -202,10 +206,7 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 backend_logger.debug(
                     f"Бот {self.entity.slack_id} уже существует в Mattermost с user_id: {existing_bot_user_id}"
                 )
-                # Upload avatar if available
-                avatar_url = self._get_avatar_url(self.entity.raw_data)
-                if avatar_url:
-                    await self._upload_avatar(existing_bot_user_id, avatar_url)
+                await self._handle_avatar_upload(existing_bot_user_id)
                 return
 
             # Create new bot
@@ -225,10 +226,7 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     backend_logger.debug(
                         f"Бот {self.entity.slack_id} создан в Mattermost как Bot Account с user_id: {mm_user_id}"
                     )
-                    # Upload avatar if available
-                    avatar_url = self._get_avatar_url(self.entity.raw_data)
-                    if avatar_url:
-                        await self._upload_avatar(mm_user_id, avatar_url)
+                    await self._handle_avatar_upload(mm_user_id)
                     return
                 else:
                     backend_logger.error(
@@ -237,9 +235,27 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     await self.set_status("failed", error="user_id not in bot response")
                     return
 
-            # Handle errors
+            # Handle errors - including username conflicts
             data = resp.json() if hasattr(resp, "json") else {}
+            error_id = data.get("id", "")
             error_msg = data.get("message", str(data))
+
+            # Handle bot username already exists error by trying to retrieve existing bot
+            if (
+                "username" in error_msg.lower()
+                or error_id == "store.sql_user.save.username_exists.app_error"
+            ):
+                backend_logger.debug(
+                    f"Бот {username} уже существует, пытаюсь получить существующий"
+                )
+                # Try to find the bot again (may have been created outside the 200 bot limit)
+                existing_bot_user_id = await self._find_existing_bot(username)
+                if existing_bot_user_id:
+                    self.entity.mattermost_id = existing_bot_user_id
+                    await self.set_status("success")
+                    await self._handle_avatar_upload(existing_bot_user_id)
+                    return
+
             backend_logger.error(
                 f"Ошибка создания бота {self.entity.slack_id}: {error_msg}; payload={payload}"
             )

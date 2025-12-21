@@ -186,6 +186,155 @@ async def test_bot_exporter_reuse_existing_bot():
 
 
 @pytest.mark.asyncio
+async def test_bot_export_error_no_user_id():
+    """Test error handling when bot creation succeeds but user_id is missing."""
+    entity = DummyEntity(
+        "UBOT_NO_ID",
+        {
+            "name": "broken_bot",
+            "is_bot": True,
+            "profile": {"real_name": "Broken Bot"},
+        },
+    )
+
+    exporter = UserExporter(entity)
+    exporter.set_status = AsyncMock()
+    exporter.mm_api_get = AsyncMock()
+    exporter.mm_api_post = AsyncMock()
+    exporter._upload_avatar = AsyncMock()
+
+    # No existing bot
+    exporter.mm_api_get.return_value.status_code = 200
+    exporter.mm_api_get.return_value.json = lambda: []
+
+    # Bot creation returns 201 but without user_id
+    mock_resp = MagicMock()
+    mock_resp.status_code = 201
+    mock_resp.json = lambda: {"username": "broken_bot"}  # Missing user_id
+    exporter.mm_api_post.return_value = mock_resp
+
+    await exporter.export_entity()
+
+    # Verify error was logged and status set to failed
+    assert entity.mattermost_id is None
+    exporter.set_status.assert_awaited_with(
+        "failed", error="user_id not in bot response"
+    )
+
+
+@pytest.mark.asyncio
+async def test_bot_export_error_creation_fails():
+    """Test error handling when bot creation fails."""
+    entity = DummyEntity(
+        "UBOT_FAIL",
+        {
+            "name": "fail_bot",
+            "is_bot": True,
+            "profile": {"real_name": "Fail Bot"},
+        },
+    )
+
+    exporter = UserExporter(entity)
+    exporter.set_status = AsyncMock()
+    exporter.mm_api_get = AsyncMock()
+    exporter.mm_api_post = AsyncMock()
+    exporter._upload_avatar = AsyncMock()
+
+    # No existing bot
+    exporter.mm_api_get.return_value.status_code = 200
+    exporter.mm_api_get.return_value.json = lambda: []
+
+    # Bot creation fails
+    mock_resp = MagicMock()
+    mock_resp.status_code = 400
+    mock_resp.json = lambda: {"message": "Invalid bot data", "id": "api.error"}
+    exporter.mm_api_post.return_value = mock_resp
+
+    await exporter.export_entity()
+
+    # Verify error was handled
+    assert entity.mattermost_id is None
+    exporter.set_status.assert_awaited_with("failed", error="Invalid bot data")
+
+
+@pytest.mark.asyncio
+async def test_bot_export_username_conflict():
+    """Test error handling when bot username already exists."""
+    entity = DummyEntity(
+        "UBOT_CONFLICT",
+        {
+            "name": "conflict_bot",
+            "is_bot": True,
+            "profile": {"real_name": "Conflict Bot"},
+        },
+    )
+
+    exporter = UserExporter(entity)
+    exporter.set_status = AsyncMock()
+    exporter.mm_api_post = AsyncMock()
+    exporter._upload_avatar = AsyncMock()
+
+    # Mock mm_api_get to be called twice:
+    # First call returns empty (no bot found initially)
+    # Second call after username conflict returns the existing bot
+    get_responses = [
+        MagicMock(status_code=200, json=lambda: []),  # First call: no bot found
+        MagicMock(
+            status_code=200,
+            json=lambda: [{"username": "conflict_bot", "user_id": "existing-user-id"}],
+        ),  # Second call: bot found
+    ]
+    exporter.mm_api_get = AsyncMock(side_effect=get_responses)
+
+    # Bot creation fails with username conflict
+    mock_resp = MagicMock()
+    mock_resp.status_code = 400
+    mock_resp.json = lambda: {
+        "message": "Username already exists",
+        "id": "store.sql_user.save.username_exists.app_error",
+    }
+    exporter.mm_api_post.return_value = mock_resp
+
+    await exporter.export_entity()
+
+    # Verify the existing bot was retrieved and used
+    assert entity.mattermost_id == "existing-user-id"
+    exporter.set_status.assert_awaited_with("success")
+
+
+@pytest.mark.asyncio
+async def test_bot_export_exception_handling():
+    """Test exception handling in bot export."""
+    entity = DummyEntity(
+        "UBOT_EXCEPTION",
+        {
+            "name": "exception_bot",
+            "is_bot": True,
+            "profile": {"real_name": "Exception Bot"},
+        },
+    )
+
+    exporter = UserExporter(entity)
+    exporter.set_status = AsyncMock()
+    # Mock to return a valid response first (for _find_existing_bot check)
+    # then raise exception on bot creation
+    exporter.mm_api_get = AsyncMock()
+    exporter.mm_api_get.return_value.status_code = 200
+    exporter.mm_api_get.return_value.json = lambda: []
+    exporter.mm_api_post = AsyncMock(side_effect=Exception("Network error"))
+    exporter._upload_avatar = AsyncMock()
+
+    await exporter.export_entity()
+
+    # Verify exception was handled
+    assert entity.mattermost_id is None
+    exporter.set_status.assert_awaited()
+    call_args = exporter.set_status.call_args
+    assert call_args[0][0] == "failed"
+    assert "Network error" in call_args[1]["error"]
+
+
+@pytest.mark.asyncio
 async def test_is_slack_bot_detection():
     """Test _is_slack_bot correctly identifies bots."""
     # Bot user

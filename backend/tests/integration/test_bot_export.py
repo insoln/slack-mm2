@@ -7,7 +7,6 @@ This test verifies that:
 """
 
 import pytest
-import os
 from unittest.mock import AsyncMock, MagicMock
 
 from app.services.backup.users_import import parse_users

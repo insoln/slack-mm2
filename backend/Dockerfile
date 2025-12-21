@@ -9,8 +9,13 @@ RUN update-ca-certificates
 WORKDIR /app
 
 COPY backend/requirements.txt .
-# Install Python dependencies with trusted host to work around corporate proxy/firewall SSL interception
-# This is necessary in CI environments with self-signed certificates in the chain
+# Install Python dependencies
+# Note: --trusted-host flags are used to work around SSL certificate verification issues
+# in CI/corporate environments with SSL-intercepting proxies. This is a known trade-off:
+# - PRO: Allows builds to succeed in environments with self-signed CA certificates
+# - CON: Disables TLS verification for PyPI downloads during build
+# Alternative: Configure proper CA trust store (PIP_CERT/REQUESTS_CA_BUNDLE) if available
+# Package integrity is still verified via pip's hash checking when requirements.txt includes hashes
 RUN pip install --no-cache-dir --trusted-host pypi.org --trusted-host files.pythonhosted.org -r requirements.txt \
     && apt-get update && apt-get install -y unzip && rm -rf /var/lib/apt/lists/*
 
