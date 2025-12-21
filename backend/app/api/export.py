@@ -50,6 +50,7 @@ async def get_export_config():
                 self.slack_id = "config_check"
                 self.raw_data = {}
                 self.mattermost_id = None
+                self.entity_type = "user"
 
         dummy_entity = DummyEntity()
         exporter = UserExporter(dummy_entity)

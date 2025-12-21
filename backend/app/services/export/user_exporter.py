@@ -30,7 +30,7 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
         """
         # Return cached value if already checked
         if UserExporter._config_cache_checked:
-            return UserExporter._mm_config_cache or False
+            return UserExporter._mm_config_cache
 
         try:
             resp = await self.mm_api_get("/api/v4/config")
