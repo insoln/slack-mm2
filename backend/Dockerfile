@@ -1,12 +1,17 @@
 FROM python:3.14-slim
 
-# Установка tini для корректного управления процессами
-RUN apt-get update && apt-get install -y tini && rm -rf /var/lib/apt/lists/*
+# Установка tini и ca-certificates для корректного управления процессами и SSL
+RUN apt-get update && apt-get install -y tini ca-certificates && rm -rf /var/lib/apt/lists/*
+
+# Update CA certificates
+RUN update-ca-certificates
 
 WORKDIR /app
 
 COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt \
+# Install Python dependencies with trusted host to work around corporate proxy/firewall SSL interception
+# This is necessary in CI environments with self-signed certificates in the chain
+RUN pip install --no-cache-dir --trusted-host pypi.org --trusted-host files.pythonhosted.org -r requirements.txt \
     && apt-get update && apt-get install -y unzip && rm -rf /var/lib/apt/lists/*
 
 COPY infra/db/migrations backend/infra/db/migrations
