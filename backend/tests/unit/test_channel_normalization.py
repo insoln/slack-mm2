@@ -1,6 +1,5 @@
 """Test channel name normalization to match plugin behavior."""
 
-import pytest
 from app.services.export.channel_exporter import ChannelExporter
 from types import SimpleNamespace
 

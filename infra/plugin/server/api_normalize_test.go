@@ -79,6 +79,11 @@ func TestNormalizeChannelName_Unicode(t *testing.T) {
 			expected: "acao-solucao",
 		},
 		{
+			// NOTE: The leading 'Ø' (U+00D8) in "Ørsted" does not decompose under
+			// NFD normalization and is dropped by normalizeChannelName. This is an
+			// accepted limitation of our Unicode normalization strategy (chosen
+			// primarily to avoid Cyrillic/Latin look-alike collisions), so some
+			// Scandinavian characters may lose information during normalization.
 			name:     "scandinavian",
 			input:    "Ørsted-Ålesund",
 			expected: "rsted-alesund",

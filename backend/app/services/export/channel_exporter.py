@@ -1,4 +1,6 @@
 import os
+import re
+import unicodedata
 from app.logging_config import backend_logger
 from app.services.backup.meta_utils import merge_job_meta
 from .base_exporter import ExporterBase, LoggingMixin
@@ -580,8 +582,6 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
         cyrillic_translated = "".join(cyrillic_map.get(c, c) for c in name)
 
         # Шаг 2: Unicode NFD нормализация (удаление диакритики)
-        import unicodedata
-
         nfd = unicodedata.normalize("NFD", cyrillic_translated)
         # Удаляем combining characters (диакритика)
         ascii_base = "".join(c for c in nfd if unicodedata.category(c) != "Mn")
@@ -602,8 +602,6 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
             # остальные символы пропускаются
 
         # Шаг 4: Схлопываем множественные дефисы
-        import re
-
         cleaned = re.sub(r"-+", "-", out)
 
         # Шаг 5: Убираем дефисы в начале и конце
@@ -829,28 +827,38 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 f"Нормализовано имя канала для lookup: '{name}' → '{normalized_name}'"
             )
 
-        # Шаг 1: Прямой lookup по нормализованному имени
-        try:
-            resp = await self.mm_api_get(
-                f"/api/v4/teams/{team_id}/channels/name/{normalized_name}"
+        # Шаг 1: Прямой lookup по нормализованному имени (только если оно не пустое)
+        if not normalized_name:
+            # Для чисто нелатинских имён (например, "日本語") нормализованное имя может
+            # оказаться пустой строкой. В этом случае пропускаем прямой HTTP lookup,
+            # чтобы не вызывать /channels/name/ с пустым сегментом, и полагаемся
+            # на fallback через плагин (шаг 2), который сгенерирует валидное имя.
+            backend_logger.info(
+                f"Нормализованное имя канала для lookup пустое для исходного имени '{name}'. "
+                "Пропускаем прямой HTTP lookup и переходим к fallback через плагин."
             )
-            if hasattr(resp, "status_code") and getattr(resp, "status_code") == 200:
-                try:
-                    data = resp.json()  # type: ignore[attr-defined]
-                    cid = data.get("id")
-                    if cid:
-                        backend_logger.info(
-                            f"Канал '{name}' (normalized: '{normalized_name}') найден прямым lookup: {cid}"
+        else:
+            try:
+                resp = await self.mm_api_get(
+                    f"/api/v4/teams/{team_id}/channels/name/{normalized_name}"
+                )
+                if hasattr(resp, "status_code") and getattr(resp, "status_code") == 200:
+                    try:
+                        data = resp.json()  # type: ignore[attr-defined]
+                        cid = data.get("id")
+                        if cid:
+                            backend_logger.info(
+                                f"Канал '{name}' (normalized: '{normalized_name}') найден прямым lookup: {cid}"
+                            )
+                            return cid
+                    except Exception:
+                        backend_logger.error(
+                            f"Не-JSON ответ при lookup канала '{normalized_name}': {getattr(resp,'text','')[:200]}"
                         )
-                        return cid
-                except Exception:
-                    backend_logger.error(
-                        f"Не-JSON ответ при lookup канала '{normalized_name}': {getattr(resp,'text','')[:200]}"
-                    )
-        except Exception as e:
-            backend_logger.debug(
-                f"Ошибка прямого lookup канала '{normalized_name}': {e}"
-            )
+            except Exception as e:
+                backend_logger.debug(
+                    f"Ошибка прямого lookup канала '{normalized_name}': {e}"
+                )
 
         # Шаг 2: Fallback - вызываем плагин с идемпотентным CreateOrGetChannel
         # Плагин найдет канал даже если он архивирован (includeDeleted=true)

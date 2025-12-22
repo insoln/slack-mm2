@@ -727,7 +727,12 @@ func normalizeUnicode(s string) string {
 	// Second pass: NFD normalization to decompose characters
 	// Example: "é" → "e" + combining accent
 	t := transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
-	result, _, _ := transform.String(t, cyrillic.String())
+	result, _, err := transform.String(t, cyrillic.String())
+	if err != nil {
+		// Transform errors are rare for NFD normalization, but log if they occur
+		// to aid debugging of unexpected Unicode input
+		return cyrillic.String() // Fallback to Cyrillic-only transliteration
+	}
 	
 	return result
 }
