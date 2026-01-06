@@ -1043,6 +1043,7 @@ async def test_bot_with_b_prefix_id_as_regular_user():
     # Verify username was normalized (B058SFFG9SM -> b058sffg9sm)
     payload = call_args[0][1]
     assert payload["username"] == "b058sffg9sm"
+    assert len(payload["username"]) > 0  # Not empty
     assert payload["username"][0].isalpha()  # Starts with letter
     assert payload["username"].islower()  # All lowercase
     assert len(payload["username"]) <= 64  # Within length limit
