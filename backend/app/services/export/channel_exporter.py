@@ -15,7 +15,7 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
     # Resilience / semantics notes:
     # 1. Duplicate public/private channel names: treat "already exists" (or HTTP 409) as success by
     #    looking up existing id and marking entity success (prevents cascade failures for messages).
-    # 2. DM requires exactly 2 mapped members. Otherwise mark skipped (dataset structural issue).
+    # 2. DM requires exactly 2 mapped MM users. Otherwise mark skipped (user mapping incomplete).
     # 3. GDM (mpim) rules:
     #    - <3 members -> skipped (invalid dataset)
     #    - 3..8 members -> create via /gdm plugin endpoint
@@ -100,6 +100,7 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
             # DM path
             if is_dm:
                 members = (self.entity.raw_data or {}).get("members") or []
+                slack_members_count = len(members)
                 mm_user_ids = await self._resolve_mm_user_ids(members)
                 if len(mm_user_ids) == 2:
                     dm_resp = await self.mm_api_post(
@@ -129,9 +130,12 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     await self.set_status("failed", error=getattr(dm_resp, "text", ""))
                     return
                 backend_logger.warning(
-                    f"Ожидалось 2 участника DM, найдено {len(mm_user_ids)}; пропускаю"
+                    f"DM channel {self.entity.slack_id}: {slack_members_count} Slack members, but only {len(mm_user_ids)} mapped to Mattermost (expected 2). Slack members: {members}"
                 )
-                await self.set_status("skipped", error="Invalid DM members count")
+                await self.set_status(
+                    "skipped",
+                    error=f"DM member mapping incomplete: {slack_members_count} Slack members -> {len(mm_user_ids)} MM users (need 2)",
+                )
                 return
 
             # Group DM (mpim) path
