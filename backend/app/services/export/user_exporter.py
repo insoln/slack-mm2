@@ -222,10 +222,10 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
         # Remove newlines and carriage returns
         sanitized = sanitized.replace("\n", " ").replace("\r", " ")
 
-        # Collapse multiple spaces into single space
+        # Collapse consecutive whitespace into single space (includes all Unicode whitespace)
         sanitized = re.sub(r"\s+", " ", sanitized)
 
-        # Enforce max length of 64 characters
+        # Enforce max length of 64 characters (may be shorter after final strip)
         # This matches typical Mattermost field constraints
         max_length = 64
         if len(sanitized) > max_length:
@@ -390,10 +390,10 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
             ):
                 display_name_len = len(payload.get("display_name", ""))
                 error_msg = (
-                    f"Bot validation failed "
-                    f"(display_name length: {display_name_len} chars, already sanitized to <= 64). "
-                    f"This may indicate a different validation issue. "
-                    f"Original error: {error_msg}"
+                    f"Bot validation failed with 'Invalid user id.' error. "
+                    f"The display_name (length: {display_name_len} chars) has already been sanitized to <= 64 chars. "
+                    f"This indicates a different validation issue - check if the username or other bot fields are valid. "
+                    f"Original Mattermost error: {error_msg}"
                 )
 
             # Handle bot username already exists error by trying to retrieve existing bot

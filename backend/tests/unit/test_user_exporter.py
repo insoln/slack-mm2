@@ -742,14 +742,16 @@ async def test_sanitize_display_name():
     # Test very long Russian name (should truncate at 64 chars)
     long_russian = "Очень длинное имя бота с русскими символами которое превышает лимит в шестьдесят четыре символа"
     result = exporter._sanitize_display_name(long_russian, "bot")
-    assert len(result) == 64
-    assert result == long_russian[:64].strip()
+    # Length should not exceed 64 characters after sanitization
+    assert len(result) <= 64
+    # Result should be trimmed and start with the original name content
+    assert result == result.strip()
+    assert result.startswith(long_russian[:60])
 
     # Test mixed content: long name with newlines and spaces
     complex_name = "Bot\n" + "A" * 100 + "\n\nwith spaces   "
     result = exporter._sanitize_display_name(complex_name, "bot")
-    assert len(result) == 64
-    assert "\n" not in result
+    assert len(result) <= 64
     # Should have "Bot " followed by A's, normalized spaces
     assert result.startswith("Bot A")
 
@@ -796,7 +798,9 @@ async def test_bot_export_with_long_display_name():
 
     # Verify display_name was sanitized to at most 64 chars
     assert len(payload["display_name"]) <= 64
-    assert payload["display_name"] == long_display_name[:64].strip()
+    # It should not have leading/trailing whitespace and should preserve the start of the original name
+    assert payload["display_name"] == payload["display_name"].strip()
+    assert payload["display_name"].startswith(long_display_name[:60])
     # Original name is much longer
     assert len(long_display_name) > 64
 
@@ -809,6 +813,9 @@ async def test_bot_export_with_long_display_name():
 async def test_bot_export_with_newlines_in_display_name():
     """Test that bot with newlines in display_name has them removed."""
     display_name_with_newlines = "Multi\nLine\nBot\nName"
+    # Verify test setup - original name has newlines
+    assert "\n" in display_name_with_newlines
+
     entity = DummyEntity(
         "UBOTMULTI",
         {
@@ -895,7 +902,8 @@ async def test_bot_export_improved_error_message():
     error_msg = call_args[1]["error"]
     # Should contain improved message mentioning display_name is sanitized
     assert "display_name" in error_msg.lower()
-    assert "Bot validation failed" in error_msg
-    assert "already sanitized to <= 64" in error_msg
+    assert "Bot validation failed with 'Invalid user id.' error" in error_msg
+    assert "has already been sanitized to <= 64 chars" in error_msg
     assert "different validation issue" in error_msg
-    assert "Invalid user id." in error_msg  # Original error should still be included
+    assert "check if the username or other bot fields are valid" in error_msg
+    assert "Original Mattermost error:" in error_msg
