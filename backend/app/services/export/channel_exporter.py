@@ -130,7 +130,7 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     await self.set_status("failed", error=getattr(dm_resp, "text", ""))
                     return
                 backend_logger.warning(
-                    f"DM channel {self.entity.slack_id}: {slack_members_count} Slack members, but only {len(mm_user_ids)} mapped to Mattermost (expected 2). Slack members: {members}"
+                    f"DM channel {self.entity.slack_id}: {slack_members_count} Slack members, but only {len(mm_user_ids)} mapped to Mattermost (expected 2). Slack members: {members[:5]}"
                 )
                 await self.set_status(
                     "skipped",
