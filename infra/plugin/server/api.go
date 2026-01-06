@@ -8,10 +8,14 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"unicode"
 
 	"github.com/gorilla/mux"
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
+	"golang.org/x/text/runes"
+	"golang.org/x/text/transform"
+	"golang.org/x/text/unicode/norm"
 )
 
 // ServeHTTP wires plugin REST endpoints under /api/v1.
@@ -680,9 +684,65 @@ type CreateOrGetChannelResponse struct {
 	Error     string `json:"error,omitempty"`
 }
 
+// transliterateCyrillic converts Cyrillic characters to their Latin equivalents.
+// This helps preserve channel name uniqueness when dealing with Cyrillic names.
+func transliterateCyrillic(r rune) string {
+	translitMap := map[rune]string{
+		'а': "a", 'б': "b", 'в': "v", 'г': "g", 'д': "d", 'е': "e", 'ё': "yo",
+		'ж': "zh", 'з': "z", 'и': "i", 'й': "y", 'к': "k", 'л': "l", 'м': "m",
+		'н': "n", 'о': "o", 'п': "p", 'р': "r", 'с': "s", 'т': "t", 'у': "u",
+		'ф': "f", 'х': "h", 'ц': "ts", 'ч': "ch", 'ш': "sh", 'щ': "sch", 'ъ': "",
+		'ы': "y", 'ь': "", 'э': "e", 'ю': "yu", 'я': "ya",
+		'А': "a", 'Б': "b", 'В': "v", 'Г': "g", 'Д': "d", 'Е': "e", 'Ё': "yo",
+		'Ж': "zh", 'З': "z", 'И': "i", 'Й': "y", 'К': "k", 'Л': "l", 'М': "m",
+		'Н': "n", 'О': "o", 'П': "p", 'Р': "r", 'С': "s", 'Т': "t", 'У': "u",
+		'Ф': "f", 'Х': "h", 'Ц': "ts", 'Ч': "ch", 'Ш': "sh", 'Щ': "sch", 'Ъ': "",
+		'Ы': "y", 'Ь': "", 'Э': "e", 'Ю': "yu", 'Я': "ya",
+	}
+	if trans, ok := translitMap[r]; ok {
+		return trans
+	}
+	return ""
+}
+
+// normalizeUnicode applies Unicode normalization to convert non-ASCII characters to ASCII.
+// Uses NFD (Normalized Form Decomposed) to separate base characters from diacritics,
+// then removes diacritics and non-Latin characters. Cyrillic gets special transliteration.
+// Examples:
+//   - "café" → "cafe"
+//   - "naïve" → "naive"
+//   - "маркетинг" → "marketing"
+//   - "日本語" → "" (no Latin equivalent, will be handled by fallback)
+func normalizeUnicode(s string) string {
+	// First pass: Cyrillic transliteration for better readability
+	var cyrillic strings.Builder
+	for _, r := range s {
+		if trans := transliterateCyrillic(r); trans != "" {
+			cyrillic.WriteString(trans)
+		} else {
+			cyrillic.WriteRune(r)
+		}
+	}
+	
+	// Second pass: NFD normalization to decompose characters
+	// Example: "é" → "e" + combining accent
+	t := transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
+	result, _, err := transform.String(t, cyrillic.String())
+	if err != nil {
+		// Transform errors are rare for NFD normalization, but log if they occur
+		// to aid debugging of unexpected Unicode input
+		return cyrillic.String() // Fallback to Cyrillic-only transliteration
+	}
+	
+	return result
+}
+
 func normalizeChannelName(name string) string {
+	// Apply Unicode normalization first
+	normalized := normalizeUnicode(name)
+	
 	out := ""
-	for _, r := range name {
+	for _, r := range normalized {
 		switch {
 		case r >= 'a' && r <= 'z':
 			out += string(r)
@@ -693,6 +753,7 @@ func normalizeChannelName(name string) string {
 		case r == '-' || r == '_' || r == ' ' || r == '.':
 			out += "-"
 		default:
+			// After Unicode normalization, remaining non-ASCII is dropped
 		}
 	}
 	cleaned := ""
@@ -745,12 +806,24 @@ func (p *Plugin) CreateOrGetChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := normalizeChannelName(req.Name)
-	ch, appErr := p.API.GetChannelByName(name, req.TeamID, false)
+	
+	// Log normalization for debugging
+	if p.API != nil && name != req.Name {
+		p.API.LogDebug("Channel name normalized", "original", req.Name, "normalized", name)
+	}
+	
+	// First try to find existing channel, INCLUDING archived/deleted channels
+	ch, appErr := p.API.GetChannelByName(name, req.TeamID, true)
 	if appErr == nil && ch != nil {
+		if p.API != nil {
+			p.API.LogDebug("Found existing channel (possibly archived)", "name", name, "channel_id", ch.Id, "delete_at", ch.DeleteAt)
+		}
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(CreateOrGetChannelResponse{ChannelID: ch.Id})
 		return
 	}
+	
+	// Try to create the channel
 	channel := &model.Channel{
 		TeamId:      req.TeamID,
 		Name:        name,
@@ -761,9 +834,57 @@ func (p *Plugin) CreateOrGetChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	created, appErr := p.API.CreateChannel(channel)
 	if appErr != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(CreateOrGetChannelResponse{Error: appErr.Error()})
-		return
+		// If creation failed due to name conflict, try with a suffix
+		errStr := appErr.Error()
+		if strings.Contains(strings.ToLower(errStr), "already exists") {
+			if p.API != nil {
+				p.API.LogWarn("Channel name conflict detected, trying with suffix", "name", name, "error", errStr)
+			}
+			
+			// Try to find the existing channel again with includeDeleted=true
+			// This handles race conditions where channel was created between our check and creation attempt
+			ch, lookupErr := p.API.GetChannelByName(name, req.TeamID, true)
+			if lookupErr == nil && ch != nil {
+				if p.API != nil {
+					p.API.LogInfo("Found existing channel after conflict", "name", name, "channel_id", ch.Id)
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(CreateOrGetChannelResponse{ChannelID: ch.Id})
+				return
+			}
+			
+			// If still not found, try creating with auto-suffix
+			suffix := model.NewId()[:6]
+			newName := name
+			if len(name) > 57 { // Reserve space for -suffix (7 chars)
+				newName = name[:57]
+			}
+			newName = newName + "-" + suffix
+			
+			channel.Name = newName
+			if p.API != nil {
+				p.API.LogInfo("Retrying channel creation with suffix", "original_name", name, "new_name", newName)
+			}
+			
+			created, appErr = p.API.CreateChannel(channel)
+			if appErr != nil {
+				if p.API != nil {
+					p.API.LogError("Failed to create channel even with suffix", "name", newName, "error", appErr.Error())
+				}
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(CreateOrGetChannelResponse{Error: appErr.Error()})
+				return
+			}
+		} else {
+			// Non-conflict error
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(CreateOrGetChannelResponse{Error: appErr.Error()})
+			return
+		}
+	}
+	
+	if p.API != nil {
+		p.API.LogDebug("Channel created successfully", "name", channel.Name, "channel_id", created.Id)
 	}
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(CreateOrGetChannelResponse{ChannelID: created.Id})

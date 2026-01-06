@@ -1,4 +1,6 @@
 import os
+import re
+import unicodedata
 from app.logging_config import backend_logger
 from app.services.backup.meta_utils import merge_job_meta
 from .base_exporter import ExporterBase, LoggingMixin
@@ -492,18 +494,130 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 )
 
     def _normalize_channel_name(self, name: str) -> str:
-        """Нормализовать название канала: lower, замена _ ↔ -, trim, collapse spaces."""
+        """Нормализовать название канала по тем же правилам, что и плагин.
+
+        Применяет:
+        1. Транслитерацию кириллицы (маркетинг → marketing)
+        2. Unicode NFD нормализацию (café → cafe)
+        3. Приведение к нижнему регистру
+        4. Замену разделителей на дефисы
+        5. Схлопывание множественных дефисов
+        6. Обрезку до 64 символов
+
+        Это должно совпадать с логикой normalizeChannelName в infra/plugin/server/api.go
+        """
         if not name:
             return ""
-        # Приводим к нижнему регистру
-        normalized = name.lower().strip()
-        # Заменяем пробелы на дефисы
-        normalized = normalized.replace(" ", "-")
-        # Схлопываем множественные дефисы/подчеркивания в одинарные
-        import re
 
-        normalized = re.sub(r"[-_]+", "-", normalized)
-        return normalized
+        # Шаг 1: Транслитерация кириллицы
+        cyrillic_map = {
+            "а": "a",
+            "б": "b",
+            "в": "v",
+            "г": "g",
+            "д": "d",
+            "е": "e",
+            "ё": "yo",
+            "ж": "zh",
+            "з": "z",
+            "и": "i",
+            "й": "y",
+            "к": "k",
+            "л": "l",
+            "м": "m",
+            "н": "n",
+            "о": "o",
+            "п": "p",
+            "р": "r",
+            "с": "s",
+            "т": "t",
+            "у": "u",
+            "ф": "f",
+            "х": "h",
+            "ц": "ts",
+            "ч": "ch",
+            "ш": "sh",
+            "щ": "sch",
+            "ъ": "",
+            "ы": "y",
+            "ь": "",
+            "э": "e",
+            "ю": "yu",
+            "я": "ya",
+            "А": "a",
+            "Б": "b",
+            "В": "v",
+            "Г": "g",
+            "Д": "d",
+            "Е": "e",
+            "Ё": "yo",
+            "Ж": "zh",
+            "З": "z",
+            "И": "i",
+            "Й": "y",
+            "К": "k",
+            "Л": "l",
+            "М": "m",
+            "Н": "n",
+            "О": "o",
+            "П": "p",
+            "Р": "r",
+            "С": "s",
+            "Т": "t",
+            "У": "u",
+            "Ф": "f",
+            "Х": "h",
+            "Ц": "ts",
+            "Ч": "ch",
+            "Ш": "sh",
+            "Щ": "sch",
+            "Ъ": "",
+            "Ы": "y",
+            "Ь": "",
+            "Э": "e",
+            "Ю": "yu",
+            "Я": "ya",
+        }
+
+        cyrillic_translated = "".join(cyrillic_map.get(c, c) for c in name)
+
+        # Шаг 2: Unicode NFD нормализация (удаление диакритики)
+        nfd = unicodedata.normalize("NFD", cyrillic_translated)
+        # Удаляем combining characters (диакритика)
+        ascii_base = "".join(c for c in nfd if unicodedata.category(c) != "Mn")
+        # Обратно в NFC форму
+        normalized = unicodedata.normalize("NFC", ascii_base)
+
+        # Шаг 3: Фильтрация символов (оставляем только a-z, 0-9, дефисы)
+        out = ""
+        for c in normalized:
+            if "a" <= c <= "z":
+                out += c
+            elif "0" <= c <= "9":
+                out += c
+            elif "A" <= c <= "Z":
+                out += c.lower()
+            elif c in ("-", "_", " ", "."):
+                out += "-"
+            # остальные символы пропускаются
+
+        # Шаг 4: Схлопываем множественные дефисы
+        cleaned = re.sub(r"-+", "-", out)
+
+        # Шаг 5: Убираем дефисы в начале и конце
+        cleaned = cleaned.strip("-")
+
+        # Шаг 6: Обеспечиваем минимальную длину (2 символа)
+        # (в плагине используется model.NewId(), здесь можем просто вернуть как есть,
+        # так как этот метод используется только для lookup, не для создания)
+        if len(cleaned) == 0:
+            return ""
+
+        # Шаг 7: Обрезаем до 64 символов
+        if len(cleaned) > 64:
+            cleaned = cleaned[:64]
+
+        return cleaned
 
     def _extract_search_terms(self, name: str) -> list[str]:
         """Извлечь поисковые токены из названия канала (длина >= 3 символов)."""
@@ -694,22 +808,118 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
         return (None, err_msg)
 
     async def _lookup_existing_channel_id(self, name: str) -> str | None:
-        """Попытаться найти существующий канал по имени через публичный MM API.
+        """Попытаться найти существующий канал по имени.
 
-        Используем /api/v4/teams/{team_id}/channels/name/{name}. Если найден —
-        возвращаем id. При ошибке/отсутствии возвращаем None. Не бросаем исключения,
-        чтобы не останавливать основной экспорт потоком.
+        Применяет ту же нормализацию, что и плагин, для поиска.
+        Использует fallback к вызову плагина для idempotent get.
 
-        LEGACY: Этот метод теперь вызывает _search_existing_channel_id для
-        обратной совместимости и использует расширенную логику поиска.
+        Возвращает:
+        - channel_id если канал найден
+        - None если не найден
         """
-        slack_display_name = self._get_channel_display_name(self.entity.raw_data)
-        is_private = self._is_private_channel(self.entity.raw_data)
-        channel_id, lookup_path = await self._search_existing_channel_id(
-            name, slack_display_name, is_private
+        team_id = await self._get_mm_team_id()
+
+        # Нормализуем имя по тем же правилам, что и плагин
+        normalized_name = self._normalize_channel_name(name)
+
+        if normalized_name != name:
+            backend_logger.debug(
+                f"Нормализовано имя канала для lookup: '{name}' → '{normalized_name}'"
+            )
+
+        # Шаг 1: Прямой lookup по нормализованному имени (только если оно не пустое)
+        if not normalized_name:
+            # Для чисто нелатинских имён (например, "日本語") нормализованное имя может
+            # оказаться пустой строкой. В этом случае пропускаем прямой HTTP lookup,
+            # чтобы не вызывать /channels/name/ с пустым сегментом, и полагаемся
+            # на fallback через плагин (шаг 2), который сгенерирует валидное имя.
+            backend_logger.info(
+                f"Нормализованное имя канала для lookup пустое для исходного имени '{name}'. "
+                "Пропускаем прямой HTTP lookup и переходим к fallback через плагин."
+            )
+        else:
+            try:
+                resp = await self.mm_api_get(
+                    f"/api/v4/teams/{team_id}/channels/name/{normalized_name}"
+                )
+                if hasattr(resp, "status_code") and getattr(resp, "status_code") == 200:
+                    try:
+                        data = resp.json()  # type: ignore[attr-defined]
+                        cid = data.get("id")
+                        if cid:
+                            backend_logger.info(
+                                f"Канал '{name}' (normalized: '{normalized_name}') найден прямым lookup: {cid}"
+                            )
+                            return cid
+                    except Exception:
+                        backend_logger.error(
+                            f"Не-JSON ответ при lookup канала '{normalized_name}': {getattr(resp,'text','')[:200]}"
+                        )
+            except Exception as e:
+                backend_logger.debug(
+                    f"Ошибка прямого lookup канала '{normalized_name}': {e}"
+                )
+
+        # Шаг 2: Fallback - вызываем плагин с идемпотентным CreateOrGetChannel
+        # Плагин найдет канал даже если он архивирован (includeDeleted=true)
+        backend_logger.debug(
+            f"Прямой lookup не нашёл канал '{normalized_name}', пробуем через плагин"
         )
+
+        # Определяем тип канала (приватный или публичный)
+        is_private = self._is_private_channel(self.entity.raw_data)
+        channel_type = "P" if is_private else "O"
+
+        # Используем display_name из raw_data или fallback на name
+        display_name = self._sanitize_display_name(
+            self._get_channel_display_name(self.entity.raw_data),
+            name.replace("-", " "),
+        )
+
+        try:
+            # Вызываем плагин для idempotent get/create
+            plugin_resp = await self.mm_api_post(
+                "/plugins/mm-importer/api/v1/channel",
+                {
+                    "team_id": team_id,
+                    "name": name,  # Передаём оригинальное имя, плагин сам нормализует
+                    "display_name": display_name,
+                    "type": channel_type,
+                },
+            )
+
+            if getattr(plugin_resp, "status_code", None) in (200, 201):
+                try:
+                    plugin_data = plugin_resp.json()  # type: ignore[attr-defined]
+                    cid = plugin_data.get("channel_id")
+                    if cid:
+                        backend_logger.info(
+                            f"Канал '{name}' найден через плагин (возможно архивный): {cid}"
+                        )
+                        return cid
+                except Exception:
+                    backend_logger.error(
+                        f"Плагин вернул не-JSON при lookup '{name}': {getattr(plugin_resp,'text','')[:200]}"
+                    )
+        except Exception as e:
+            backend_logger.debug(f"Ошибка вызова плагина для канала '{name}': {e}")
+
+        # Шаг 3: Расширенный search fallback (если плагин тоже не помог)
+        backend_logger.debug(
+            f"Плагин не нашёл канал '{name}', используем расширенный search"
+        )
+
+        channel_id, lookup_path = await self._search_existing_channel_id(
+            name, self._get_channel_display_name(self.entity.raw_data), is_private
+        )
+
         if channel_id:
             backend_logger.info(
-                f"Найден существующий канал '{name}' через {lookup_path}: {channel_id}"
+                f"Канал '{name}' найден через расширенный search ({lookup_path}): {channel_id}"
             )
-        return channel_id
+            return channel_id
+
+        backend_logger.warning(
+            f"Не удалось найти канал '{name}' ни одним из методов (direct lookup, plugin, search)"
+        )
+        return None
