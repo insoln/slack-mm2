@@ -764,6 +764,15 @@ async def _export_messages_per_channel(job_id: int, mm_user_id: str) -> None:
                     exporter = MessageExporter(e, caches=caches)
                     start = asyncio.get_event_loop().time() if timing else None
                     try:
+                        # Check dependencies before export
+                        failed, reason = await exporter.guard_dependencies()
+                        if failed:
+                            await exporter.set_status("skipped", error=reason)
+                            backend_logger.info(
+                                f"Skip message {e.slack_id} due to unmet dependency: {reason}"
+                            )
+                            continue
+
                         await exporter.export_entity()
                         if timing and start is not None:
                             dt = asyncio.get_event_loop().time() - start
