@@ -536,3 +536,47 @@ async def test_resolve_mm_user_ids_creates_placeholder():
                 # Should have created placeholder and returned MM ID
                 assert len(result) == 1
                 assert result[0] == "mm_u_missing"
+
+
+@pytest.mark.asyncio
+async def test_dm_incomplete_user_mapping_error_message():
+    """Test that DM with incomplete user mapping shows clear error message."""
+    ent = StubEntity(
+        entity_type="channel",
+        slack_id="D013PLNS49W",
+        raw_data={"id": "D013PLNS49W", "members": ["U012ZRFC2SE", "USLACKBOT"]},
+        job_id=1,
+    )
+    exporter = ChannelExporter(ent)
+
+    # Simulate that only one user mapping succeeds (first user only)
+    async def mock_resolve_only_one(slack_ids):
+        # Simulate USLACKBOT failing to map, but U012ZRFC2SE succeeding
+        mapped_ids = []
+        for sid in slack_ids:
+            if sid == "U012ZRFC2SE":
+                mapped_ids.append("mm_u012zrfc2se")
+            # USLACKBOT is not mapped (simulating failed user export)
+        return mapped_ids
+
+    with patch.object(
+        exporter,
+        "_resolve_mm_user_ids",
+        new=AsyncMock(side_effect=mock_resolve_only_one),
+    ):
+
+        async def fake_set_status(status, error=None):
+            ent.status = SimpleNamespace(name=status)
+            ent.error_message = error
+
+        exporter.set_status = fake_set_status  # type: ignore
+        await exporter.export_entity()
+
+    # Should be marked as skipped (not failed)
+    assert ent.status.name == "skipped"
+    # Error message should clarify it's about mapping, not Slack member count
+    assert ent.error_message is not None
+    assert "DM member mapping incomplete" in ent.error_message
+    assert "2 Slack members" in ent.error_message
+    assert "1 MM users" in ent.error_message
+    assert "need 2" in ent.error_message
