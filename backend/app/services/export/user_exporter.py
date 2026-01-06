@@ -383,14 +383,16 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
             error_id = data.get("id", "")
             error_msg = data.get("message", str(data))
 
-            # Improve error message for display_name length issues
+            # Improve error message for display_name validation issues
             if (
                 error_id == "model.bot.is_valid.user_id.app_error"
                 or "Invalid user id" in error_msg
             ):
                 display_name_len = len(payload.get("display_name", ""))
                 error_msg = (
-                    f"Bot validation failed (possibly display_name too long: {display_name_len} chars). "
+                    f"Bot validation failed "
+                    f"(display_name length: {display_name_len} chars, already sanitized to <= 64). "
+                    f"This may indicate a different validation issue. "
                     f"Original error: {error_msg}"
                 )
 

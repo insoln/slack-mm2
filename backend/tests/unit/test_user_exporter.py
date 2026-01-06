@@ -852,7 +852,12 @@ async def test_bot_export_with_newlines_in_display_name():
 
 @pytest.mark.asyncio
 async def test_bot_export_improved_error_message():
-    """Test that 'Invalid user id.' error gets improved error message."""
+    """Test that 'Invalid user id.' error gets improved error message.
+
+    This test verifies the improved error message for the unlikely case where
+    this error still occurs for reasons other than display_name length
+    (since display_name is now always sanitized to <= 64 characters).
+    """
     entity = DummyEntity(
         "UBOTERR",
         {
@@ -888,7 +893,9 @@ async def test_bot_export_improved_error_message():
     call_args = exporter.set_status.call_args
     assert call_args[0][0] == "failed"
     error_msg = call_args[1]["error"]
-    # Should contain improved message mentioning display_name
+    # Should contain improved message mentioning display_name is sanitized
     assert "display_name" in error_msg.lower()
     assert "Bot validation failed" in error_msg
+    assert "already sanitized to <= 64" in error_msg
+    assert "different validation issue" in error_msg
     assert "Invalid user id." in error_msg  # Original error should still be included
