@@ -293,6 +293,12 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
         profile = raw_data.get("profile") or {}
         slack_id = self.entity.slack_id
         username = raw_data.get("name") or slack_id
+
+        # Normalize username for bots (when exported as regular users due to bot creation being disabled)
+        # Regular users have similar username requirements as bots in Mattermost
+        if self._is_slack_bot():
+            username = self._normalize_bot_username(username, slack_id)
+
         email = profile.get("email") or f"{username or slack_id}@example.com"
         notify_props = {"email": "false"}
         payload = {
