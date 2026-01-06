@@ -541,3 +541,138 @@ async def test_config_check_failure_assumes_enabled():
 
     assert entity.mattermost_id == "bot-user-id-789"
     exporter.set_status.assert_awaited_with("success")
+
+
+@pytest.mark.asyncio
+async def test_normalize_bot_username():
+    """Test username normalization for various bot usernames."""
+    entity = DummyEntity("USLACKBOT", {"is_bot": True})
+    exporter = UserExporter(entity)
+
+    # Test USLACKBOT (all uppercase) - 'u' is a letter so no prefix needed
+    result = exporter._normalize_bot_username("USLACKBOT", "USLACKBOT")
+    assert result == "uslackbot"
+    assert result[0].isalpha()  # Must start with letter
+    assert len(result) <= 64
+
+    # Test empty name (falls back to empty, then gets prefix)
+    result = exporter._normalize_bot_username("", "UBOT123")
+    assert result == "slack_"
+
+    # Test already valid lowercase name
+    result = exporter._normalize_bot_username("reminder_bot", "UBOT456")
+    assert result == "reminder_bot"
+
+    # Test name with invalid characters
+    result = exporter._normalize_bot_username("Test Bot!", "UBOT789")
+    assert result == "test_bot_"
+
+    # Test name starting with number (needs prefix)
+    result = exporter._normalize_bot_username("123bot", "UBOT999")
+    assert result == "slack_123bot"
+
+    # Test very long name (should truncate and add hash)
+    long_name = "a" * 100
+    result = exporter._normalize_bot_username(long_name, "ULONGBOT")
+    assert len(result) <= 64
+    assert result.startswith("a")
+
+    # Test name with special characters (@ is replaced, . is kept as valid)
+    result = exporter._normalize_bot_username("bot@company.com", "UBOT111")
+    assert result == "bot_company.com"
+
+    # Test name with only invalid characters becomes slack_
+    result = exporter._normalize_bot_username("@@@", "UBOT222")
+    assert result == "slack____"
+
+
+@pytest.mark.asyncio
+async def test_uslackbot_export_with_empty_name():
+    """Test that USLACKBOT with empty name field exports successfully."""
+    entity = DummyEntity(
+        "USLACKBOT",
+        {
+            "name": "",  # Empty name field as seen in real exports
+            "is_bot": True,
+            "profile": {"real_name": "Slackbot"},
+        },
+    )
+
+    exporter = UserExporter(entity)
+    exporter.set_status = AsyncMock()
+    exporter.mm_api_get = AsyncMock()
+    exporter.mm_api_post = AsyncMock()
+    exporter._upload_avatar = AsyncMock()
+
+    # No existing bot found
+    exporter.mm_api_get.return_value.status_code = 200
+    exporter.mm_api_get.return_value.json = lambda: []
+
+    # Bot creation succeeds with normalized username
+    mock_post_resp = MagicMock()
+    mock_post_resp.status_code = 201
+    mock_post_resp.json = lambda: {
+        "user_id": "slackbot-user-id",
+        "username": "uslackbot",  # Normalized
+    }
+    exporter.mm_api_post.return_value = mock_post_resp
+
+    await exporter.export_entity()
+
+    # Verify bot was created with normalized username
+    exporter.mm_api_post.assert_awaited_once()
+    call_args = exporter.mm_api_post.call_args
+    assert call_args[0][0] == "/api/v4/bots"
+
+    payload = call_args[0][1]
+    assert (
+        payload["username"] == "uslackbot"
+    )  # Normalized from empty -> USLACKBOT -> uslackbot
+    assert payload["display_name"] == "Slackbot"
+
+    # Verify success
+    assert entity.mattermost_id == "slackbot-user-id"
+    exporter.set_status.assert_awaited_with("success")
+
+
+@pytest.mark.asyncio
+async def test_uslackbot_export_uppercase_name():
+    """Test that USLACKBOT with uppercase name field exports successfully."""
+    entity = DummyEntity(
+        "USLACKBOT",
+        {
+            "name": "USLACKBOT",  # Uppercase name
+            "is_bot": True,
+            "profile": {},
+        },
+    )
+
+    exporter = UserExporter(entity)
+    exporter.set_status = AsyncMock()
+    exporter.mm_api_get = AsyncMock()
+    exporter.mm_api_post = AsyncMock()
+    exporter._upload_avatar = AsyncMock()
+
+    # No existing bot found
+    exporter.mm_api_get.return_value.status_code = 200
+    exporter.mm_api_get.return_value.json = lambda: []
+
+    # Bot creation succeeds
+    mock_post_resp = MagicMock()
+    mock_post_resp.status_code = 201
+    mock_post_resp.json = lambda: {
+        "user_id": "slackbot-user-id-2",
+        "username": "uslackbot",
+    }
+    exporter.mm_api_post.return_value = mock_post_resp
+
+    await exporter.export_entity()
+
+    # Verify normalized username in payload
+    call_args = exporter.mm_api_post.call_args
+    payload = call_args[0][1]
+    assert payload["username"] == "uslackbot"
+
+    # Verify success
+    assert entity.mattermost_id == "slackbot-user-id-2"
+    exporter.set_status.assert_awaited_with("success")
