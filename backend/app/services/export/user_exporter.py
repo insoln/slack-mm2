@@ -203,6 +203,40 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
 
         return normalized
 
+    def _sanitize_display_name(self, display_name: str, username: str) -> str:
+        """Sanitize bot display_name to meet Mattermost bot API requirements.
+
+        Mattermost bot API rejects overly long display names with cryptic error:
+        "Invalid user id." (from model.bot.is_valid.user_id.app_error)
+
+        Args:
+            display_name: The original display name from Slack
+            username: The bot username to use as fallback
+
+        Returns:
+            A sanitized display_name that meets Mattermost requirements (max 64 chars)
+        """
+        # Strip leading/trailing whitespace
+        sanitized = display_name.strip()
+
+        # Remove newlines and carriage returns
+        sanitized = sanitized.replace("\n", " ").replace("\r", " ")
+
+        # Collapse multiple spaces into single space
+        sanitized = re.sub(r"\s+", " ", sanitized)
+
+        # Enforce max length of 64 characters
+        # This matches typical Mattermost field constraints
+        max_length = 64
+        if len(sanitized) > max_length:
+            sanitized = sanitized[:max_length].strip()
+
+        # Fallback to username if empty after sanitization
+        if not sanitized:
+            sanitized = username
+
+        return sanitized
+
     def _build_bot_payload(self):
         """Build payload for Mattermost Bot creation."""
         raw_data = self.entity.raw_data or {}
@@ -219,6 +253,9 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
             first = profile.get("first_name", "")
             last = profile.get("last_name", "")
             display_name = f"{first} {last}".strip() or username
+
+        # Sanitize display_name to prevent "Invalid user id." errors from Mattermost
+        display_name = self._sanitize_display_name(display_name, username)
 
         description = profile.get("title", "")
 
@@ -345,6 +382,17 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
             data = resp.json() if hasattr(resp, "json") else {}
             error_id = data.get("id", "")
             error_msg = data.get("message", str(data))
+
+            # Improve error message for display_name length issues
+            if (
+                error_id == "model.bot.is_valid.user_id.app_error"
+                or "Invalid user id" in error_msg
+            ):
+                display_name_len = len(payload.get("display_name", ""))
+                error_msg = (
+                    f"Bot validation failed (possibly display_name too long: {display_name_len} chars). "
+                    f"Original error: {error_msg}"
+                )
 
             # Handle bot username already exists error by trying to retrieve existing bot
             if (
