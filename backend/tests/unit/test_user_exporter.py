@@ -685,3 +685,225 @@ async def test_uslackbot_export_uppercase_name():
     # Verify success
     assert entity.mattermost_id == "slackbot-user-id-2"
     exporter.set_status.assert_awaited_with("success")
+
+
+@pytest.mark.asyncio
+async def test_sanitize_display_name():
+    """Test display_name sanitization for bot payloads."""
+    entity = DummyEntity("UBOT", {"is_bot": True})
+    exporter = UserExporter(entity)
+
+    # Test normal short display name
+    result = exporter._sanitize_display_name("Test Bot", "test_bot")
+    assert result == "Test Bot"
+
+    # Test display name with leading/trailing whitespace
+    result = exporter._sanitize_display_name("  Bot Name  ", "bot_name")
+    assert result == "Bot Name"
+
+    # Test display name with newlines
+    result = exporter._sanitize_display_name("Bot\nName\nHere", "bot_name")
+    assert result == "Bot Name Here"
+
+    # Test display name with carriage returns
+    result = exporter._sanitize_display_name("Bot\r\nName", "bot_name")
+    assert result == "Bot Name"
+
+    # Test display name with multiple spaces
+    result = exporter._sanitize_display_name("Bot    Name    Here", "bot_name")
+    assert result == "Bot Name Here"
+
+    # Test very long display name (should truncate to 64 chars)
+    long_name = "A" * 100
+    result = exporter._sanitize_display_name(long_name, "bot")
+    assert len(result) == 64
+    assert result == "A" * 64
+
+    # Test very long display name with trailing space (should truncate and strip)
+    long_name_with_space = "B" * 64 + " " + "C" * 10
+    result = exporter._sanitize_display_name(long_name_with_space, "bot")
+    assert len(result) == 64
+    # Should take first 64 chars and strip any trailing space
+    assert result == "B" * 64
+
+    # Test empty display name (should fallback to username)
+    result = exporter._sanitize_display_name("", "fallback_bot")
+    assert result == "fallback_bot"
+
+    # Test whitespace-only display name (should fallback to username)
+    result = exporter._sanitize_display_name("   \n\r   ", "fallback_bot")
+    assert result == "fallback_bot"
+
+    # Test Russian/Unicode characters (should preserve them)
+    russian_name = "Бот помощник"
+    result = exporter._sanitize_display_name(russian_name, "bot")
+    assert result == russian_name
+
+    # Test very long Russian name (should truncate at 64 chars)
+    long_russian = "Очень длинное имя бота с русскими символами которое превышает лимит в шестьдесят четыре символа"
+    result = exporter._sanitize_display_name(long_russian, "bot")
+    # Length should not exceed 64 characters after sanitization
+    assert len(result) <= 64
+    # Result should be trimmed and start with the original name content
+    assert result == result.strip()
+    assert result.startswith(long_russian[:60])
+
+    # Test mixed content: long name with newlines and spaces
+    complex_name = "Bot\n" + "A" * 100 + "\n\nwith spaces   "
+    result = exporter._sanitize_display_name(complex_name, "bot")
+    assert len(result) <= 64
+    # Should have "Bot " followed by A's, normalized spaces
+    assert result.startswith("Bot A")
+
+
+@pytest.mark.asyncio
+async def test_bot_export_with_long_display_name():
+    """Test that bot with very long display_name is properly sanitized."""
+    # Create bot with very long real_name (like the issue example)
+    long_display_name = "Это очень длинное русское имя бота которое должно быть обрезано до шестидесяти четырех символов чтобы не вызвать ошибку"
+    entity = DummyEntity(
+        "U07D7F5BE8P",
+        {
+            "name": "wf_bot_a07dfcr3wt0",
+            "is_bot": True,
+            "profile": {"real_name": long_display_name},
+        },
+    )
+
+    exporter = UserExporter(entity)
+    exporter.set_status = AsyncMock()
+    exporter.mm_api_get = AsyncMock()
+    exporter.mm_api_post = AsyncMock()
+    exporter._upload_avatar = AsyncMock()
+
+    # No existing bot found
+    exporter.mm_api_get.return_value.status_code = 200
+    exporter.mm_api_get.return_value.json = lambda: []
+
+    # Bot creation succeeds
+    mock_post_resp = MagicMock()
+    mock_post_resp.status_code = 201
+    mock_post_resp.json = lambda: {
+        "user_id": "bot-user-id",
+        "username": "wf_bot_a07dfcr3wt0",
+    }
+    exporter.mm_api_post.return_value = mock_post_resp
+
+    await exporter.export_entity()
+
+    # Verify bot was created
+    exporter.mm_api_post.assert_awaited_once()
+    call_args = exporter.mm_api_post.call_args
+    payload = call_args[0][1]
+
+    # Verify display_name was sanitized to at most 64 chars
+    assert len(payload["display_name"]) <= 64
+    # It should not have leading/trailing whitespace and should preserve the start of the original name
+    assert payload["display_name"] == payload["display_name"].strip()
+    assert payload["display_name"].startswith(long_display_name[:60])
+    # Original name is much longer
+    assert len(long_display_name) > 64
+
+    # Verify success
+    assert entity.mattermost_id == "bot-user-id"
+    exporter.set_status.assert_awaited_with("success")
+
+
+@pytest.mark.asyncio
+async def test_bot_export_with_newlines_in_display_name():
+    """Test that bot with newlines in display_name has them removed."""
+    display_name_with_newlines = "Multi\nLine\nBot\nName"
+    # Verify test setup - original name has newlines
+    assert "\n" in display_name_with_newlines
+
+    entity = DummyEntity(
+        "UBOTMULTI",
+        {
+            "name": "multiline_bot",
+            "is_bot": True,
+            "profile": {"real_name": display_name_with_newlines},
+        },
+    )
+
+    exporter = UserExporter(entity)
+    exporter.set_status = AsyncMock()
+    exporter.mm_api_get = AsyncMock()
+    exporter.mm_api_post = AsyncMock()
+    exporter._upload_avatar = AsyncMock()
+
+    # No existing bot found
+    exporter.mm_api_get.return_value.status_code = 200
+    exporter.mm_api_get.return_value.json = lambda: []
+
+    # Bot creation succeeds
+    mock_post_resp = MagicMock()
+    mock_post_resp.status_code = 201
+    mock_post_resp.json = lambda: {
+        "user_id": "bot-multiline-id",
+        "username": "multiline_bot",
+    }
+    exporter.mm_api_post.return_value = mock_post_resp
+
+    await exporter.export_entity()
+
+    # Verify display_name has newlines removed and replaced with spaces
+    call_args = exporter.mm_api_post.call_args
+    payload = call_args[0][1]
+    assert payload["display_name"] == "Multi Line Bot Name"
+    assert "\n" not in payload["display_name"]
+
+    # Verify success
+    assert entity.mattermost_id == "bot-multiline-id"
+    exporter.set_status.assert_awaited_with("success")
+
+
+@pytest.mark.asyncio
+async def test_bot_export_improved_error_message():
+    """Test that 'Invalid user id.' error gets improved error message.
+
+    This test verifies the improved error message for the unlikely case where
+    this error still occurs for reasons other than display_name length
+    (since display_name is now always sanitized to <= 64 characters).
+    """
+    entity = DummyEntity(
+        "UBOTERR",
+        {
+            "name": "error_bot",
+            "is_bot": True,
+            "profile": {"real_name": "Error Bot"},
+        },
+    )
+
+    exporter = UserExporter(entity)
+    exporter.set_status = AsyncMock()
+    exporter.mm_api_get = AsyncMock()
+    exporter.mm_api_post = AsyncMock()
+    exporter._upload_avatar = AsyncMock()
+
+    # No existing bot
+    exporter.mm_api_get.return_value.status_code = 200
+    exporter.mm_api_get.return_value.json = lambda: []
+
+    # Bot creation fails with "Invalid user id." error
+    mock_resp = MagicMock()
+    mock_resp.status_code = 400
+    mock_resp.json = lambda: {
+        "message": "Invalid user id.",
+        "id": "model.bot.is_valid.user_id.app_error",
+    }
+    exporter.mm_api_post.return_value = mock_resp
+
+    await exporter.export_entity()
+
+    # Verify error message was improved
+    exporter.set_status.assert_awaited()
+    call_args = exporter.set_status.call_args
+    assert call_args[0][0] == "failed"
+    error_msg = call_args[1]["error"]
+    # Should contain improved message mentioning display_name is sanitized
+    assert "display_name" in error_msg.lower()
+    assert "Bot validation failed with 'Invalid user id.' error" in error_msg
+    assert "has already been sanitized to <= 64 chars" in error_msg
+    assert "different validation issue" in error_msg
+    assert "check if the username or other bot fields are valid" in error_msg
+    assert "Original Mattermost error:" in error_msg
