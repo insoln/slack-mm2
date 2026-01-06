@@ -183,21 +183,23 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
         # Valid chars are: a-z, 0-9, ., -, _
         normalized = re.sub(r"[^a-z0-9._-]", "_", normalized)
 
+        # Handle cases where normalization removes all alphanumerics.
+        # This happens for empty usernames or ones made only of special chars (e.g. "@@@").
+        if not re.search(r"[a-z0-9]", normalized):
+            # Generate a short hash from the slack_id for uniqueness (MD5 used for uniqueness, not security)
+            hash_suffix = hashlib.md5(slack_id.encode()).hexdigest()[:8]
+            normalized = f"slack_{hash_suffix}"
         # Ensure starts with a letter (not number, period, hyphen, or underscore)
-        if not normalized or not normalized[0].isalpha():
+        elif not normalized[0].isalpha():
             normalized = f"slack_{normalized}"
 
         # Enforce max length of 64 chars
-        # Reserve 9 chars for potential uniqueness suffix (_XXXXXXXX)
+        # Reserve 9 chars for uniqueness suffix when truncating long names (_XXXXXXXX)
         max_base_length = 55
         if len(normalized) > max_base_length:
-            # Generate a short hash from the slack_id for uniqueness
+            # Generate a short hash from the slack_id for uniqueness (MD5 used for uniqueness, not security)
             hash_suffix = hashlib.md5(slack_id.encode()).hexdigest()[:8]
             normalized = f"{normalized[:max_base_length]}_{hash_suffix}"
-
-        # Final safety check
-        if len(normalized) > 64:
-            normalized = normalized[:64]
 
         return normalized
 

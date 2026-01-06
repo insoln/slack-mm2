@@ -555,9 +555,14 @@ async def test_normalize_bot_username():
     assert result[0].isalpha()  # Must start with letter
     assert len(result) <= 64
 
-    # Test empty name (falls back to empty, then gets prefix)
+    # Test empty name (falls back to slack_ + hash of slack_id for uniqueness)
     result = exporter._normalize_bot_username("", "UBOT123")
-    assert result == "slack_"
+    assert result.startswith("slack_")
+    # Verify hash is present (8 hex chars after slack_)
+    assert len(result) == 14  # "slack_" (6) + 8 hex chars
+    import re
+
+    assert re.match(r"^slack_[0-9a-f]{8}$", result)
 
     # Test already valid lowercase name
     result = exporter._normalize_bot_username("reminder_bot", "UBOT456")
@@ -574,16 +579,21 @@ async def test_normalize_bot_username():
     # Test very long name (should truncate and add hash)
     long_name = "a" * 100
     result = exporter._normalize_bot_username(long_name, "ULONGBOT")
-    assert len(result) <= 64
-    assert result.startswith("a")
+    assert len(result) == 64  # Exactly 64 chars: 55 base + "_" + 8 hex chars
+    assert result.startswith("a" * 55)
+    # Verify hash suffix is present
+    assert result[55] == "_"
+    assert re.match(r"^[0-9a-f]{8}$", result[56:])
 
     # Test name with special characters (@ is replaced, . is kept as valid)
     result = exporter._normalize_bot_username("bot@company.com", "UBOT111")
     assert result == "bot_company.com"
 
-    # Test name with only invalid characters becomes slack_
+    # Test name with only invalid characters uses slack_id for uniqueness
     result = exporter._normalize_bot_username("@@@", "UBOT222")
-    assert result == "slack____"
+    assert result.startswith("slack_")
+    assert len(result) == 14  # "slack_" (6) + 8 hex chars
+    assert re.match(r"^slack_[0-9a-f]{8}$", result)
 
 
 @pytest.mark.asyncio
