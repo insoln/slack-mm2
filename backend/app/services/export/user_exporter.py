@@ -1,4 +1,6 @@
 import os
+import re
+import hashlib
 import httpx
 from app.logging_config import backend_logger
 from .base_exporter import ExporterBase, LoggingMixin
@@ -159,12 +161,57 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
         if avatar_url:
             await self._upload_avatar(mm_user_id, avatar_url)
 
+    def _normalize_bot_username(self, username: str, slack_id: str) -> str:
+        """Normalize bot username to meet Mattermost bot API requirements.
+
+        Mattermost bot API requires usernames that:
+        - Use only lowercase letters, numbers, periods, hyphens, and underscores
+        - Start with a letter
+        - Are between 1 and 64 characters
+
+        Args:
+            username: The original username (may be Slack ID like 'USLACKBOT')
+            slack_id: The Slack user ID for generating unique suffix if needed
+
+        Returns:
+            A normalized username that meets Mattermost bot API requirements
+        """
+        # Convert to lowercase
+        normalized = username.lower()
+
+        # Replace invalid characters with underscores
+        # Valid chars are: a-z, 0-9, ., -, _
+        normalized = re.sub(r"[^a-z0-9._-]", "_", normalized)
+
+        # Handle cases where normalization removes all alphanumerics.
+        # This happens for empty usernames or ones made only of special chars (e.g. "@@@").
+        if not re.search(r"[a-z0-9]", normalized):
+            # Generate a short hash from the slack_id for uniqueness (MD5 used for uniqueness, not security)
+            hash_suffix = hashlib.md5(slack_id.encode()).hexdigest()[:8]
+            normalized = f"slack_{hash_suffix}"
+        # Ensure starts with a letter (not number, period, hyphen, or underscore)
+        elif not normalized[0].isalpha():
+            normalized = f"slack_{normalized}"
+
+        # Enforce max length of 64 chars
+        # Reserve 9 chars for uniqueness suffix when truncating long names (_XXXXXXXX)
+        max_base_length = 55
+        if len(normalized) > max_base_length:
+            # Generate a short hash from the slack_id for uniqueness (MD5 used for uniqueness, not security)
+            hash_suffix = hashlib.md5(slack_id.encode()).hexdigest()[:8]
+            normalized = f"{normalized[:max_base_length]}_{hash_suffix}"
+
+        return normalized
+
     def _build_bot_payload(self):
         """Build payload for Mattermost Bot creation."""
         raw_data = self.entity.raw_data or {}
         profile = raw_data.get("profile") or {}
         slack_id = self.entity.slack_id
         username = raw_data.get("name") or slack_id
+
+        # Normalize username for Mattermost bot API requirements
+        username = self._normalize_bot_username(username, slack_id)
 
         # For bots, use real_name or construct from first/last name
         display_name = profile.get("real_name", "")
