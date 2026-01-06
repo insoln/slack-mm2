@@ -1,5 +1,6 @@
 import pytest
 import asyncio
+import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.services.export.user_exporter import UserExporter
@@ -560,8 +561,6 @@ async def test_normalize_bot_username():
     assert result.startswith("slack_")
     # Verify hash is present (8 hex chars after slack_)
     assert len(result) == 14  # "slack_" (6) + 8 hex chars
-    import re
-
     assert re.match(r"^slack_[0-9a-f]{8}$", result)
 
     # Test already valid lowercase name
