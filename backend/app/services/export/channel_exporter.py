@@ -6,6 +6,9 @@ from app.services.backup.meta_utils import merge_job_meta
 from .base_exporter import ExporterBase, LoggingMixin
 from .mm_api_mixin import MMApiMixin
 
+# Maximum number of member IDs to include in log messages (to prevent overly long logs)
+MAX_LOGGED_MEMBERS = 5
+
 
 class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
     def __init__(self, entity):
@@ -130,7 +133,7 @@ class ChannelExporter(ExporterBase, LoggingMixin, MMApiMixin):
                     await self.set_status("failed", error=getattr(dm_resp, "text", ""))
                     return
                 backend_logger.warning(
-                    f"DM channel {self.entity.slack_id}: {slack_members_count} Slack members, but only {len(mm_user_ids)} mapped to Mattermost (expected 2). Slack members: {members[:5]}"
+                    f"DM channel {self.entity.slack_id}: {slack_members_count} Slack members, but only {len(mm_user_ids)} mapped to Mattermost (expected 2). Slack members: {members[:MAX_LOGGED_MEMBERS]}"
                 )
                 await self.set_status(
                     "skipped",

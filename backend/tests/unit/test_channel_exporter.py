@@ -549,12 +549,15 @@ async def test_dm_incomplete_user_mapping_error_message():
     )
     exporter = ChannelExporter(ent)
 
-    # Simulate that only one user mapping succeeds
+    # Simulate that only one user mapping succeeds (first user only)
     async def mock_resolve_only_one(slack_ids):
-        # Only first user maps successfully
-        if len(slack_ids) >= 1:
-            return ["mm_u012zrfc2se"]  # Only one MM ID returned
-        return []
+        # Simulate USLACKBOT failing to map, but U012ZRFC2SE succeeding
+        mapped_ids = []
+        for sid in slack_ids:
+            if sid == "U012ZRFC2SE":
+                mapped_ids.append("mm_u012zrfc2se")
+            # USLACKBOT is not mapped (simulating failed user export)
+        return mapped_ids
 
     with patch.object(
         exporter,
