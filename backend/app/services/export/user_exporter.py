@@ -1,4 +1,6 @@
 import os
+import re
+import hashlib
 import httpx
 from app.logging_config import backend_logger
 from .base_exporter import ExporterBase, LoggingMixin
@@ -174,9 +176,6 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
         Returns:
             A normalized username that meets Mattermost bot API requirements
         """
-        import re
-        import hashlib
-
         # Convert to lowercase
         normalized = username.lower()
 
