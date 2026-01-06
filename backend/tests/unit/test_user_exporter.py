@@ -911,13 +911,13 @@ async def test_bot_export_improved_error_message():
 
 @pytest.mark.asyncio
 async def test_uslackbot_as_regular_user_when_bot_creation_disabled():
-    """Test that USLACKBOT with empty name is normalized when exported as regular user.
+    """Test USLACKBOT with empty name is normalized when exported as regular user.
 
-    This tests the scenario described in the issue:
-    - Bot with empty name (e.g., USLACKBOT, B058SFFG9SM)
+    Scenario (from issue):
+    - Bot with empty name falls back to uppercase Slack ID
     - Bot creation disabled in Mattermost
     - Bot exported as regular user
-    - Username must be normalized to avoid 'Invalid username.' error
+    - Username normalized to avoid 'Invalid username.' error
     """
     entity = DummyEntity(
         "USLACKBOT",
@@ -983,9 +983,9 @@ async def test_uslackbot_as_regular_user_when_bot_creation_disabled():
 
 @pytest.mark.asyncio
 async def test_bot_with_b_prefix_id_as_regular_user():
-    """Test that B* bot IDs (like B058SFFG9SM) are normalized when exported as regular user.
+    """Test B* bot IDs (like B058SFFG9SM) are normalized when exported as regular user.
 
-    Tests the other common case from the issue:
+    Scenario (from issue):
     - Bot with B* prefix ID and no name
     - Exported as regular user
     - Username normalized to meet Mattermost requirements

@@ -294,8 +294,10 @@ class UserExporter(ExporterBase, LoggingMixin, MMApiMixin):
         slack_id = self.entity.slack_id
         username = raw_data.get("name") or slack_id
 
-        # Normalize username for bots (when exported as regular users due to bot creation being disabled)
-        # Regular users have similar username requirements as bots in Mattermost
+        # Normalize username for bots when exported as regular users (bot creation disabled)
+        # Bots with no name fall back to uppercase Slack IDs (USLACKBOT, B*) which are
+        # invalid for Mattermost usernames. Apply the same normalization used for bot
+        # accounts to ensure consistent, valid usernames regardless of export path.
         if self._is_slack_bot():
             username = self._normalize_bot_username(username, slack_id)
 
