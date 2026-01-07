@@ -154,10 +154,12 @@ func (p *Plugin) ImportPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fix inconsistent thread memberships to prevent phantom notifications
-	// This is especially important for threaded posts (when RootID is set)
-	if err := p.fixInconsistentThreadMemberships(req.ChannelID); err != nil {
-		p.API.LogWarn("Failed to fix thread memberships", "channel_id", req.ChannelID, "post_id", created.Id, "error", err.Error())
-		// Don't fail the request - the post was created successfully
+	// Only run for threaded posts (when RootID is set) to avoid unnecessary database operations
+	if req.RootID != "" {
+		if err := p.fixInconsistentThreadMemberships(req.ChannelID); err != nil {
+			p.API.LogWarn("Failed to fix thread memberships", "channel_id", req.ChannelID, "post_id", created.Id, "error", err.Error())
+			// Don't fail the request - the post was created successfully
+		}
 	}
 
 	w.WriteHeader(http.StatusOK)

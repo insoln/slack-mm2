@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -165,4 +166,33 @@ func TestFixInconsistentThreadMemberships_NoDriver(t *testing.T) {
 
 	// Should not error when driver is nil
 	assert.Nil(t, err)
+}
+
+func TestImportPostRequest_Parsing(t *testing.T) {
+	// Test parsing of ImportPostRequest with and without RootID
+	tests := []struct {
+		name     string
+		body     string
+		wantRoot string
+	}{
+		{
+			name:     "threaded reply has root_id",
+			body:     `{"user_id":"u1","channel_id":"c1","message":"reply","root_id":"parent123","create_at":1234567890}`,
+			wantRoot: "parent123",
+		},
+		{
+			name:     "top-level post has no root_id",
+			body:     `{"user_id":"u1","channel_id":"c1","message":"post","create_at":1234567890}`,
+			wantRoot: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req ImportPostRequest
+			err := json.Unmarshal([]byte(tt.body), &req)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.wantRoot, req.RootID)
+		})
+	}
 }
