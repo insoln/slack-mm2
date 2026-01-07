@@ -157,20 +157,22 @@ func (p *Plugin) ImportPost(w http.ResponseWriter, r *http.Request) {
 	// Only run for threaded posts (when RootID is set) to avoid unnecessary database operations
 	// Use a cache to avoid redundant fixes for the same channel during bulk imports
 	if req.RootID != "" {
-		// Check if this channel has already been fixed
+		// Double-checked locking pattern to avoid race conditions
 		p.fixedChannelsMutex.Lock()
 		alreadyFixed := p.fixedChannels[req.ChannelID]
+		if !alreadyFixed {
+			// Mark as being processed to prevent concurrent fixes
+			p.fixedChannels[req.ChannelID] = true
+		}
 		p.fixedChannelsMutex.Unlock()
 
 		if !alreadyFixed {
-			// Perform the fix
+			// Perform the fix outside the lock to avoid holding it during DB operations
 			if err := p.fixInconsistentThreadMemberships(req.ChannelID); err != nil {
 				p.API.LogWarn("Failed to fix thread memberships", "channel_id", req.ChannelID, "post_id", created.Id, "error", err.Error())
-				// Don't fail the request - the post was created successfully
-			} else {
-				// Only mark as fixed if the operation succeeded
+				// Remove from cache if fix failed so it can be retried
 				p.fixedChannelsMutex.Lock()
-				p.fixedChannels[req.ChannelID] = true
+				delete(p.fixedChannels, req.ChannelID)
 				p.fixedChannelsMutex.Unlock()
 			}
 		}
