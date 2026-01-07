@@ -2,11 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -182,12 +185,14 @@ func TestFixedChannelsCache(t *testing.T) {
 	// Test that the cache properly tracks fixed channels
 	// Note: mutex is initialized via zero value, which is valid for sync.Mutex
 	plugin := Plugin{
-		fixedChannels: make(map[string]bool),
+		fixedChannels:    make(map[string]bool),
+		processedThreads: make(map[string]bool),
 	}
 
-	// Initially, channels should not be in the cache
+	// Initially, channels and threads should not be in the cache
 	assert.False(t, plugin.fixedChannels["channel1"])
 	assert.False(t, plugin.fixedChannels["channel2"])
+	assert.False(t, plugin.processedThreads["thread1"])
 
 	// Add channels to cache
 	plugin.fixedChannels["channel1"] = true
@@ -195,36 +200,46 @@ func TestFixedChannelsCache(t *testing.T) {
 	// Verify channel1 is now cached
 	assert.True(t, plugin.fixedChannels["channel1"])
 	assert.False(t, plugin.fixedChannels["channel2"])
+	assert.False(t, plugin.processedThreads["thread1"])
 }
 
 func TestClearFixedChannelsCache(t *testing.T) {
 	// Test that the cache can be cleared
 	plugin := Plugin{
-		fixedChannels: make(map[string]bool),
+		fixedChannels:    make(map[string]bool),
+		processedThreads: make(map[string]bool),
 	}
 
-	// Add some channels to cache
+	// Add some channels and threads to cache
 	plugin.fixedChannels["channel1"] = true
 	plugin.fixedChannels["channel2"] = true
+	plugin.processedThreads["thread1"] = true
+	plugin.processedThreads["thread2"] = true
+	plugin.processedThreads["thread3"] = true
 	assert.Equal(t, 2, len(plugin.fixedChannels))
+	assert.Equal(t, 3, len(plugin.processedThreads))
 
 	// Clear the cache
 	plugin.ClearFixedChannelsCache()
 
-	// Verify cache is empty
+	// Verify both caches are empty
 	assert.Equal(t, 0, len(plugin.fixedChannels))
+	assert.Equal(t, 0, len(plugin.processedThreads))
 }
 
 func TestClearImportCache_Endpoint(t *testing.T) {
 	// Test that the API endpoint clears the cache
 	plugin := Plugin{
-		fixedChannels: make(map[string]bool),
+		fixedChannels:    make(map[string]bool),
+		processedThreads: make(map[string]bool),
 	}
 
-	// Add some channels to cache
+	// Add some channels and threads to cache
 	plugin.fixedChannels["channel1"] = true
 	plugin.fixedChannels["channel2"] = true
+	plugin.processedThreads["thread1"] = true
 	assert.Equal(t, 2, len(plugin.fixedChannels))
+	assert.Equal(t, 1, len(plugin.processedThreads))
 
 	// Call the endpoint
 	w := httptest.NewRecorder()
@@ -235,8 +250,9 @@ func TestClearImportCache_Endpoint(t *testing.T) {
 	result := w.Result()
 	assert.Equal(t, http.StatusOK, result.StatusCode)
 
-	// Verify cache is empty
+	// Verify both caches are empty
 	assert.Equal(t, 0, len(plugin.fixedChannels))
+	assert.Equal(t, 0, len(plugin.processedThreads))
 }
 
 func TestImportPostRequest_Parsing(t *testing.T) {
@@ -266,4 +282,83 @@ func TestImportPostRequest_Parsing(t *testing.T) {
 			assert.Equal(t, tt.wantRoot, req.RootID)
 		})
 	}
+}
+
+func TestConcurrentCacheAccess(t *testing.T) {
+	// Test that concurrent access to the cache is thread-safe
+	plugin := Plugin{
+		fixedChannels:    make(map[string]bool),
+		processedThreads: make(map[string]bool),
+	}
+
+	// Use a wait group to ensure all goroutines complete
+	var wg sync.WaitGroup
+	numGoroutines := 100
+	numOperations := 10
+
+	// Launch multiple goroutines that concurrently access the cache
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < numOperations; j++ {
+				channelID := fmt.Sprintf("channel%d", id%10)
+				threadID := fmt.Sprintf("thread%d", id%10)
+
+				// Simulate concurrent cache operations
+				plugin.fixedChannelsMutex.Lock()
+				plugin.fixedChannels[channelID] = true
+				plugin.processedThreads[threadID] = true
+				plugin.fixedChannelsMutex.Unlock()
+
+				// Brief sleep to increase chance of race conditions if they exist
+				time.Sleep(1 * time.Microsecond)
+
+				// Read from cache
+				plugin.fixedChannelsMutex.Lock()
+				_ = plugin.fixedChannels[channelID]
+				_ = plugin.processedThreads[threadID]
+				plugin.fixedChannelsMutex.Unlock()
+			}
+		}(i)
+	}
+
+	// Wait for all goroutines to complete
+	wg.Wait()
+
+	// Verify that the caches contain expected number of unique items
+	assert.LessOrEqual(t, len(plugin.fixedChannels), 10)
+	assert.LessOrEqual(t, len(plugin.processedThreads), 10)
+}
+
+func TestThreadCachePreventsRedundantUpdates(t *testing.T) {
+	// Test that the thread cache prevents redundant mark-as-read operations
+	plugin := Plugin{
+		fixedChannels:    make(map[string]bool),
+		processedThreads: make(map[string]bool),
+	}
+
+	threadID := "thread-root-123"
+
+	// First check - should not be in cache
+	plugin.fixedChannelsMutex.Lock()
+	alreadyProcessed := plugin.processedThreads[threadID]
+	if !alreadyProcessed {
+		plugin.processedThreads[threadID] = true
+	}
+	plugin.fixedChannelsMutex.Unlock()
+	assert.False(t, alreadyProcessed, "Thread should not be processed initially")
+
+	// Second check - should be in cache now
+	plugin.fixedChannelsMutex.Lock()
+	alreadyProcessed = plugin.processedThreads[threadID]
+	plugin.fixedChannelsMutex.Unlock()
+	assert.True(t, alreadyProcessed, "Thread should be marked as processed")
+
+	// Verify cache cleanup removes thread
+	plugin.ClearFixedChannelsCache()
+	plugin.fixedChannelsMutex.Lock()
+	alreadyProcessed = plugin.processedThreads[threadID]
+	plugin.fixedChannelsMutex.Unlock()
+	assert.False(t, alreadyProcessed, "Thread cache should be cleared")
 }
