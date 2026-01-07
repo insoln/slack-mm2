@@ -168,15 +168,14 @@ func (p *Plugin) ImportPost(w http.ResponseWriter, r *http.Request) {
 		p.fixedChannelsMutex.Unlock()
 
 		// Mark this thread as read for all members so imported historical mentions do not generate unread counters.
-		// Only perform the operation if we haven't already processed this thread
+		// Only perform the operation if we haven't already processed this thread.
+		// If this attempt fails, we keep the cache entry to avoid redundant or unsafe retries on
+		// partially updated data (e.g., if one of the two UPDATE queries succeeded).
 		if !alreadyMarkedThread {
 			if err := p.markThreadAsReadForAllMembers(req.RootID, created.CreateAt); err != nil {
 				p.API.LogWarn("Failed to mark thread as read for members", "channel_id", req.ChannelID, "root_post_id", req.RootID, "error", err.Error())
-				// Remove from cache if marking failed so it can be retried
-				p.fixedChannelsMutex.Lock()
-				delete(p.processedThreads, req.RootID)
-				p.fixedChannelsMutex.Unlock()
-				// Don't fail the request if marking as read fails - the post was created successfully
+				// Don't fail the request if marking as read fails - the post was created successfully.
+				// Cache entry remains set to prevent redundant retries that could cause inconsistent state.
 			}
 		}
 
@@ -186,7 +185,9 @@ func (p *Plugin) ImportPost(w http.ResponseWriter, r *http.Request) {
 		// attempt fixInconsistentThreadMemberships. If A succeeds and sets cache=true, then B
 		// fails, B would incorrectly delete cache entry, causing future imports to retry.
 		// Holding the lock serializes these operations, ensuring only one goroutine performs
-		// the fix per channel. Trade-off: DB operation blocks other posts to same channel.
+		// the fix per channel. Performance trade-off: DB operation blocks other posts to same
+		// channel, but this is acceptable as the fix runs once per channel. Consider per-channel
+		// locks if this becomes a bottleneck in high-throughput scenarios.
 		p.fixedChannelsMutex.Lock()
 		alreadyFixed := p.fixedChannels[req.ChannelID]
 		if !alreadyFixed {
