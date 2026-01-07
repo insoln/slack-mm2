@@ -162,6 +162,7 @@ func (p *Plugin) ImportPost(w http.ResponseWriter, r *http.Request) {
 		alreadyFixed := p.fixedChannels[req.ChannelID]
 		if !alreadyFixed {
 			// Mark as being processed to prevent concurrent fixes
+			// Note: If process crashes/restarts, cache is cleared and fix will run again (safe)
 			p.fixedChannels[req.ChannelID] = true
 		}
 		p.fixedChannelsMutex.Unlock()
@@ -175,6 +176,7 @@ func (p *Plugin) ImportPost(w http.ResponseWriter, r *http.Request) {
 				delete(p.fixedChannels, req.ChannelID)
 				p.fixedChannelsMutex.Unlock()
 			}
+			// Success case: channel remains marked as fixed in cache
 		}
 	}
 
