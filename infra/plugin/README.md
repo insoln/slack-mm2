@@ -12,10 +12,12 @@ A Mattermost plugin for importing messages and metadata from external sources as
 - Create/resolve DM and Group DM channels
 - Import reactions
 - **Automatic mark-as-read**: Imported posts are automatically marked as read for all channel members to prevent false notifications during bulk imports
+- **Thread membership consistency**: Automatically fixes inconsistent thread membership states (where `lastviewed > lastreplyat` but `unreadmentions > 0`) to prevent phantom notification counters
 
 ## API Endpoints (implemented here)
 
 - POST `/plugins/mm-importer/api/v1/import` — создать пост от имени любого пользователя
+- POST `/plugins/mm-importer/api/v1/import/clear_cache` — clear the thread membership fix cache (call after import batch completes)
 - POST `/plugins/mm-importer/api/v1/reaction` — добавить реакцию к посту
 - POST `/plugins/mm-importer/api/v1/channel` — создать/получить канал (нормализация имени)
 - POST `/plugins/mm-importer/api/v1/channel/members` — добавить участников (bulk)
@@ -63,6 +65,15 @@ curl -X POST "http://localhost:8065/plugins/mm-importer/api/v1/import" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"user_id":"<U>","channel_id":"<CH>","message":"hello"}'
 ```
+
+Clear cache after import batch:
+
+```bash
+curl -X POST "http://localhost:8065/plugins/mm-importer/api/v1/import/clear_cache" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json'
+```
+
+**Note**: The `/import/clear_cache` endpoint should be called after completing an import batch to free memory used by the thread membership fix cache. This prevents unbounded memory growth in long-running import sessions.
 
 ## Deployment in this repo
 

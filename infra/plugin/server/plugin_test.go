@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -155,4 +156,104 @@ func TestMakeDriverArgs(t *testing.T) {
 	assert.Equal(t, "channel-id", args[1].Value)
 	assert.Equal(t, 3, args[2].Ordinal)
 	assert.Equal(t, "user-id", args[2].Value)
+}
+
+func TestFixInconsistentThreadMemberships_NoDriver(t *testing.T) {
+	// Test that the function handles missing driver gracefully
+	plugin := Plugin{}
+
+	err := plugin.fixInconsistentThreadMemberships("channel-id")
+
+	// Should not error when driver is nil
+	assert.Nil(t, err)
+}
+
+func TestFixedChannelsCache(t *testing.T) {
+	// Test that the cache properly tracks fixed channels
+	// Note: mutex is initialized via zero value, which is valid for sync.Mutex
+	plugin := Plugin{
+		fixedChannels: make(map[string]bool),
+	}
+
+	// Initially, channels should not be in the cache
+	assert.False(t, plugin.fixedChannels["channel1"])
+	assert.False(t, plugin.fixedChannels["channel2"])
+
+	// Add channels to cache
+	plugin.fixedChannels["channel1"] = true
+
+	// Verify channel1 is now cached
+	assert.True(t, plugin.fixedChannels["channel1"])
+	assert.False(t, plugin.fixedChannels["channel2"])
+}
+
+func TestClearFixedChannelsCache(t *testing.T) {
+	// Test that the cache can be cleared
+	plugin := Plugin{
+		fixedChannels: make(map[string]bool),
+	}
+
+	// Add some channels to cache
+	plugin.fixedChannels["channel1"] = true
+	plugin.fixedChannels["channel2"] = true
+	assert.Equal(t, 2, len(plugin.fixedChannels))
+
+	// Clear the cache
+	plugin.ClearFixedChannelsCache()
+
+	// Verify cache is empty
+	assert.Equal(t, 0, len(plugin.fixedChannels))
+}
+
+func TestClearImportCache_Endpoint(t *testing.T) {
+	// Test that the API endpoint clears the cache
+	plugin := Plugin{
+		fixedChannels: make(map[string]bool),
+	}
+
+	// Add some channels to cache
+	plugin.fixedChannels["channel1"] = true
+	plugin.fixedChannels["channel2"] = true
+	assert.Equal(t, 2, len(plugin.fixedChannels))
+
+	// Call the endpoint
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/import/clear_cache", nil)
+	plugin.ClearImportCache(w, r)
+
+	// Verify response
+	result := w.Result()
+	assert.Equal(t, http.StatusOK, result.StatusCode)
+
+	// Verify cache is empty
+	assert.Equal(t, 0, len(plugin.fixedChannels))
+}
+
+func TestImportPostRequest_Parsing(t *testing.T) {
+	// Test parsing of ImportPostRequest with and without RootID
+	tests := []struct {
+		name     string
+		body     string
+		wantRoot string
+	}{
+		{
+			name:     "threaded reply has root_id",
+			body:     `{"user_id":"u1","channel_id":"c1","message":"reply","root_id":"parent123","create_at":1234567890}`,
+			wantRoot: "parent123",
+		},
+		{
+			name:     "top-level post has no root_id",
+			body:     `{"user_id":"u1","channel_id":"c1","message":"post","create_at":1234567890}`,
+			wantRoot: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req ImportPostRequest
+			err := json.Unmarshal([]byte(tt.body), &req)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.wantRoot, req.RootID)
+		})
+	}
 }

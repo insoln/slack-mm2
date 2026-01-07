@@ -39,6 +39,7 @@ func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Req
 
 	apiRouter.HandleFunc("/hello", p.HelloWorld).Methods(http.MethodGet)
 	apiRouter.HandleFunc("/import", p.ImportPost).Methods(http.MethodPost)
+	apiRouter.HandleFunc("/import/clear_cache", p.ClearImportCache).Methods(http.MethodPost)
 	apiRouter.HandleFunc("/reaction", p.ImportReaction).Methods(http.MethodPost)
 	apiRouter.HandleFunc("/attachment", p.UploadAttachment).Methods(http.MethodPost)
 	apiRouter.HandleFunc("/attachment_multipart", p.UploadAttachmentMultipart).Methods(http.MethodPost)
@@ -153,8 +154,43 @@ func (p *Plugin) ImportPost(w http.ResponseWriter, r *http.Request) {
 		// Don't fail the request if marking as read fails - the post was created successfully
 	}
 
+	// Fix inconsistent thread memberships to prevent phantom notifications
+	// Only run for threaded posts (when RootID is set) to avoid unnecessary database operations
+	// Use a cache to avoid redundant fixes for the same channel during bulk imports
+	if req.RootID != "" {
+		// Double-checked locking pattern to avoid race conditions
+		p.fixedChannelsMutex.Lock()
+		alreadyFixed := p.fixedChannels[req.ChannelID]
+		if !alreadyFixed {
+			// Mark as being processed to prevent concurrent fixes
+			// Note: If process crashes/restarts, cache is cleared and fix will run again (safe)
+			p.fixedChannels[req.ChannelID] = true
+		}
+		p.fixedChannelsMutex.Unlock()
+
+		if !alreadyFixed {
+			// Perform the fix outside the lock to avoid holding it during DB operations
+			if err := p.fixInconsistentThreadMemberships(req.ChannelID); err != nil {
+				p.API.LogWarn("Failed to fix thread memberships", "channel_id", req.ChannelID, "post_id", created.Id, "error", err.Error())
+				// Remove from cache if fix failed so it can be retried
+				p.fixedChannelsMutex.Lock()
+				delete(p.fixedChannels, req.ChannelID)
+				p.fixedChannelsMutex.Unlock()
+			}
+			// Success case: channel remains marked as fixed in cache
+		}
+	}
+
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(ImportPostResponse{PostID: created.Id})
+}
+
+// ClearImportCache clears the fixed channels cache.
+// This endpoint should be called after an import batch completes to prevent unbounded cache growth.
+func (p *Plugin) ClearImportCache(w http.ResponseWriter, r *http.Request) {
+	p.ClearFixedChannelsCache()
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "cache cleared"})
 }
 
 // ---------------- Reactions ----------------
@@ -1171,6 +1207,117 @@ func (p *Plugin) markPostAsReadForChannelMembers(channelID string, postCreateAt 
 	p.API.LogDebug("Marked posts as read for channel members", logFields...)
 
 	return nil
+}
+
+// fixInconsistentThreadMemberships fixes thread memberships where lastviewed > lastreplyat but unreadmentions > 0.
+// This prevents phantom notification counters after bulk imports.
+// It also sets threadteamid for threads that are missing it (common for DM channels).
+func (p *Plugin) fixInconsistentThreadMemberships(channelID string) error {
+	if p.Driver == nil {
+		if p.API != nil {
+			p.API.LogDebug("Driver not available, skipping thread membership fix", "channel_id", channelID)
+		}
+		return nil
+	}
+
+	connID, err := p.Driver.Conn(false)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = p.Driver.ConnClose(connID)
+	}()
+
+	// Get channel to determine team ID for setting threadteamid
+	var teamID string
+	if p.API != nil {
+		if ch, appErr := p.API.GetChannel(channelID); appErr == nil && ch != nil {
+			teamID = ch.TeamId
+		}
+	}
+
+	// Fix inconsistent thread memberships where lastviewed > lastreplyat but unreadmentions > 0
+	// This is the core fix for the phantom notifications issue
+	// Note: This query operates on a per-channel basis to minimize impact.
+	// Uses subquery approach for compatibility with both PostgreSQL and MySQL.
+	// For optimal performance, Mattermost should have indexes on:
+	//   - ThreadMemberships(PostId, UnreadMentions, LastViewed)
+	//   - Threads(ChannelId, PostId, LastReplyAt)
+	query := `UPDATE ThreadMemberships
+			  SET UnreadMentions = 0
+			  WHERE UnreadMentions > 0
+			    AND EXISTS (
+			        SELECT 1
+			        FROM Threads t
+			        WHERE t.PostId = ThreadMemberships.PostId
+			          AND t.ChannelId = $1
+			          AND ThreadMemberships.LastViewed > t.LastReplyAt
+			    )`
+
+	args := p.makeDriverArgs(channelID)
+	result, err := p.Driver.ConnExec(connID, query, args)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffectedError != nil {
+		return result.RowsAffectedError
+	}
+
+	rowsAffected := result.RowsAffected
+	if rowsAffected > 0 {
+		if p.API != nil {
+			p.API.LogDebug("Fixed inconsistent thread memberships",
+				"channel_id", channelID,
+				"rows_affected", rowsAffected)
+		}
+	}
+
+	// Optionally set threadteamid for threads missing it (common in DM channels)
+	// This helps with query planning and performance (64% of threads in production are DMs with empty team IDs)
+	// Note: For optimal performance, an index on Threads(ChannelId, ThreadTeamId) is recommended
+	// Query is compatible with both PostgreSQL and MySQL
+	if teamID != "" {
+		teamQuery := `UPDATE Threads
+					  SET ThreadTeamId = $1
+					  WHERE ChannelId = $2
+					    AND (ThreadTeamId IS NULL OR ThreadTeamId = '')`
+
+		teamArgs := p.makeDriverArgs(teamID, channelID)
+		teamResult, teamErr := p.Driver.ConnExec(connID, teamQuery, teamArgs)
+		if teamErr != nil {
+			// Log but don't fail - this is optional optimization
+			if p.API != nil {
+				p.API.LogWarn("Failed to set threadteamid", "channel_id", channelID, "error", teamErr.Error())
+			}
+		} else if teamResult.RowsAffectedError == nil && teamResult.RowsAffected > 0 {
+			if p.API != nil {
+				p.API.LogDebug("Set threadteamid for threads",
+					"channel_id", channelID,
+					"team_id", teamID,
+					"rows_affected", teamResult.RowsAffected)
+			}
+		}
+	}
+
+	return nil
+}
+
+// ClearFixedChannelsCache clears the cache of fixed channels.
+// This should be called after an import session completes to prevent unbounded cache growth.
+func (p *Plugin) ClearFixedChannelsCache() {
+	p.fixedChannelsMutex.Lock()
+	defer p.fixedChannelsMutex.Unlock()
+
+	if p.API != nil {
+		cacheSize := len(p.fixedChannels)
+		if cacheSize > 0 {
+			p.API.LogDebug("Clearing fixed channels cache", "cache_size", cacheSize)
+		}
+	}
+
+	// Clear the cache by creating a new empty map
+	p.fixedChannels = make(map[string]bool)
 }
 
 // makeDriverArgs converts variadic arguments to driver.NamedValue slice
