@@ -156,12 +156,28 @@ func (p *Plugin) ImportPost(w http.ResponseWriter, r *http.Request) {
 
 	// Fix inconsistent thread memberships to prevent phantom notifications
 	// Only run for threaded posts (when RootID is set) to avoid unnecessary database operations
-	// Use a cache to avoid redundant fixes for the same channel during bulk imports
+	// Use caches to avoid redundant operations for the same thread and channel during bulk imports
 	if req.RootID != "" {
+		// Check if this thread has already been marked as read, and if not, mark it
+		// Hold the lock during check and update to avoid race conditions
+		p.fixedChannelsMutex.Lock()
+		alreadyMarkedThread := p.processedThreads[req.RootID]
+		if !alreadyMarkedThread {
+			p.processedThreads[req.RootID] = true
+		}
+		p.fixedChannelsMutex.Unlock()
+
 		// Mark this thread as read for all members so imported historical mentions do not generate unread counters.
-		if err := p.markThreadAsReadForAllMembers(req.RootID, created.CreateAt); err != nil {
-			p.API.LogWarn("Failed to mark thread as read for members", "channel_id", req.ChannelID, "root_post_id", req.RootID, "error", err.Error())
-			// Don't fail the request if marking as read fails - the post was created successfully
+		// Only perform the operation if we haven't already processed this thread
+		if !alreadyMarkedThread {
+			if err := p.markThreadAsReadForAllMembers(req.RootID, created.CreateAt); err != nil {
+				p.API.LogWarn("Failed to mark thread as read for members", "channel_id", req.ChannelID, "root_post_id", req.RootID, "error", err.Error())
+				// Remove from cache if marking failed so it can be retried
+				p.fixedChannelsMutex.Lock()
+				delete(p.processedThreads, req.RootID)
+				p.fixedChannelsMutex.Unlock()
+				// Don't fail the request if marking as read fails - the post was created successfully
+			}
 		}
 
 		// Check if this channel has already been fixed, and if not, perform the fix
@@ -1370,21 +1386,27 @@ func (p *Plugin) fixInconsistentThreadMemberships(channelID string) error {
 	return nil
 }
 
-// ClearFixedChannelsCache clears the cache of fixed channels.
+// ClearFixedChannelsCache clears the cache of fixed channels and processed threads.
 // This should be called after an import session completes to prevent unbounded cache growth.
 func (p *Plugin) ClearFixedChannelsCache() {
 	p.fixedChannelsMutex.Lock()
 	defer p.fixedChannelsMutex.Unlock()
 
 	if p.API != nil {
-		cacheSize := len(p.fixedChannels)
-		if cacheSize > 0 {
-			p.API.LogDebug("Clearing fixed channels cache", "cache_size", cacheSize)
+		channelsCacheSize := len(p.fixedChannels)
+		threadsCacheSize := len(p.processedThreads)
+		totalCacheSize := channelsCacheSize + threadsCacheSize
+		if totalCacheSize > 0 {
+			p.API.LogDebug("Clearing import caches",
+				"channels_cached", channelsCacheSize,
+				"threads_cached", threadsCacheSize,
+				"total_items", totalCacheSize)
 		}
 	}
 
-	// Clear the cache by creating a new empty map
+	// Clear the caches by creating new empty maps
 	p.fixedChannels = make(map[string]bool)
+	p.processedThreads = make(map[string]bool)
 }
 
 // makeDriverArgs converts variadic arguments to driver.NamedValue slice
