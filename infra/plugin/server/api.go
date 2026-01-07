@@ -1267,6 +1267,7 @@ func (p *Plugin) markThreadAsReadForAllMembers(threadRootPostID string, lastView
 
 	args := p.makeDriverArgs(threadRootPostID, lastViewedAt)
 
+	// Execute first query and return immediately on failure to avoid partial updates
 	resultUnread, err := p.Driver.ConnExec(connID, queryUnread, args)
 	if err != nil {
 		return err
@@ -1275,6 +1276,7 @@ func (p *Plugin) markThreadAsReadForAllMembers(threadRootPostID string, lastView
 		return resultUnread.RowsAffectedError
 	}
 
+	// Only proceed to second query if first succeeded
 	resultLastViewed, err := p.Driver.ConnExec(connID, queryLastViewed, args)
 	if err != nil {
 		return err
