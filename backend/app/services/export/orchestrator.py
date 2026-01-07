@@ -293,10 +293,14 @@ async def _clear_plugin_import_cache():
             )
             if resp.status_code in (200, 201):
                 backend_logger.info("Cleared plugin import cache after batch completion")
+            elif resp.status_code == 404:
+                backend_logger.warning("Plugin not installed or endpoint not available")
+            elif resp.status_code in (401, 403):
+                backend_logger.error(f"Authentication/authorization error clearing cache: {resp.status_code}")
+            elif resp.status_code >= 500:
+                backend_logger.error(f"Server error clearing cache: {resp.status_code} {resp.text[:200]}")
             else:
-                backend_logger.warning(
-                    f"Failed to clear plugin cache: {resp.status_code} {resp.text[:200]}"
-                )
+                backend_logger.warning(f"Unexpected status clearing cache: {resp.status_code} {resp.text[:200]}")
     except httpx.HTTPError as exc:
         backend_logger.error(f"Error clearing plugin cache: {exc}")
     except Exception as exc:

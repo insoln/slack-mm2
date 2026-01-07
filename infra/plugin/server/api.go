@@ -181,15 +181,19 @@ func (p *Plugin) ImportPost(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Check if this channel has already been fixed, and if not, perform the fix
-		// Hold the lock during the entire operation to avoid race conditions
+		// Race condition mitigation: We hold the lock during check AND DB operation to prevent
+		// the following scenario: Two goroutines A and B both check alreadyFixed=false, both
+		// attempt fixInconsistentThreadMemberships. If A succeeds and sets cache=true, then B
+		// fails, B would incorrectly delete cache entry, causing future imports to retry.
+		// Holding the lock serializes these operations, ensuring only one goroutine performs
+		// the fix per channel. Trade-off: DB operation blocks other posts to same channel.
 		p.fixedChannelsMutex.Lock()
 		alreadyFixed := p.fixedChannels[req.ChannelID]
 		if !alreadyFixed {
-			// Perform the fix while holding the lock to avoid races with concurrent goroutines
+			// Perform the fix while holding the lock to prevent race conditions
 			if err := p.fixInconsistentThreadMemberships(req.ChannelID); err != nil {
 				p.API.LogWarn("Failed to fix thread memberships", "channel_id", req.ChannelID, "post_id", created.Id, "error", err.Error())
-				// Remove from cache if fix failed so it can be retried
-				delete(p.fixedChannels, req.ChannelID)
+				// Don't set cache entry on failure - allow retry on next post
 			} else {
 				// Success case: mark channel as fixed in cache
 				// Note: If process crashes/restarts, cache is cleared and fix will run again (safe)

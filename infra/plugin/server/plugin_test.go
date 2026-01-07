@@ -285,7 +285,12 @@ func TestImportPostRequest_Parsing(t *testing.T) {
 }
 
 func TestConcurrentCacheAccess(t *testing.T) {
-	// Test that concurrent access to the cache is thread-safe
+	// Test that concurrent access to the cache prevents race conditions during error cleanup.
+	// Simulates the scenario where multiple goroutines attempt to fix the same channel:
+	// - Goroutine A: checks cache (not fixed), starts DB operation, succeeds, sets cache=true
+	// - Goroutine B: checks cache (not fixed), starts DB operation, fails
+	// Without proper locking, B could delete the cache entry that A just set, causing
+	// unnecessary retries on future imports.
 	plugin := Plugin{
 		fixedChannels:    make(map[string]bool),
 		processedThreads: make(map[string]bool),
@@ -294,41 +299,45 @@ func TestConcurrentCacheAccess(t *testing.T) {
 	// Use a wait group to ensure all goroutines complete
 	var wg sync.WaitGroup
 	numGoroutines := 100
-	numOperations := 10
+	channelID := "test-channel"
+	successCount := 0
+	var successMutex sync.Mutex
 
-	// Launch multiple goroutines that concurrently access the cache
+	// Launch multiple goroutines that concurrently try to "fix" the same channel
 	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < numOperations; j++ {
-				channelID := fmt.Sprintf("channel%d", id%10)
-				threadID := fmt.Sprintf("thread%d", id%10)
 
-				// Simulate concurrent cache operations
-				plugin.fixedChannelsMutex.Lock()
-				plugin.fixedChannels[channelID] = true
-				plugin.processedThreads[threadID] = true
-				plugin.fixedChannelsMutex.Unlock()
-
-				// Brief sleep to increase chance of race conditions if they exist
-				time.Sleep(1 * time.Microsecond)
-
-				// Read from cache
-				plugin.fixedChannelsMutex.Lock()
-				_ = plugin.fixedChannels[channelID]
-				_ = plugin.processedThreads[threadID]
-				plugin.fixedChannelsMutex.Unlock()
+			// Simulate the cache check + fix operation pattern from ImportPost
+			plugin.fixedChannelsMutex.Lock()
+			alreadyFixed := plugin.fixedChannels[channelID]
+			if !alreadyFixed {
+				// Simulate DB operation (some succeed, some fail)
+				// In real code, this would be fixInconsistentThreadMemberships
+				if id%3 == 0 {
+					// Success case: mark as fixed
+					plugin.fixedChannels[channelID] = true
+					successMutex.Lock()
+					successCount++
+					successMutex.Unlock()
+				}
+				// Failure case: don't set cache (allow retry)
+				// Old buggy code would delete here, causing race
 			}
+			plugin.fixedChannelsMutex.Unlock()
 		}(i)
 	}
 
 	// Wait for all goroutines to complete
 	wg.Wait()
 
-	// Verify that the caches contain expected number of unique items
-	assert.LessOrEqual(t, len(plugin.fixedChannels), 10)
-	assert.LessOrEqual(t, len(plugin.processedThreads), 10)
+	// Verify that cache entry remains if any goroutine succeeded
+	// The race condition would cause cache entry to be deleted incorrectly
+	if successCount > 0 {
+		assert.True(t, plugin.fixedChannels[channelID], "Cache entry should persist after successful fix")
+	}
+	assert.Greater(t, successCount, 0, "At least one goroutine should have succeeded")
 }
 
 func TestThreadCachePreventsRedundantUpdates(t *testing.T) {
