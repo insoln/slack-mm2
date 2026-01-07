@@ -39,6 +39,7 @@ func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Req
 
 	apiRouter.HandleFunc("/hello", p.HelloWorld).Methods(http.MethodGet)
 	apiRouter.HandleFunc("/import", p.ImportPost).Methods(http.MethodPost)
+	apiRouter.HandleFunc("/import/clear_cache", p.ClearImportCache).Methods(http.MethodPost)
 	apiRouter.HandleFunc("/reaction", p.ImportReaction).Methods(http.MethodPost)
 	apiRouter.HandleFunc("/attachment", p.UploadAttachment).Methods(http.MethodPost)
 	apiRouter.HandleFunc("/attachment_multipart", p.UploadAttachmentMultipart).Methods(http.MethodPost)
@@ -182,6 +183,15 @@ func (p *Plugin) ImportPost(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(ImportPostResponse{PostID: created.Id})
+}
+
+// ClearImportCache clears the fixed channels cache.
+// This endpoint should be called after an import batch completes to prevent unbounded cache growth.
+func (p *Plugin) ClearImportCache(w http.ResponseWriter, r *http.Request) {
+	p.ClearFixedChannelsCache()
+	
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "cache cleared"})
 }
 
 // ---------------- Reactions ----------------

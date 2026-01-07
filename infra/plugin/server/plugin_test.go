@@ -205,6 +205,30 @@ func TestClearFixedChannelsCache(t *testing.T) {
 	assert.Equal(t, 0, len(plugin.fixedChannels))
 }
 
+func TestClearImportCache_Endpoint(t *testing.T) {
+	// Test that the API endpoint clears the cache
+	plugin := Plugin{
+		fixedChannels: make(map[string]bool),
+	}
+
+	// Add some channels to cache
+	plugin.fixedChannels["channel1"] = true
+	plugin.fixedChannels["channel2"] = true
+	assert.Equal(t, 2, len(plugin.fixedChannels))
+
+	// Call the endpoint
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/import/clear_cache", nil)
+	plugin.ClearImportCache(w, r)
+
+	// Verify response
+	result := w.Result()
+	assert.Equal(t, http.StatusOK, result.StatusCode)
+
+	// Verify cache is empty
+	assert.Equal(t, 0, len(plugin.fixedChannels))
+}
+
 func TestImportPostRequest_Parsing(t *testing.T) {
 	// Test parsing of ImportPostRequest with and without RootID
 	tests := []struct {
