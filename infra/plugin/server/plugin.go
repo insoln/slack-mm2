@@ -38,6 +38,13 @@ type Plugin struct {
 
 	// httpClient is the client used for external HTTP requests, such as downloading attachments.
 	httpClient *http.Client
+
+	// fixedChannelsMutex protects the fixedChannels map
+	fixedChannelsMutex sync.Mutex
+
+	// fixedChannels tracks which channels have already had their thread memberships fixed
+	// to avoid redundant database queries during bulk imports
+	fixedChannels map[string]bool
 }
 
 // OnActivate is invoked when the plugin is activated. If an error is returned, the plugin will be deactivated.
@@ -50,6 +57,9 @@ func (p *Plugin) OnActivate() error {
 	p.commandClient = command.NewCommandHandler(p.client)
 
 	p.httpClient = &http.Client{}
+
+	// Initialize the cache for tracking fixed channels
+	p.fixedChannels = make(map[string]bool)
 
 	job, err := cluster.Schedule(
 		p.API,
