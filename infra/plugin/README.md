@@ -17,7 +17,7 @@ A Mattermost plugin for importing messages and metadata from external sources as
 ## API Endpoints (implemented here)
 
 - POST `/plugins/mm-importer/api/v1/import` — create a post as any user
-- POST `/plugins/mm-importer/api/v1/import/clear_cache` — clear both the channel fix cache and processed threads cache (call after import batch completes)
+- POST `/plugins/mm-importer/api/v1/import/clear_cache` — clear the channel fix cache (call after import batch completes)
 - POST `/plugins/mm-importer/api/v1/reaction` — add a reaction to a post
 - POST `/plugins/mm-importer/api/v1/channel` — create/get channel (with name normalization)
 - POST `/plugins/mm-importer/api/v1/channel/members` — add members (bulk)
