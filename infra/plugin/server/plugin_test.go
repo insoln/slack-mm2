@@ -160,9 +160,9 @@ func TestMakeDriverArgs(t *testing.T) {
 func TestFixInconsistentThreadMemberships_NoDriver(t *testing.T) {
 	// Test that the function handles missing driver gracefully
 	plugin := Plugin{}
-	
+
 	err := plugin.fixInconsistentThreadMemberships("channel-id")
-	
+
 	// Should not error when driver is nil
 	assert.Nil(t, err)
 }

@@ -12,6 +12,7 @@ A Mattermost plugin for importing messages and metadata from external sources as
 - Create/resolve DM and Group DM channels
 - Import reactions
 - **Automatic mark-as-read**: Imported posts are automatically marked as read for all channel members to prevent false notifications during bulk imports
+- **Thread membership consistency**: Automatically fixes inconsistent thread membership states (where `lastviewed > lastreplyat` but `unreadmentions > 0`) to prevent phantom notification counters
 
 ## API Endpoints (implemented here)
 
