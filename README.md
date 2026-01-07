@@ -64,21 +64,12 @@ docker compose -f docker-compose.prod.yml up --build -d
    git pull origin master
    ```
 
-3. **Пересоберите контейнеры**:
+3. **Пересоберите и запустите обновленный стек**:
    ```bash
-   docker compose -f docker-compose.prod.yml build
+   docker compose -f docker-compose.prod.yml up --build -d
    ```
 
-4. **Выполните миграции БД**:
-   ```bash
-   alembic -c alembic.ini upgrade head
-   ```
-   **Внимание**: Миграции могут занять несколько минут в зависимости от объема данных. Не прерывайте процесс.
-
-5. **Запустите обновленный стек**:
-   ```bash
-   docker compose -f docker-compose.prod.yml up -d
-   ```
+**Важно**: Миграции БД применяются автоматически при старте backend через Alembic. Первый запуск после обновления может занять несколько минут в зависимости от объема данных. Backend станет доступен после успешного выполнения всех миграций.
 
 Дополнительная информация по обновлениям и миграциям данных: [`backend/README.md`](backend/README.md).
 

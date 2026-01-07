@@ -376,7 +376,9 @@ In dev compose there's a `test-files` service (port 9000) — simple HTTP server
 
 ### Migrations
 
-Run from project root:
+**Automatic Application**: Migrations are automatically applied when backend starts (via `alembic upgrade head` in the lifespan hook). This happens in both development and production environments.
+
+**Manual Application** (for local development outside Docker):
 ```bash
 alembic -c alembic.ini upgrade head
 ```
@@ -387,6 +389,7 @@ Configuration:
 - Migration path: `backend/alembic/` (relative to project root)
 - Configuration: `alembic.ini` in project root
 - Connection: Uses `DATABASE_URL` environment variable
+- Auto-execution: Triggered in `backend/app/main.py` lifespan hook (unless `PYTEST_RUN=1`)
 
 ### Collapsed Migration History
 
@@ -395,8 +398,10 @@ Current schema uses collapsed history. To apply on clean database:
 alembic -c alembic.ini upgrade head
 ```
 
+Or simply start the backend — migrations will run automatically.
+
 Updating existing installation with historical data not supported automatically — requires either:
-1. Create new DB and run `upgrade head`, then re-import Slack archive; or
+1. Create new DB and run `upgrade head` (or start backend), then re-import Slack archive; or
 2. Manually bring schema to final state (see `001_initial_full_schema` content) and run `alembic stamp 001_initial_full_schema`
 
 Key schema features:
