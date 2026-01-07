@@ -1299,14 +1299,14 @@ func (p *Plugin) fixInconsistentThreadMemberships(channelID string) error {
 func (p *Plugin) ClearFixedChannelsCache() {
 	p.fixedChannelsMutex.Lock()
 	defer p.fixedChannelsMutex.Unlock()
-	
+
 	if p.API != nil {
 		cacheSize := len(p.fixedChannels)
 		if cacheSize > 0 {
 			p.API.LogDebug("Clearing fixed channels cache", "cache_size", cacheSize)
 		}
 	}
-	
+
 	// Clear the cache by creating a new empty map
 	p.fixedChannels = make(map[string]bool)
 }
