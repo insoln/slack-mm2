@@ -189,7 +189,6 @@ func (p *Plugin) ImportPost(w http.ResponseWriter, r *http.Request) {
 // This endpoint should be called after an import batch completes to prevent unbounded cache growth.
 func (p *Plugin) ClearImportCache(w http.ResponseWriter, r *http.Request) {
 	p.ClearFixedChannelsCache()
-	
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "cache cleared"})
 }
