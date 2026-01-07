@@ -47,6 +47,27 @@ docker compose -f docker-compose.prod.yml up --build -d
 - **Frontend UI**: http://localhost (порт 80)
 - **PostgreSQL**: localhost:5432 (user/pass/db: slack-mm)
 
+### 3. Сборка и развертывание Mattermost плагина
+
+После первого запуска необходимо собрать и задеплоить плагин:
+
+```bash
+# Соберите плагин
+cd plugin
+bash build-docker.sh
+cd ..
+
+# Дождитесь готовности backend
+curl http://localhost:8000/healthcheck
+
+# Задеплойте и включите плагин
+curl -X POST http://localhost:8000/api/plugin/deploy
+curl -X POST http://localhost:8000/api/plugin/enable
+
+# Проверьте статус
+curl http://localhost:8000/api/plugin/status
+```
+
 Подробнее см. [`infra/README.md`](infra/README.md) и [`backend/README.md`](backend/README.md).
 
 ## Обновление проекта
@@ -64,18 +85,70 @@ docker compose -f docker-compose.prod.yml up --build -d
    git pull origin master
    ```
 
-3. **Пересоберите и запустите обновленный стек**:
+3. **Пересоберите плагин** (если были изменения в `infra/plugin/`):
+   ```bash
+   cd plugin
+   bash build-docker.sh
+   cd ..
+   ```
+
+4. **Пересоберите и запустите обновленный стек**:
    ```bash
    docker compose -f docker-compose.prod.yml up --build -d
    ```
 
-**Важно**: Миграции БД применяются автоматически при старте backend через Alembic. Первый запуск после обновления может занять несколько минут в зависимости от объема данных. Backend станет доступен после успешного выполнения всех миграций.
+5. **Задеплойте обновленный плагин** (если пересобирали на шаге 3):
+   ```bash
+   curl -X POST http://localhost:8000/api/plugin/deploy
+   curl -X POST http://localhost:8000/api/plugin/enable
+   ```
+
+**Важно**: 
+- Миграции БД применяются автоматически при старте backend через Alembic. Первый запуск после обновления может занять несколько минут в зависимости от объема данных. Backend станет доступен после успешного выполнения всех миграций.
+- Плагин нужно пересобирать и деплоить только при изменениях в коде плагина. Подробнее см. раздел "Управление Mattermost Plugin" ниже.
 
 Дополнительная информация по обновлениям и миграциям данных: [`backend/README.md`](backend/README.md).
 
 ## Управление Mattermost Plugin
 
-Backend предоставляет HTTP-эндпоинты для явного управления плагином:
+### Сборка и развертывание плагина
+
+**Важно**: В production окружении плагин **не собирается автоматически**. Вам необходимо вручную собрать и задеплоить плагин при первом запуске и при каждом обновлении проекта.
+
+#### Процедура сборки и развертывания:
+
+1. **Соберите плагин** (создаст `infra/plugin/dist/mm-importer-<version>.tar.gz`):
+   ```bash
+   cd infra/plugin
+   bash build-docker.sh
+   ```
+   Сборка занимает ~60-90 секунд при первом запуске.
+
+2. **Убедитесь, что backend запущен**:
+   ```bash
+   curl http://localhost:8000/healthcheck
+   ```
+
+3. **Задеплойте плагин через API** (загрузит bundle в Mattermost):
+   ```bash
+   curl -X POST http://localhost:8000/api/plugin/deploy
+   ```
+
+4. **Включите плагин**:
+   ```bash
+   curl -X POST http://localhost:8000/api/plugin/enable
+   ```
+
+5. **Проверьте статус**:
+   ```bash
+   curl http://localhost:8000/api/plugin/status
+   ```
+
+**При обновлении проекта** повторите шаги 1-4, чтобы пересобрать и задеплоить новую версию плагина.
+
+### HTTP API для управления плагином
+
+Backend предоставляет следующие эндпоинты:
 
 | Эндпоинт | Метод | Назначение |
 |----------|-------|------------|
