@@ -158,6 +158,12 @@ func (p *Plugin) ImportPost(w http.ResponseWriter, r *http.Request) {
 	// Only run for threaded posts (when RootID is set) to avoid unnecessary database operations
 	// Use a cache to avoid redundant fixes for the same channel during bulk imports
 	if req.RootID != "" {
+		// Mark this thread as read for all members so imported historical mentions do not generate unread counters.
+		if err := p.markThreadAsReadForAllMembers(req.RootID, created.CreateAt); err != nil {
+			p.API.LogWarn("Failed to mark thread as read for members", "channel_id", req.ChannelID, "root_post_id", req.RootID, "error", err.Error())
+			// Don't fail the request if marking as read fails - the post was created successfully
+		}
+
 		// Double-checked locking pattern to avoid race conditions
 		p.fixedChannelsMutex.Lock()
 		alreadyFixed := p.fixedChannels[req.ChannelID]
@@ -1205,6 +1211,53 @@ func (p *Plugin) markPostAsReadForChannelMembers(channelID string, postCreateAt 
 	}
 
 	p.API.LogDebug("Marked posts as read for channel members", logFields...)
+
+	return nil
+}
+
+// markThreadAsReadForAllMembers updates ThreadMemberships for a thread root so imported historical
+// thread mentions do not show up as unread for users on a fresh import.
+func (p *Plugin) markThreadAsReadForAllMembers(threadRootPostID string, lastViewedAt int64) error {
+	if p.Driver == nil {
+		if p.API != nil {
+			p.API.LogDebug("Driver not available, skipping thread mark-as-read", "post_id", threadRootPostID)
+		}
+		return nil
+	}
+
+	connID, err := p.Driver.Conn(false)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = p.Driver.ConnClose(connID)
+	}()
+
+	// Keep this compatible with PostgreSQL and MySQL.
+	query := `UPDATE ThreadMemberships
+			  SET LastViewed = CASE WHEN LastViewed < $2 THEN $2 ELSE LastViewed END,
+			      UnreadMentions = 0
+			  WHERE PostId = $1
+			    AND (UnreadMentions <> 0 OR LastViewed < $2)`
+
+	args := p.makeDriverArgs(threadRootPostID, lastViewedAt)
+	result, err := p.Driver.ConnExec(connID, query, args)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffectedError != nil {
+		return result.RowsAffectedError
+	}
+
+	if result.RowsAffected > 0 {
+		if p.API != nil {
+			p.API.LogDebug("Marked thread as read for all members",
+				"post_id", threadRootPostID,
+				"last_viewed", lastViewedAt,
+				"rows_affected", result.RowsAffected)
+		}
+	}
 
 	return nil
 }
