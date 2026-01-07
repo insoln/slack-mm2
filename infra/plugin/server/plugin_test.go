@@ -156,3 +156,13 @@ func TestMakeDriverArgs(t *testing.T) {
 	assert.Equal(t, 3, args[2].Ordinal)
 	assert.Equal(t, "user-id", args[2].Value)
 }
+
+func TestFixInconsistentThreadMemberships_NoDriver(t *testing.T) {
+	// Test that the function handles missing driver gracefully
+	plugin := Plugin{}
+	
+	err := plugin.fixInconsistentThreadMemberships("channel-id")
+	
+	// Should not error when driver is nil
+	assert.Nil(t, err)
+}

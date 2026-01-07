@@ -153,6 +153,13 @@ func (p *Plugin) ImportPost(w http.ResponseWriter, r *http.Request) {
 		// Don't fail the request if marking as read fails - the post was created successfully
 	}
 
+	// Fix inconsistent thread memberships to prevent phantom notifications
+	// This is especially important for threaded posts (when RootID is set)
+	if err := p.fixInconsistentThreadMemberships(req.ChannelID); err != nil {
+		p.API.LogWarn("Failed to fix thread memberships", "channel_id", req.ChannelID, "post_id", created.Id, "error", err.Error())
+		// Don't fail the request - the post was created successfully
+	}
+
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(ImportPostResponse{PostID: created.Id})
 }
@@ -1169,6 +1176,90 @@ func (p *Plugin) markPostAsReadForChannelMembers(channelID string, postCreateAt 
 	}
 
 	p.API.LogDebug("Marked posts as read for channel members", logFields...)
+
+	return nil
+}
+
+// fixInconsistentThreadMemberships fixes thread memberships where lastviewed > lastreplyat but unreadmentions > 0.
+// This prevents phantom notification counters after bulk imports.
+// It also sets threadteamid for threads that are missing it (common for DM channels).
+func (p *Plugin) fixInconsistentThreadMemberships(channelID string) error {
+	if p.Driver == nil {
+		if p.API != nil {
+			p.API.LogDebug("Driver not available, skipping thread membership fix", "channel_id", channelID)
+		}
+		return nil
+	}
+
+	connID, err := p.Driver.Conn(false)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = p.Driver.ConnClose(connID)
+	}()
+
+	// Get channel to determine team ID for setting threadteamid
+	var teamID string
+	if p.API != nil {
+		if ch, appErr := p.API.GetChannel(channelID); appErr == nil && ch != nil {
+			teamID = ch.TeamId
+		}
+	}
+
+	// Fix inconsistent thread memberships where lastviewed > lastreplyat but unreadmentions > 0
+	// This is the core fix for the phantom notifications issue
+	query := `UPDATE ThreadMemberships tm
+			  SET UnreadMentions = 0
+			  FROM Threads t
+			  WHERE tm.PostId = t.PostId
+			    AND t.ChannelId = $1
+			    AND tm.UnreadMentions > 0
+			    AND tm.LastViewed > t.LastReplyAt`
+
+	args := p.makeDriverArgs(channelID)
+	result, err := p.Driver.ConnExec(connID, query, args)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffectedError != nil {
+		return result.RowsAffectedError
+	}
+
+	rowsAffected := result.RowsAffected
+	if rowsAffected > 0 {
+		if p.API != nil {
+			p.API.LogDebug("Fixed inconsistent thread memberships",
+				"channel_id", channelID,
+				"rows_affected", rowsAffected)
+		}
+	}
+
+	// Optionally set threadteamid for threads missing it (common in DM channels)
+	// This helps with query planning and performance
+	if teamID != "" {
+		teamQuery := `UPDATE Threads
+					  SET ThreadTeamId = $1
+					  WHERE ChannelId = $2
+					    AND (ThreadTeamId IS NULL OR ThreadTeamId = '')`
+
+		teamArgs := p.makeDriverArgs(teamID, channelID)
+		teamResult, teamErr := p.Driver.ConnExec(connID, teamQuery, teamArgs)
+		if teamErr != nil {
+			// Log but don't fail - this is optional optimization
+			if p.API != nil {
+				p.API.LogWarn("Failed to set threadteamid", "channel_id", channelID, "error", teamErr.Error())
+			}
+		} else if teamResult.RowsAffectedError == nil && teamResult.RowsAffected > 0 {
+			if p.API != nil {
+				p.API.LogDebug("Set threadteamid for threads",
+					"channel_id", channelID,
+					"team_id", teamID,
+					"rows_affected", teamResult.RowsAffected)
+			}
+		}
+	}
 
 	return nil
 }
