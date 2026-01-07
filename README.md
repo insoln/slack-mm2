@@ -86,10 +86,6 @@ docker compose -f docker-compose.prod.yml up --build -d
 
 Backend предоставляет HTTP-эндпоинты для явного управления плагином:
 
-## Управление Mattermost Plugin
-
-Backend предоставляет HTTP-эндпоинты для явного управления плагином:
-
 | Эндпоинт | Метод | Назначение |
 |----------|-------|------------|
 | `/api/plugin/status` | GET | Агрегированное состояние плагина (enabled, local/remote bundle, версия) |
@@ -112,41 +108,17 @@ curl -X POST http://localhost:8000/api/plugin/enable
 
 Подробнее о сборке и развертывании плагина: [`infra/plugin/README.md`](infra/plugin/README.md).
 
-## CI/CD и автоматизация
+## CI/CD и контроль качества
 
-### Автоматические тесты
+Проект включает автоматические проверки качества кода и тесты.
 
-Проект включает автоматические тесты для backend и frontend:
+### Для пользователей
 
-**Backend**:
-```bash
-cd backend
-black app alembic tests  # Форматирование кода
-pytest --cov=app --cov-report=term-missing  # Тесты с покрытием
-```
+В production окружении тесты выполняются автоматически через CI/CD pipeline при каждом обновлении кода.
 
-**Frontend**:
-```bash
-cd frontend
-npm run lint   # Линтинг кода
-npm run build  # Сборка production версии
-```
+### Для разработчиков
 
-### Pre-commit хуки
-
-Для автоматической проверки стиля и базовых ошибок перед коммитом:
-
-```bash
-pip install -r backend/requirements.txt  # содержит pre-commit
-pre-commit install
-```
-
-При каждом `git commit` автоматически запускаются:
-- `black` — автоформатирование Python
-- Проверки безопасности (detect-private-key, check-added-large-files)
-- Опциональные быстрые юнит-тесты
-
-Полная информация: [Developer Documentation](docs/dev.md#cicd).
+Полная информация по настройке pre-commit хуков, запуску тестов и линтеров: [Developer Documentation](docs/dev.md#cicd).
 
 ## Документация компонентов
 
