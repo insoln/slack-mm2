@@ -170,6 +170,7 @@ func TestFixInconsistentThreadMemberships_NoDriver(t *testing.T) {
 
 func TestFixedChannelsCache(t *testing.T) {
 	// Test that the cache properly tracks fixed channels
+	// Note: mutex is initialized via zero value, which is valid for sync.Mutex
 	plugin := Plugin{
 		fixedChannels: make(map[string]bool),
 	}
@@ -184,6 +185,24 @@ func TestFixedChannelsCache(t *testing.T) {
 	// Verify channel1 is now cached
 	assert.True(t, plugin.fixedChannels["channel1"])
 	assert.False(t, plugin.fixedChannels["channel2"])
+}
+
+func TestClearFixedChannelsCache(t *testing.T) {
+	// Test that the cache can be cleared
+	plugin := Plugin{
+		fixedChannels: make(map[string]bool),
+	}
+
+	// Add some channels to cache
+	plugin.fixedChannels["channel1"] = true
+	plugin.fixedChannels["channel2"] = true
+	assert.Equal(t, 2, len(plugin.fixedChannels))
+
+	// Clear the cache
+	plugin.ClearFixedChannelsCache()
+
+	// Verify cache is empty
+	assert.Equal(t, 0, len(plugin.fixedChannels))
 }
 
 func TestImportPostRequest_Parsing(t *testing.T) {

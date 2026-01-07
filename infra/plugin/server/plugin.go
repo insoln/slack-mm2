@@ -43,7 +43,8 @@ type Plugin struct {
 	fixedChannelsMutex sync.Mutex
 
 	// fixedChannels tracks which channels have already had their thread memberships fixed
-	// to avoid redundant database queries during bulk imports
+	// to avoid redundant database queries during bulk imports.
+	// Use ClearFixedChannelsCache() to clear the cache after an import session completes.
 	fixedChannels map[string]bool
 }
 

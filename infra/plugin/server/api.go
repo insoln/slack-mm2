@@ -1230,16 +1230,20 @@ func (p *Plugin) fixInconsistentThreadMemberships(channelID string) error {
 	// Fix inconsistent thread memberships where lastviewed > lastreplyat but unreadmentions > 0
 	// This is the core fix for the phantom notifications issue
 	// Note: This query operates on a per-channel basis to minimize impact.
+	// Uses subquery approach for compatibility with both PostgreSQL and MySQL.
 	// For optimal performance, Mattermost should have indexes on:
 	//   - ThreadMemberships(PostId, UnreadMentions, LastViewed)
 	//   - Threads(ChannelId, PostId, LastReplyAt)
-	query := `UPDATE ThreadMemberships tm
+	query := `UPDATE ThreadMemberships
 			  SET UnreadMentions = 0
-			  FROM Threads t
-			  WHERE tm.PostId = t.PostId
-			    AND t.ChannelId = $1
-			    AND tm.UnreadMentions > 0
-			    AND tm.LastViewed > t.LastReplyAt`
+			  WHERE UnreadMentions > 0
+			    AND EXISTS (
+			        SELECT 1
+			        FROM Threads t
+			        WHERE t.PostId = ThreadMemberships.PostId
+			          AND t.ChannelId = $1
+			          AND ThreadMemberships.LastViewed > t.LastReplyAt
+			    )`
 
 	args := p.makeDriverArgs(channelID)
 	result, err := p.Driver.ConnExec(connID, query, args)
@@ -1263,6 +1267,7 @@ func (p *Plugin) fixInconsistentThreadMemberships(channelID string) error {
 	// Optionally set threadteamid for threads missing it (common in DM channels)
 	// This helps with query planning and performance (64% of threads in production are DMs with empty team IDs)
 	// Note: For optimal performance, an index on Threads(ChannelId, ThreadTeamId) is recommended
+	// Query is compatible with both PostgreSQL and MySQL
 	if teamID != "" {
 		teamQuery := `UPDATE Threads
 					  SET ThreadTeamId = $1
@@ -1287,6 +1292,23 @@ func (p *Plugin) fixInconsistentThreadMemberships(channelID string) error {
 	}
 
 	return nil
+}
+
+// ClearFixedChannelsCache clears the cache of fixed channels.
+// This should be called after an import session completes to prevent unbounded cache growth.
+func (p *Plugin) ClearFixedChannelsCache() {
+	p.fixedChannelsMutex.Lock()
+	defer p.fixedChannelsMutex.Unlock()
+	
+	if p.API != nil {
+		cacheSize := len(p.fixedChannels)
+		if cacheSize > 0 {
+			p.API.LogDebug("Clearing fixed channels cache", "cache_size", cacheSize)
+		}
+	}
+	
+	// Clear the cache by creating a new empty map
+	p.fixedChannels = make(map[string]bool)
 }
 
 // makeDriverArgs converts variadic arguments to driver.NamedValue slice
