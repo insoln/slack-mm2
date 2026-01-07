@@ -156,35 +156,39 @@ func (p *Plugin) ImportPost(w http.ResponseWriter, r *http.Request) {
 
 	// Fix inconsistent thread memberships to prevent phantom notifications
 	// Only run for threaded posts (when RootID is set) to avoid unnecessary database operations
-	// Use a cache to avoid redundant fixes for the same channel during bulk imports
+	// Use caches to avoid redundant operations for the same thread and channel during bulk imports
 	if req.RootID != "" {
 		// Mark this thread as read for all members so imported historical mentions do not generate unread counters.
+		// This is called on EVERY threaded reply import to ensure that lastviewed tracks the latest reply.
+		// Without this, Mattermost's CreatePost API increments unreadmentions when a reply contains @mentions.
 		if err := p.markThreadAsReadForAllMembers(req.RootID, created.CreateAt); err != nil {
 			p.API.LogWarn("Failed to mark thread as read for members", "channel_id", req.ChannelID, "root_post_id", req.RootID, "error", err.Error())
-			// Don't fail the request if marking as read fails - the post was created successfully
+			// Don't fail the request if marking as read fails - the post was created successfully.
 		}
 
-		// Double-checked locking pattern to avoid race conditions
+		// Check if this channel has already been fixed, and if not, perform the fix
+		// Race condition mitigation: We hold the lock during check AND DB operation to prevent
+		// the following scenario: Two goroutines A and B both check alreadyFixed=false, both
+		// attempt fixInconsistentThreadMemberships. If A succeeds and sets cache=true, then B
+		// fails, B would incorrectly delete cache entry, causing future imports to retry.
+		// Holding the lock serializes these operations, ensuring only one goroutine performs
+		// the fix per channel. Performance trade-off: DB operation blocks other posts to same
+		// channel, but this is acceptable as the fix runs once per channel. Consider per-channel
+		// locks if this becomes a bottleneck in high-throughput scenarios.
 		p.fixedChannelsMutex.Lock()
 		alreadyFixed := p.fixedChannels[req.ChannelID]
 		if !alreadyFixed {
-			// Mark as being processed to prevent concurrent fixes
-			// Note: If process crashes/restarts, cache is cleared and fix will run again (safe)
-			p.fixedChannels[req.ChannelID] = true
-		}
-		p.fixedChannelsMutex.Unlock()
-
-		if !alreadyFixed {
-			// Perform the fix outside the lock to avoid holding it during DB operations
+			// Perform the fix while holding the lock to prevent race conditions
 			if err := p.fixInconsistentThreadMemberships(req.ChannelID); err != nil {
 				p.API.LogWarn("Failed to fix thread memberships", "channel_id", req.ChannelID, "post_id", created.Id, "error", err.Error())
-				// Remove from cache if fix failed so it can be retried
-				p.fixedChannelsMutex.Lock()
-				delete(p.fixedChannels, req.ChannelID)
-				p.fixedChannelsMutex.Unlock()
+				// Don't set cache entry on failure - allow retry on next post
+			} else {
+				// Success case: mark channel as fixed in cache
+				// Note: If process crashes/restarts, cache is cleared and fix will run again (safe)
+				p.fixedChannels[req.ChannelID] = true
 			}
-			// Success case: channel remains marked as fixed in cache
 		}
+		p.fixedChannelsMutex.Unlock()
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -1233,29 +1237,49 @@ func (p *Plugin) markThreadAsReadForAllMembers(threadRootPostID string, lastView
 		_ = p.Driver.ConnClose(connID)
 	}()
 
-	// Keep this compatible with PostgreSQL and MySQL.
-	query := `UPDATE ThreadMemberships
+	// Split the OR condition into two separate UPDATEs so indexes can be used more efficiently.
+	// Case 1: rows with non-zero UnreadMentions (regardless of LastViewed).
+	queryUnread := `UPDATE ThreadMemberships
 			  SET LastViewed = CASE WHEN LastViewed < $2 THEN $2 ELSE LastViewed END,
 			      UnreadMentions = 0
 			  WHERE PostId = $1
-			    AND (UnreadMentions <> 0 OR LastViewed < $2)`
+			    AND UnreadMentions <> 0`
+
+	// Case 2: rows with zero UnreadMentions but outdated LastViewed.
+	queryLastViewed := `UPDATE ThreadMemberships
+			  SET LastViewed = $2
+			  WHERE PostId = $1
+			    AND UnreadMentions = 0
+			    AND LastViewed < $2`
 
 	args := p.makeDriverArgs(threadRootPostID, lastViewedAt)
-	result, err := p.Driver.ConnExec(connID, query, args)
+
+	// Execute first query and return immediately on failure to avoid partial updates
+	resultUnread, err := p.Driver.ConnExec(connID, queryUnread, args)
 	if err != nil {
 		return err
 	}
-
-	if result.RowsAffectedError != nil {
-		return result.RowsAffectedError
+	if resultUnread.RowsAffectedError != nil {
+		return resultUnread.RowsAffectedError
 	}
 
-	if result.RowsAffected > 0 {
+	// Only proceed to second query if first succeeded
+	resultLastViewed, err := p.Driver.ConnExec(connID, queryLastViewed, args)
+	if err != nil {
+		return err
+	}
+	if resultLastViewed.RowsAffectedError != nil {
+		return resultLastViewed.RowsAffectedError
+	}
+
+	totalRows := resultUnread.RowsAffected + resultLastViewed.RowsAffected
+
+	if totalRows > 0 {
 		if p.API != nil {
 			p.API.LogDebug("Marked thread as read for all members",
 				"post_id", threadRootPostID,
 				"last_viewed", lastViewedAt,
-				"rows_affected", result.RowsAffected)
+				"rows_affected", totalRows)
 		}
 	}
 

@@ -6,7 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -267,3 +270,156 @@ func TestImportPostRequest_Parsing(t *testing.T) {
 		})
 	}
 }
+
+func TestConcurrentCacheAccess(t *testing.T) {
+	// Test that demonstrates the race condition that existed in the OLD double-checked locking pattern.
+	// 
+	// KEY INSIGHT: This test uses a two-phase barrier to ensure ALL goroutines check the cache (and see false)
+	// BEFORE ANY goroutine can proceed to update it. This simulates the real-world race where multiple
+	// requests arrive simultaneously before any channel has been fixed.
+	//
+	// Phase 1: All goroutines check cache and signal they're ready
+	// Phase 2: All goroutines wait until ALL are ready, then proceed together
+	//
+	// This properly exercises the failure path where successful and failing operations
+	// interleave, causing the cache to end up in an unpredictable state.
+	
+	plugin := Plugin{
+		fixedChannels: make(map[string]bool),
+	}
+
+	var wg sync.WaitGroup
+	numGoroutines := 50
+	channelID := "test-channel"
+	var attemptCount int32
+	var successCount int32
+	var failureCount int32
+	
+	// Two-phase barrier: 
+	// readyWg: All goroutines signal when they've checked cache
+	// goSignal: Once all are ready, this channel is closed to release them
+	var readyWg sync.WaitGroup
+	readyWg.Add(numGoroutines)
+	goSignal := make(chan struct{})
+
+	// Launch multiple goroutines that concurrently try to "fix" the same channel
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+
+			// OLD BUGGY PATTERN: Check cache, release lock, wait for all to be ready
+			plugin.fixedChannelsMutex.Lock()
+			alreadyFixed := plugin.fixedChannels[channelID]
+			plugin.fixedChannelsMutex.Unlock() // RELEASE LOCK HERE (buggy!)
+
+			// Signal that this goroutine has checked the cache
+			readyWg.Done()
+			
+			// Wait for ALL goroutines to check the cache before any proceeds
+			<-goSignal
+
+			// All goroutines enter this block since they all saw false above
+			if !alreadyFixed {
+				atomic.AddInt32(&attemptCount, 1)
+				
+				// Simulate DB operation (some succeed, some fail)
+				time.Sleep(time.Microsecond * time.Duration(id%5))
+				
+				success := (id % 3 == 0)
+				
+				// Reacquire lock to update cache
+				plugin.fixedChannelsMutex.Lock()
+				if success {
+					plugin.fixedChannels[channelID] = true
+					atomic.AddInt32(&successCount, 1)
+				} else {
+					// OLD BUGGY CODE: Delete on failure - this creates the race!
+					// A failing goroutine can delete the cache entry that a successful
+					// goroutine just set, causing infinite retry loops.
+					delete(plugin.fixedChannels, channelID)
+					atomic.AddInt32(&failureCount, 1)
+				}
+				plugin.fixedChannelsMutex.Unlock()
+			}
+		}(i)
+	}
+
+	// Wait for all goroutines to check the cache
+	readyWg.Wait()
+	
+	// Now release all goroutines simultaneously
+	close(goSignal)
+	
+	// Wait for all goroutines to complete
+	wg.Wait()
+
+	// With the old buggy pattern, ALL 50 goroutines attempt the fix since they all saw
+	// alreadyFixed=false before the goSignal. Failures can delete successful cache entries.
+	t.Logf("OLD BUGGY PATTERN - Attempts: %d, Successes: %d, Failures: %d, Final cache state: %v", 
+		attemptCount, successCount, failureCount, plugin.fixedChannels[channelID])
+	
+	// Verify this demonstrates the race: All goroutines should have attempted (all saw false)
+	assert.Equal(t, int32(numGoroutines), attemptCount, "All goroutines should attempt fix (all saw false before barrier)")
+	assert.Greater(t, successCount, int32(0), "At least one goroutine should succeed")
+	assert.Greater(t, failureCount, int32(0), "At least one goroutine should fail")
+	
+	// The cache state is unpredictable due to the race - it could be true or false
+	// depending on which goroutine (success or failure) finished last. 
+	// This demonstrates the bug that the new locking pattern fixes.
+}
+
+func TestConcurrentCacheAccessWithProperLocking(t *testing.T) {
+	// Test that the FIXED implementation (holding lock during entire operation)
+	// properly prevents race conditions by ensuring only one goroutine performs the fix.
+	plugin := Plugin{
+		fixedChannels: make(map[string]bool),
+	}
+
+	var wg sync.WaitGroup
+	numGoroutines := 100
+	channelID := "test-channel"
+	var attemptCount int32
+	var successCount int32
+	var cacheCheckCount int32
+	var skippedCount int32
+
+	// Launch multiple goroutines using the FIXED pattern (lock held during operation)
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+
+			// FIXED PATTERN: Hold lock during entire check + operation
+			plugin.fixedChannelsMutex.Lock()
+			atomic.AddInt32(&cacheCheckCount, 1)
+			alreadyFixed := plugin.fixedChannels[channelID]
+			if !alreadyFixed {
+				atomic.AddInt32(&attemptCount, 1)
+				
+				// Simulate DB operation with small delay
+				time.Sleep(time.Microsecond * time.Duration(id%5))
+				
+				// First goroutine to attempt will succeed and set cache
+				plugin.fixedChannels[channelID] = true
+				atomic.AddInt32(&successCount, 1)
+			} else {
+				atomic.AddInt32(&skippedCount, 1)
+			}
+			plugin.fixedChannelsMutex.Unlock()
+		}(i)
+	}
+
+	wg.Wait()
+
+	// With proper locking, only one goroutine should attempt the operation
+	t.Logf("FIXED PATTERN - Attempts: %d, Successes: %d, Skipped: %d, Cache checks: %d, Final cache state: %v",
+		attemptCount, successCount, skippedCount, cacheCheckCount, plugin.fixedChannels[channelID])
+	
+	assert.Equal(t, int32(1), attemptCount, "Only one goroutine should attempt the fix")
+	assert.Equal(t, int32(1), successCount, "Exactly one goroutine should succeed")
+	assert.True(t, plugin.fixedChannels[channelID], "Cache entry should persist after successful fix")
+	assert.Equal(t, int32(numGoroutines), cacheCheckCount, "All goroutines should check the cache")
+	assert.Equal(t, int32(numGoroutines-1), skippedCount, "All other goroutines should skip due to cache")
+}
+

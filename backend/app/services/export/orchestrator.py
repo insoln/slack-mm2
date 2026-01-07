@@ -275,6 +275,46 @@ async def _rearchive_channels(channel_ids: set[str]):
                 backend_logger.error(f"Error re-archiving channel {cid}: {exc}")
 
 
+async def _clear_plugin_import_cache():
+    """Clear the plugin's import cache to free memory after batch completion."""
+    mm_url = os.environ.get("MM_URL")
+    mm_token = os.environ.get("MM_TOKEN")
+    if not mm_url or not mm_token:
+        backend_logger.warning(
+            "MM_URL or MM_TOKEN not set, skipping plugin cache clear"
+        )
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                f"{mm_url}/plugins/mm-importer/api/v1/import/clear_cache",
+                headers={"Authorization": f"Bearer {mm_token}"},
+            )
+            if resp.status_code in (200, 201):
+                backend_logger.info(
+                    "Cleared plugin import cache after batch completion"
+                )
+            elif resp.status_code == 404:
+                backend_logger.warning("Plugin not installed or endpoint not available")
+            elif resp.status_code in (401, 403):
+                backend_logger.error(
+                    f"Authentication/authorization error clearing cache: {resp.status_code}"
+                )
+            elif resp.status_code >= 500:
+                backend_logger.error(
+                    f"Server error clearing cache: {resp.status_code} {resp.text[:200]}"
+                )
+            else:
+                backend_logger.warning(
+                    f"Unexpected status clearing cache: {resp.status_code} {resp.text[:200]}"
+                )
+    except httpx.HTTPError as exc:
+        backend_logger.error(f"Error clearing plugin cache: {exc}")
+    except Exception as exc:
+        backend_logger.error(f"Unexpected error clearing plugin cache: {exc}")
+
+
 async def orchestrate_mm_export(job_id=None):
     # Ensure only one export runs at a time across the process
     async with EXPORT_LOCK:
@@ -603,8 +643,11 @@ async def orchestrate_mm_export(job_id=None):
                     )
                     await _rearchive_channels(archived_channel_ids)
 
-            # After completing all types for these jobs, perform cleanup & mark them done
+            # After completing all types for these jobs, clear the plugin cache and perform cleanup & mark them done
             try:
+                # Clear the plugin's import cache to free memory
+                await _clear_plugin_import_cache()
+
                 from sqlalchemy import update
                 import shutil
 
