@@ -160,18 +160,19 @@ func (p *Plugin) ImportPost(w http.ResponseWriter, r *http.Request) {
 		// Check if this channel has already been fixed
 		p.fixedChannelsMutex.Lock()
 		alreadyFixed := p.fixedChannels[req.ChannelID]
-		if !alreadyFixed {
-			// Mark this channel as fixed before unlocking to prevent race conditions
-			p.fixedChannels[req.ChannelID] = true
-			p.fixedChannelsMutex.Unlock()
+		p.fixedChannelsMutex.Unlock()
 
+		if !alreadyFixed {
 			// Perform the fix
 			if err := p.fixInconsistentThreadMemberships(req.ChannelID); err != nil {
 				p.API.LogWarn("Failed to fix thread memberships", "channel_id", req.ChannelID, "post_id", created.Id, "error", err.Error())
 				// Don't fail the request - the post was created successfully
+			} else {
+				// Only mark as fixed if the operation succeeded
+				p.fixedChannelsMutex.Lock()
+				p.fixedChannels[req.ChannelID] = true
+				p.fixedChannelsMutex.Unlock()
 			}
-		} else {
-			p.fixedChannelsMutex.Unlock()
 		}
 	}
 

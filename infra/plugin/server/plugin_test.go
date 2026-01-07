@@ -175,21 +175,15 @@ func TestFixedChannelsCache(t *testing.T) {
 	}
 
 	// Initially, channels should not be in the cache
-	plugin.fixedChannelsMutex.Lock()
 	assert.False(t, plugin.fixedChannels["channel1"])
 	assert.False(t, plugin.fixedChannels["channel2"])
-	plugin.fixedChannelsMutex.Unlock()
 
 	// Add channels to cache
-	plugin.fixedChannelsMutex.Lock()
 	plugin.fixedChannels["channel1"] = true
-	plugin.fixedChannelsMutex.Unlock()
 
 	// Verify channel1 is now cached
-	plugin.fixedChannelsMutex.Lock()
 	assert.True(t, plugin.fixedChannels["channel1"])
 	assert.False(t, plugin.fixedChannels["channel2"])
-	plugin.fixedChannelsMutex.Unlock()
 }
 
 func TestImportPostRequest_Parsing(t *testing.T) {
