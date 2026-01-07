@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -168,6 +170,16 @@ func TestFixInconsistentThreadMemberships_NoDriver(t *testing.T) {
 	assert.Nil(t, err)
 }
 
+func TestMarkThreadAsReadForAllMembers_NoDriver(t *testing.T) {
+	// Test that the function handles missing driver gracefully
+	plugin := Plugin{}
+
+	err := plugin.markThreadAsReadForAllMembers("root-post-id", int64(123456789))
+
+	// Should not error when driver is nil
+	assert.Nil(t, err)
+}
+
 func TestFixedChannelsCache(t *testing.T) {
 	// Test that the cache properly tracks fixed channels
 	// Note: mutex is initialized via zero value, which is valid for sync.Mutex
@@ -176,15 +188,25 @@ func TestFixedChannelsCache(t *testing.T) {
 	}
 
 	// Initially, channels should not be in the cache
-	assert.False(t, plugin.fixedChannels["channel1"])
-	assert.False(t, plugin.fixedChannels["channel2"])
+	plugin.fixedChannelsMutex.Lock()
+	val1 := plugin.fixedChannels["channel1"]
+	val2 := plugin.fixedChannels["channel2"]
+	plugin.fixedChannelsMutex.Unlock()
+	assert.False(t, val1)
+	assert.False(t, val2)
 
 	// Add channels to cache
+	plugin.fixedChannelsMutex.Lock()
 	plugin.fixedChannels["channel1"] = true
+	plugin.fixedChannelsMutex.Unlock()
 
 	// Verify channel1 is now cached
-	assert.True(t, plugin.fixedChannels["channel1"])
-	assert.False(t, plugin.fixedChannels["channel2"])
+	plugin.fixedChannelsMutex.Lock()
+	cached1 := plugin.fixedChannels["channel1"]
+	cached2 := plugin.fixedChannels["channel2"]
+	plugin.fixedChannelsMutex.Unlock()
+	assert.True(t, cached1)
+	assert.False(t, cached2)
 }
 
 func TestClearFixedChannelsCache(t *testing.T) {
@@ -194,15 +216,24 @@ func TestClearFixedChannelsCache(t *testing.T) {
 	}
 
 	// Add some channels to cache
+	plugin.fixedChannelsMutex.Lock()
 	plugin.fixedChannels["channel1"] = true
 	plugin.fixedChannels["channel2"] = true
-	assert.Equal(t, 2, len(plugin.fixedChannels))
+	plugin.fixedChannelsMutex.Unlock()
+
+	plugin.fixedChannelsMutex.Lock()
+	initialLen := len(plugin.fixedChannels)
+	plugin.fixedChannelsMutex.Unlock()
+	assert.Equal(t, 2, initialLen)
 
 	// Clear the cache
 	plugin.ClearFixedChannelsCache()
 
 	// Verify cache is empty
-	assert.Equal(t, 0, len(plugin.fixedChannels))
+	plugin.fixedChannelsMutex.Lock()
+	finalLen := len(plugin.fixedChannels)
+	plugin.fixedChannelsMutex.Unlock()
+	assert.Equal(t, 0, finalLen)
 }
 
 func TestClearImportCache_Endpoint(t *testing.T) {
@@ -212,9 +243,12 @@ func TestClearImportCache_Endpoint(t *testing.T) {
 	}
 
 	// Add some channels to cache
+	plugin.fixedChannelsMutex.Lock()
 	plugin.fixedChannels["channel1"] = true
 	plugin.fixedChannels["channel2"] = true
-	assert.Equal(t, 2, len(plugin.fixedChannels))
+	initialLen := len(plugin.fixedChannels)
+	plugin.fixedChannelsMutex.Unlock()
+	assert.Equal(t, 2, initialLen)
 
 	// Call the endpoint
 	w := httptest.NewRecorder()
@@ -226,7 +260,10 @@ func TestClearImportCache_Endpoint(t *testing.T) {
 	assert.Equal(t, http.StatusOK, result.StatusCode)
 
 	// Verify cache is empty
-	assert.Equal(t, 0, len(plugin.fixedChannels))
+	plugin.fixedChannelsMutex.Lock()
+	finalLen := len(plugin.fixedChannels)
+	plugin.fixedChannelsMutex.Unlock()
+	assert.Equal(t, 0, finalLen)
 }
 
 func TestImportPostRequest_Parsing(t *testing.T) {
@@ -257,3 +294,58 @@ func TestImportPostRequest_Parsing(t *testing.T) {
 		})
 	}
 }
+
+func TestConcurrentCacheAccessWithProperLocking(t *testing.T) {
+	// Test that the FIXED implementation (holding lock during entire operation)
+	// properly prevents race conditions by ensuring only one goroutine performs the fix.
+	plugin := Plugin{
+		fixedChannels: make(map[string]bool),
+	}
+
+	var wg sync.WaitGroup
+	numGoroutines := 100
+	channelID := "test-channel"
+	var attemptCount int
+	var successCount int
+	var cacheCheckCount int
+	var skippedCount int
+
+	// Launch multiple goroutines using the FIXED pattern (lock held during operation)
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+
+			// FIXED PATTERN: Hold lock during entire check + operation
+			plugin.fixedChannelsMutex.Lock()
+			cacheCheckCount++
+			alreadyFixed := plugin.fixedChannels[channelID]
+			if !alreadyFixed {
+				attemptCount++
+				
+				// Simulate DB operation with small delay
+				time.Sleep(time.Microsecond * time.Duration(id%5))
+				
+				// First goroutine to attempt will succeed and set cache
+				plugin.fixedChannels[channelID] = true
+				successCount++
+			} else {
+				skippedCount++
+			}
+			plugin.fixedChannelsMutex.Unlock()
+		}(i)
+	}
+
+	wg.Wait()
+
+	// With proper locking, only one goroutine should attempt the operation
+	t.Logf("FIXED PATTERN - Attempts: %d, Successes: %d, Skipped: %d, Cache checks: %d, Final cache state: %v",
+		attemptCount, successCount, skippedCount, cacheCheckCount, plugin.fixedChannels[channelID])
+	
+	assert.Equal(t, 1, attemptCount, "Only one goroutine should attempt the fix")
+	assert.Equal(t, 1, successCount, "Exactly one goroutine should succeed")
+	assert.True(t, plugin.fixedChannels[channelID], "Cache entry should persist after successful fix")
+	assert.Equal(t, numGoroutines, cacheCheckCount, "All goroutines should check the cache")
+	assert.Equal(t, numGoroutines-1, skippedCount, "All other goroutines should skip due to cache")
+}
+

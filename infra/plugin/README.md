@@ -16,21 +16,21 @@ A Mattermost plugin for importing messages and metadata from external sources as
 
 ## API Endpoints (implemented here)
 
-- POST `/plugins/mm-importer/api/v1/import` — создать пост от имени любого пользователя
-- POST `/plugins/mm-importer/api/v1/import/clear_cache` — clear the thread membership fix cache (call after import batch completes)
-- POST `/plugins/mm-importer/api/v1/reaction` — добавить реакцию к посту
-- POST `/plugins/mm-importer/api/v1/channel` — создать/получить канал (нормализация имени)
-- POST `/plugins/mm-importer/api/v1/channel/members` — добавить участников (bulk)
-- POST `/plugins/mm-importer/api/v1/channel/archive` — архивировать канал
-- POST `/plugins/mm-importer/api/v1/dm` — создать/получить личный канал (2 пользователя)
-- POST `/plugins/mm-importer/api/v1/gdm` — создать/получить групповой DM
+- POST `/plugins/mm-importer/api/v1/import` — create a post as any user
+- POST `/plugins/mm-importer/api/v1/import/clear_cache` — clear the channel fix cache (call after import batch completes)
+- POST `/plugins/mm-importer/api/v1/reaction` — add a reaction to a post
+- POST `/plugins/mm-importer/api/v1/channel` — create/get channel (with name normalization)
+- POST `/plugins/mm-importer/api/v1/channel/members` — add members (bulk)
+- POST `/plugins/mm-importer/api/v1/channel/archive` — archive a channel
+- POST `/plugins/mm-importer/api/v1/dm` — create/get direct message channel (2 users)
+- POST `/plugins/mm-importer/api/v1/gdm` — create/get group direct message
 
 ### Channel name normalization
 - lower-case
-- пробелы/точки/подчёркивания → `-`
-- только ASCII буквы/цифры/`-`
-- сжатие повторяющихся дефисов
-- длина 2..64 символа
+- spaces/dots/underscores → `-`
+- only ASCII letters/numbers/`-`
+- compress repeated dashes
+- length 2..64 characters
 
 ### Quick examples
 
