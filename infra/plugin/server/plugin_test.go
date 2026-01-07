@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -306,10 +305,10 @@ func TestConcurrentCacheAccessWithProperLocking(t *testing.T) {
 	var wg sync.WaitGroup
 	numGoroutines := 100
 	channelID := "test-channel"
-	var attemptCount int32
-	var successCount int32
-	var cacheCheckCount int32
-	var skippedCount int32
+	var attemptCount int
+	var successCount int
+	var cacheCheckCount int
+	var skippedCount int
 
 	// Launch multiple goroutines using the FIXED pattern (lock held during operation)
 	for i := 0; i < numGoroutines; i++ {
@@ -319,19 +318,19 @@ func TestConcurrentCacheAccessWithProperLocking(t *testing.T) {
 
 			// FIXED PATTERN: Hold lock during entire check + operation
 			plugin.fixedChannelsMutex.Lock()
-			atomic.AddInt32(&cacheCheckCount, 1)
+			cacheCheckCount++
 			alreadyFixed := plugin.fixedChannels[channelID]
 			if !alreadyFixed {
-				atomic.AddInt32(&attemptCount, 1)
+				attemptCount++
 				
 				// Simulate DB operation with small delay
 				time.Sleep(time.Microsecond * time.Duration(id%5))
 				
 				// First goroutine to attempt will succeed and set cache
 				plugin.fixedChannels[channelID] = true
-				atomic.AddInt32(&successCount, 1)
+				successCount++
 			} else {
-				atomic.AddInt32(&skippedCount, 1)
+				skippedCount++
 			}
 			plugin.fixedChannelsMutex.Unlock()
 		}(i)
@@ -343,10 +342,10 @@ func TestConcurrentCacheAccessWithProperLocking(t *testing.T) {
 	t.Logf("FIXED PATTERN - Attempts: %d, Successes: %d, Skipped: %d, Cache checks: %d, Final cache state: %v",
 		attemptCount, successCount, skippedCount, cacheCheckCount, plugin.fixedChannels[channelID])
 	
-	assert.Equal(t, int32(1), attemptCount, "Only one goroutine should attempt the fix")
-	assert.Equal(t, int32(1), successCount, "Exactly one goroutine should succeed")
+	assert.Equal(t, 1, attemptCount, "Only one goroutine should attempt the fix")
+	assert.Equal(t, 1, successCount, "Exactly one goroutine should succeed")
 	assert.True(t, plugin.fixedChannels[channelID], "Cache entry should persist after successful fix")
-	assert.Equal(t, int32(numGoroutines), cacheCheckCount, "All goroutines should check the cache")
-	assert.Equal(t, int32(numGoroutines-1), skippedCount, "All other goroutines should skip due to cache")
+	assert.Equal(t, numGoroutines, cacheCheckCount, "All goroutines should check the cache")
+	assert.Equal(t, numGoroutines-1, skippedCount, "All other goroutines should skip due to cache")
 }
 
