@@ -907,3 +907,147 @@ async def test_bot_export_improved_error_message():
     assert "different validation issue" in error_msg
     assert "check if the username or other bot fields are valid" in error_msg
     assert "Original Mattermost error:" in error_msg
+
+
+@pytest.mark.asyncio
+async def test_uslackbot_as_regular_user_when_bot_creation_disabled():
+    """Test USLACKBOT with empty name is normalized when exported as regular user.
+
+    Scenario (from issue):
+    - Bot with empty name falls back to uppercase Slack ID
+    - Bot creation disabled in Mattermost
+    - Bot exported as regular user
+    - Username normalized to avoid 'Invalid username.' error
+    """
+    entity = DummyEntity(
+        "USLACKBOT",
+        {
+            "name": "",  # Empty name - falls back to slack_id
+            "is_bot": True,
+            "profile": {"real_name": "Slackbot"},
+        },
+    )
+
+    exporter = UserExporter(entity)
+    exporter.set_status = AsyncMock()
+    exporter.mm_api_post = AsyncMock()
+    exporter._upload_avatar = AsyncMock()
+    exporter._ensure_user_in_team = AsyncMock()
+
+    # Mock config check to return bot creation disabled
+    mock_config_resp = MagicMock()
+    mock_config_resp.status_code = 200
+    mock_config_resp.json = lambda: {
+        "ServiceSettings": {"EnableBotAccountCreation": False}
+    }
+
+    # Mock user creation success
+    mock_user_resp = MagicMock()
+    mock_user_resp.status_code = 201
+    mock_user_resp.json = lambda: {"id": "slackbot-user-id", "username": "uslackbot"}
+
+    # Mock for email/username lookups (return 404 - not found)
+    mock_not_found = MagicMock()
+    mock_not_found.status_code = 404
+
+    async def mock_get(path):
+        if path == "/api/v4/config":
+            return mock_config_resp
+        else:
+            return mock_not_found
+
+    exporter.mm_api_get = AsyncMock(side_effect=mock_get)
+    exporter.mm_api_post.return_value = mock_user_resp
+
+    # Reset cache before test
+    UserExporter._config_cache_checked = False
+    UserExporter._mm_config_cache = None
+
+    await exporter.export_entity()
+
+    # Verify bot was created as regular user (not via /api/v4/bots)
+    exporter.mm_api_post.assert_awaited_once()
+    call_args = exporter.mm_api_post.call_args
+    assert call_args[0][0] == "/api/v4/users"
+
+    # Verify username was normalized (USLACKBOT -> uslackbot)
+    payload = call_args[0][1]
+    assert payload["username"] == "uslackbot"
+    # Email should also use normalized username
+    assert "uslackbot@example.com" in payload["email"]
+
+    # Verify success
+    assert entity.mattermost_id == "slackbot-user-id"
+    exporter.set_status.assert_awaited_with("success")
+
+
+@pytest.mark.asyncio
+async def test_bot_with_b_prefix_id_as_regular_user():
+    """Test B* bot IDs (like B058SFFG9SM) are normalized when exported as regular user.
+
+    Scenario (from issue):
+    - Bot with B* prefix ID and no name
+    - Exported as regular user
+    - Username normalized to meet Mattermost requirements
+    """
+    entity = DummyEntity(
+        "B058SFFG9SM",
+        {
+            "name": "",  # Empty name
+            "is_bot": True,
+            "profile": {},
+        },
+    )
+
+    exporter = UserExporter(entity)
+    exporter.set_status = AsyncMock()
+    exporter.mm_api_post = AsyncMock()
+    exporter._upload_avatar = AsyncMock()
+    exporter._ensure_user_in_team = AsyncMock()
+
+    # Mock config check to return bot creation disabled
+    mock_config_resp = MagicMock()
+    mock_config_resp.status_code = 200
+    mock_config_resp.json = lambda: {
+        "ServiceSettings": {"EnableBotAccountCreation": False}
+    }
+
+    # Mock user creation success
+    mock_user_resp = MagicMock()
+    mock_user_resp.status_code = 201
+    mock_user_resp.json = lambda: {"id": "bot-b058-id", "username": "b058sffg9sm"}
+
+    # Mock for lookups
+    mock_not_found = MagicMock()
+    mock_not_found.status_code = 404
+
+    async def mock_get(path):
+        if path == "/api/v4/config":
+            return mock_config_resp
+        else:
+            return mock_not_found
+
+    exporter.mm_api_get = AsyncMock(side_effect=mock_get)
+    exporter.mm_api_post.return_value = mock_user_resp
+
+    # Reset cache
+    UserExporter._config_cache_checked = False
+    UserExporter._mm_config_cache = None
+
+    await exporter.export_entity()
+
+    # Verify created as regular user
+    call_args = exporter.mm_api_post.call_args
+    assert call_args[0][0] == "/api/v4/users"
+
+    # Verify username was normalized (B058SFFG9SM -> b058sffg9sm)
+    payload = call_args[0][1]
+    assert payload["username"] == "b058sffg9sm"
+    assert len(payload["username"]) > 0  # Not empty
+    assert payload["username"][0].isalpha()  # Starts with letter
+    assert payload["username"].islower()  # All lowercase
+    assert len(payload["username"]) <= 64  # Within length limit
+
+    # Verify success
+    assert entity.mattermost_id == "bot-b058-id"
+    exporter.set_status.assert_awaited_with("success")
