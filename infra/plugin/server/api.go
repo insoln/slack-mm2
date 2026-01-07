@@ -158,25 +158,12 @@ func (p *Plugin) ImportPost(w http.ResponseWriter, r *http.Request) {
 	// Only run for threaded posts (when RootID is set) to avoid unnecessary database operations
 	// Use caches to avoid redundant operations for the same thread and channel during bulk imports
 	if req.RootID != "" {
-		// Check if this thread has already been marked as read, and if not, mark it
-		// Hold the lock during check and update to avoid race conditions
-		p.fixedChannelsMutex.Lock()
-		alreadyMarkedThread := p.processedThreads[req.RootID]
-		if !alreadyMarkedThread {
-			p.processedThreads[req.RootID] = true
-		}
-		p.fixedChannelsMutex.Unlock()
-
 		// Mark this thread as read for all members so imported historical mentions do not generate unread counters.
-		// Only perform the operation if we haven't already processed this thread.
-		// If this attempt fails, we keep the cache entry to avoid redundant or unsafe retries on
-		// partially updated data (e.g., if one of the two UPDATE queries succeeded).
-		if !alreadyMarkedThread {
-			if err := p.markThreadAsReadForAllMembers(req.RootID, created.CreateAt); err != nil {
-				p.API.LogWarn("Failed to mark thread as read for members", "channel_id", req.ChannelID, "root_post_id", req.RootID, "error", err.Error())
-				// Don't fail the request if marking as read fails - the post was created successfully.
-				// Cache entry remains set to prevent redundant retries that could cause inconsistent state.
-			}
+		// This is called on EVERY threaded reply import to ensure that lastviewed tracks the latest reply.
+		// Without this, Mattermost's CreatePost API increments unreadmentions when a reply contains @mentions.
+		if err := p.markThreadAsReadForAllMembers(req.RootID, created.CreateAt); err != nil {
+			p.API.LogWarn("Failed to mark thread as read for members", "channel_id", req.ChannelID, "root_post_id", req.RootID, "error", err.Error())
+			// Don't fail the request if marking as read fails - the post was created successfully.
 		}
 
 		// Check if this channel has already been fixed, and if not, perform the fix
@@ -1393,27 +1380,21 @@ func (p *Plugin) fixInconsistentThreadMemberships(channelID string) error {
 	return nil
 }
 
-// ClearFixedChannelsCache clears the cache of fixed channels and processed threads.
+// ClearFixedChannelsCache clears the cache of fixed channels.
 // This should be called after an import session completes to prevent unbounded cache growth.
 func (p *Plugin) ClearFixedChannelsCache() {
 	p.fixedChannelsMutex.Lock()
 	defer p.fixedChannelsMutex.Unlock()
 
 	if p.API != nil {
-		channelsCacheSize := len(p.fixedChannels)
-		threadsCacheSize := len(p.processedThreads)
-		totalCacheSize := channelsCacheSize + threadsCacheSize
-		if totalCacheSize > 0 {
-			p.API.LogDebug("Clearing import caches",
-				"channels_cached", channelsCacheSize,
-				"threads_cached", threadsCacheSize,
-				"total_items", totalCacheSize)
+		cacheSize := len(p.fixedChannels)
+		if cacheSize > 0 {
+			p.API.LogDebug("Clearing fixed channels cache", "cache_size", cacheSize)
 		}
 	}
 
-	// Clear the caches by creating new empty maps
+	// Clear the cache by creating a new empty map
 	p.fixedChannels = make(map[string]bool)
-	p.processedThreads = make(map[string]bool)
 }
 
 // makeDriverArgs converts variadic arguments to driver.NamedValue slice
