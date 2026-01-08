@@ -52,10 +52,8 @@ docker compose -f docker-compose.prod.yml up --build -d
 После первого запуска необходимо собрать и задеплоить плагин:
 
 ```bash
-# Соберите плагин
-cd plugin
-bash build-docker.sh
-cd ..
+# Соберите плагин (из корня репозитория)
+bash infra/plugin/build-docker.sh
 
 # Дождитесь готовности backend
 curl http://localhost:8000/healthcheck
@@ -72,12 +70,13 @@ curl http://localhost:8000/api/plugin/status
 
 ## Обновление проекта
 
-Процедура обновления инсталляции:
+Процедура обновления инсталляции (все команды из корня репозитория):
 
 1. **Остановите стек**:
    ```bash
    cd infra
    docker compose -f docker-compose.prod.yml down
+   cd ..
    ```
 
 2. **Обновите код** до последней версии:
@@ -87,14 +86,14 @@ curl http://localhost:8000/api/plugin/status
 
 3. **Пересоберите плагин** (если были изменения в `infra/plugin/`):
    ```bash
-   cd plugin
-   bash build-docker.sh
-   cd ..
+   bash infra/plugin/build-docker.sh
    ```
 
 4. **Пересоберите и запустите обновленный стек**:
    ```bash
+   cd infra
    docker compose -f docker-compose.prod.yml up --build -d
+   cd ..
    ```
 
 5. **Задеплойте обновленный плагин** (если пересобирали на шаге 3):

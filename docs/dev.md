@@ -296,7 +296,7 @@ bash infra/plugin/build-docker.sh
 - `webapp/` — React webapp (if any UI)
 - `build-docker.sh` — Multi-stage Docker build helper (authoritative path)
 
-**Important**: Legacy `build-dev.sh` and old Makefile have been removed. Use only `build-docker.sh`.
+**Important**: Legacy helper scripts (`build-dev.sh`) and the old Makefile still exist in the repository but are **deprecated** and should not be used. For all builds, use only `build-docker.sh`.
 
 #### Versioning (SemVer)
 
@@ -502,7 +502,10 @@ We intentionally minimize the number of environment variables.
 1. **Only necessary environment configuration**: Service paths (URLs), access tokens, timeout/pool sizes, performance parameters required for deployment in different environments (dev/stage/prod)
 2. **No feature-flags via env**: Application functionality should behave identically for same code version. New features enabled immediately (or via explicit data version logic / entity presence), not via hidden toggles
 3. **CI/Prod repeatability**: Everything affecting logic branching is fixed in code or repository config files (migrations, manifests), not in random environment variables
-4. **Acceptable exceptions**: Secrets and parameters impossible to store in Git (passwords, tokens), and values objectively different between installations (domain names, external URLs). These should NOT change algorithm behavior
+4. **Acceptable exceptions**: 
+   - Secrets and parameters impossible to store in Git (passwords, tokens)
+   - Values objectively different between installations (domain names, external URLs)
+   - **Operational emergency toggles**: Temporary flags to disable problematic subsystems in production emergencies (must be documented as exceptional, temporary measure)
 5. **If you think you need a new env variable "to quickly disable/enable something"**, first rethink architecture (can we make code idempotent/safe always) or fix behavior via config in repository
 
 **Consequence**: When reviewing any new env variable, must explicitly describe why it's impossible without it (not reproducible or requires secret) and how absence of "hidden mode" is guaranteed.
@@ -517,7 +520,7 @@ We intentionally minimize the number of environment variables.
 - `ATTACHMENT_WORKERS` — File upload workers (defaults to EXPORT_WORKERS)
 - `EXPORT_CHANNEL_CONCURRENCY` — Max parallel channels during message publishing
 - `ATTACHMENT_URL_TIMEOUT_SECONDS` — Extended timeout for large attachment streaming (default 600s)
-- `SKIP_ATTACHMENT_EXPORT` — Emergency toggle (1/true) to skip attachment export stage
+- `SKIP_ATTACHMENT_EXPORT` — **Emergency operational toggle** (1/true) to skip attachment export stage. Use only as temporary measure in production emergencies; manually reset affected entity statuses for re-export after issue is resolved
 - `PLUGIN_BUNDLE_URL` — Optional remote plugin bundle URL
 - Database pool settings: `DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_POOL_TIMEOUT`
 - HTTP pool settings: `MM_MAX_KEEPALIVE`, `MM_MAX_CONNECTIONS`, `MM_HTTP2`
