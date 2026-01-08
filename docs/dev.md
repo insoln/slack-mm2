@@ -118,11 +118,12 @@ Full details in `backend/app/services/export/README.md`. Summary:
    SLACK_BOT_TOKEN=test_bot_token
    SLACK_SIGNING_SECRET=test_signing_secret
    EOF
+   cd ..
    ```
 
 2. **Start full development stack** (always full stack, no partial service startup):
    ```bash
-   docker compose -f docker-compose.dev.yml up --build -d
+   docker compose -f infra/docker-compose.dev.yml up --build -d
    ```
    
    **IMPORTANT**: Initial build may take 15+ minutes downloading images and building containers. Set timeout to 30+ minutes for first build. Subsequent builds are faster with caching.

@@ -40,6 +40,7 @@ EOF
 ```bash
 cd infra
 docker compose -f docker-compose.prod.yml up --build -d
+cd ..
 ```
 
 Сервисы будут доступны по следующим адресам:
@@ -118,8 +119,7 @@ curl http://localhost:8000/api/plugin/status
 
 1. **Соберите плагин** (создаст `infra/plugin/dist/mm-importer-<version>.tar.gz`):
    ```bash
-   cd infra/plugin
-   bash build-docker.sh
+   bash infra/plugin/build-docker.sh
    ```
    Сборка занимает ~60-90 секунд при первом запуске.
 
