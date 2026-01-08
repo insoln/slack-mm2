@@ -195,7 +195,8 @@ class TestAttachmentExporter:
 
             # Verify failure status was set with plugin error
             mock_set_status.assert_called_once_with(
-                "failed", error="Plugin upload failed: 400 Invalid file URL"
+                "failed",
+                error="[plugin_error] Plugin upload failed: 400 Invalid file URL",
             )
 
     @pytest.mark.asyncio
@@ -312,3 +313,33 @@ class TestAttachmentExporter:
             "skipped",
             error="Attachment export disabled via SKIP_ATTACHMENT_EXPORT",
         )
+
+    @pytest.mark.asyncio
+    async def test_export_entity_mm_max_file_size_exceeded(self):
+        """Test that files exceeding MM MaxFileSize are skipped via preflight check."""
+        # Setup 150MB file (exceeds default 100MB limit)
+        raw_data = {
+            "name": "huge-video.mp4",
+            "url_private": "https://files.slack.com/files-pri/T123/F123/huge-video.mp4",
+            "size": 150 * 1024 * 1024,  # 150MB
+        }
+        entity = self.create_mock_attachment_entity(raw_data)
+        exporter = AttachmentExporter(entity)
+
+        # Mock MM MaxFileSize to return 100MB
+        with patch.object(
+            exporter, "get_mm_max_file_size", return_value=100 * 1024 * 1024
+        ), patch.object(
+            exporter, "set_status", new_callable=AsyncMock
+        ) as mock_set_status, patch.object(
+            exporter, "log_export"
+        ):
+            await exporter.export_entity()
+
+            # Verify file was skipped due to MM size limit
+            mock_set_status.assert_called_once()
+            call_args = mock_set_status.call_args
+            assert call_args[0][0] == "skipped"
+            assert "exceeds Mattermost limit" in call_args[1]["error"]
+            assert "150.0MB" in call_args[1]["error"]
+            assert "100.0MB" in call_args[1]["error"]

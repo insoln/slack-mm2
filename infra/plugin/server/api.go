@@ -38,6 +38,7 @@ func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Req
 	})
 
 	apiRouter.HandleFunc("/hello", p.HelloWorld).Methods(http.MethodGet)
+	apiRouter.HandleFunc("/config/max_file_size", p.GetMaxFileSize).Methods(http.MethodGet)
 	apiRouter.HandleFunc("/import", p.ImportPost).Methods(http.MethodPost)
 	apiRouter.HandleFunc("/import/clear_cache", p.ClearImportCache).Methods(http.MethodPost)
 	apiRouter.HandleFunc("/reaction", p.ImportReaction).Methods(http.MethodPost)
@@ -93,6 +94,32 @@ func (p *Plugin) HelloWorld(w http.ResponseWriter, r *http.Request) {
 	// Return plain text for compatibility with existing unit test
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = w.Write([]byte("Hello, world!"))
+}
+
+// GetMaxFileSize returns the Mattermost FileSettings.MaxFileSize configuration value.
+// This allows the backend to preflight-check attachment sizes before attempting upload.
+type MaxFileSizeResponse struct {
+	MaxFileSize int64  `json:"max_file_size"`
+	Error       string `json:"error,omitempty"`
+}
+
+func (p *Plugin) GetMaxFileSize(w http.ResponseWriter, r *http.Request) {
+	if p.API == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(MaxFileSizeResponse{Error: "API not available"})
+		return
+	}
+
+	config := p.API.GetConfig()
+	if config == nil || config.FileSettings.MaxFileSize == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(MaxFileSizeResponse{Error: "Could not retrieve file settings"})
+		return
+	}
+
+	maxFileSize := *config.FileSettings.MaxFileSize
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(MaxFileSizeResponse{MaxFileSize: maxFileSize})
 }
 
 // ---------------- Posts ----------------
@@ -517,6 +544,15 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// Get Mattermost MaxFileSize for preflight validation
+	var maxFileSize int64
+	if p.API != nil {
+		config := p.API.GetConfig()
+		if config != nil && config.FileSettings.MaxFileSize != nil {
+			maxFileSize = *config.FileSettings.MaxFileSize
+		}
+	}
+
 	// Use the shared plugin HTTP client to download the file
 	httpReq, err := http.NewRequest("GET", req.FileURL, nil)
 	if err != nil {
@@ -542,6 +578,21 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 
 	// Get content length for upload session
 	contentLength := resp.ContentLength
+	
+	// Preflight size check: reject files exceeding MaxFileSize before streaming
+	if maxFileSize > 0 && contentLength > 0 && contentLength > maxFileSize {
+		if p.API != nil {
+			p.API.LogWarn("Rejecting oversized file before download",
+				"filename", req.Filename,
+				"content_length", contentLength,
+				"max_file_size", maxFileSize)
+		}
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{
+			Error: fmt.Sprintf("File size %d bytes exceeds maximum allowed size %d bytes", contentLength, maxFileSize),
+		})
+		return
+	}
 	if contentLength <= 0 {
 		// If content length is not provided, we need to fall back to reading all data
 		data, err := io.ReadAll(resp.Body)
@@ -666,7 +717,14 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Stream file data to Mattermost (happy path)
-	fi, err := p.API.UploadData(us, resp.Body)
+	// Wrap response body with LimitedReader to enforce hard cap on bytes read
+	var reader io.Reader = resp.Body
+	if maxFileSize > 0 {
+		// Add 1 to detect if we exceed the limit (we'll read maxFileSize+1 bytes)
+		reader = io.LimitReader(resp.Body, maxFileSize+1)
+	}
+	
+	fi, err := p.API.UploadData(us, reader)
 	if err != nil {
 		// On streaming error, attempt one-time fallback to legacy read+UploadFile if body still readable
 		data, rerr := io.ReadAll(resp.Body)
