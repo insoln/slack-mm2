@@ -42,18 +42,17 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
         # Preflight size check against Mattermost MaxFileSize
         # This prevents wasting time/bandwidth on files that MM will reject
         mm_max_size = await self.get_mm_max_file_size()
-        if mm_max_size and isinstance(size_bytes, int) and size_bytes > 0:
-            if size_bytes > mm_max_size:
-                size_mb = size_bytes / (1024 * 1024)
-                max_mb = mm_max_size / (1024 * 1024)
-                await self.set_status(
-                    "skipped",
-                    error=f"File {filename} ({size_mb:.1f}MB) exceeds Mattermost limit ({max_mb:.1f}MB)",
-                )
-                backend_logger.warning(
-                    f"Skip oversized attachment {self.entity.slack_id}: {size_mb:.1f}MB > {max_mb:.1f}MB (MM limit)"
-                )
-                return
+        if mm_max_size and isinstance(size_bytes, int) and size_bytes > mm_max_size:
+            size_mb = size_bytes / (1024 * 1024)
+            max_mb = mm_max_size / (1024 * 1024)
+            await self.set_status(
+                "skipped",
+                error=f"File {filename} ({size_mb:.1f}MB) exceeds Mattermost limit ({max_mb:.1f}MB)",
+            )
+            backend_logger.warning(
+                f"Skip oversized attachment {self.entity.slack_id}: {size_mb:.1f}MB > {max_mb:.1f}MB (MM limit)"
+            )
+            return
 
         # Legacy size cap (ATTACHMENT_MAX_MB) - kept for backwards compatibility
         # but Mattermost MaxFileSize takes precedence

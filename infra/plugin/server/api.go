@@ -720,8 +720,8 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 	// Wrap response body with LimitedReader to enforce hard cap on bytes read
 	var reader io.Reader = resp.Body
 	if maxFileSize > 0 {
-		// Add 1 to detect if we exceed the limit (we'll read maxFileSize+1 bytes)
-		reader = io.LimitReader(resp.Body, maxFileSize+1)
+		// Enforce strict size limit to match MM config
+		reader = io.LimitReader(resp.Body, maxFileSize)
 	}
 	
 	fi, err := p.API.UploadData(us, reader)
