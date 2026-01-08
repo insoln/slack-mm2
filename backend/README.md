@@ -1,3 +1,9 @@
+# Backend (FastAPI)
+
+Backend реализует REST API для загрузки данных Slack (файл/вебхук), healthcheck и взаимодействия с базой данных.
+
+**Для разработчиков**: См. [Developer Documentation](../docs/dev.md) для полной информации по настройке среды разработки, тестированию и workflow.
+
 ## Import / Export Pipeline
 
 The importer runs in a single pass reading Slack export JSON files, creating entities (users, channels, messages, reactions, attachments, custom emoji) and their relations. The exporter then processes entities in dependency order.

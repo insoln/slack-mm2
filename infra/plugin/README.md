@@ -2,6 +2,8 @@
 
 A Mattermost plugin for importing messages and metadata from external sources as any user, preserving threading and user metadata.
 
+**For developers**: See [Developer Documentation](../../docs/dev.md) for full information on building, testing and deployment workflow.
+
 ## Features
 
 - Import messages as any user
