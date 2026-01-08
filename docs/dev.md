@@ -208,11 +208,13 @@ pytest tests/unit
 
 **Unit tests with coverage** (~6 seconds):
 ```bash
+cd backend
 pytest tests/unit --cov=app --cov-report=term-missing
 ```
 
 **Integration tests** (~1 second, requires running services):
 ```bash
+cd backend
 # Set Mattermost credentials
 export MATTERMOST_API_TOKEN=5x7rr788c7gwdnkdr9imb49ffo
 export MATTERMOST_API_URL=http://localhost:8065/api/v4/users/me
@@ -222,6 +224,7 @@ pytest tests/integration
 
 **All tests with coverage** (~6 seconds):
 ```bash
+cd backend
 pytest --cov=app --cov-report=term-missing
 ```
 
@@ -254,22 +257,25 @@ npm run lint  # ALWAYS run before committing
 
 **Build** (~1.7 seconds):
 ```bash
+cd frontend
 npm run build
 ```
 
 **Development server**:
 ```bash
+cd frontend
 npm run dev  # Starts on port 5173
 ```
 
 **Preview production build**:
 ```bash
+cd frontend
 npm run preview
 ```
 
 #### Updating Dependencies
 
-After changing `package.json`:
+After changing `package.json` (run from repository root):
 ```bash
 docker compose -f infra/docker-compose.dev.yml build frontend
 docker compose -f infra/docker-compose.dev.yml up -d frontend --force-recreate
