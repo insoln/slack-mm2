@@ -18,14 +18,35 @@ A Mattermost plugin for importing messages and metadata from external sources as
 
 ## API Endpoints (implemented here)
 
+- GET `/plugins/mm-importer/api/v1/config/max_file_size` — retrieve Mattermost `FileSettings.MaxFileSize` for preflight validation
 - POST `/plugins/mm-importer/api/v1/import` — create a post as any user
 - POST `/plugins/mm-importer/api/v1/import/clear_cache` — clear the channel fix cache (call after import batch completes)
 - POST `/plugins/mm-importer/api/v1/reaction` — add a reaction to a post
+- POST `/plugins/mm-importer/api/v1/attachment_from_url` — download file from URL and upload to Mattermost (with preflight size checks)
 - POST `/plugins/mm-importer/api/v1/channel` — create/get channel (with name normalization)
 - POST `/plugins/mm-importer/api/v1/channel/members` — add members (bulk)
 - POST `/plugins/mm-importer/api/v1/channel/archive` — archive a channel
 - POST `/plugins/mm-importer/api/v1/dm` — create/get direct message channel (2 users)
 - POST `/plugins/mm-importer/api/v1/gdm` — create/get group direct message
+
+### Attachment Size Validation
+
+The plugin performs multiple layers of size validation to prevent wasting bandwidth and time on files that Mattermost will reject:
+
+1. **Preflight check**: When `Content-Length` is available in the download response, the plugin compares it against `FileSettings.MaxFileSize`. If exceeded, it returns HTTP 413 immediately without downloading.
+
+2. **Streaming limit**: During file streaming, `io.LimitReader` enforces a hard cap at `MaxFileSize + 1` bytes to detect and abort oversized transfers early.
+
+3. **Error responses**: 
+   - `HTTP 413` (Request Entity Too Large) — file size exceeds Mattermost limit
+   - Error message includes both actual size and maximum allowed for operator visibility
+
+Example error:
+```json
+{
+  "error": "File size 157286400 bytes exceeds maximum allowed size 104857600 bytes"
+}
+```
 
 ### Channel name normalization
 - lower-case
