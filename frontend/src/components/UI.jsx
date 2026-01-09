@@ -132,32 +132,32 @@ export const SegmentedProgressBar = ({ success = 0, failed = 0, skipped = 0, pen
         border: '1px solid var(--border)'
       }}
       role="progressbar"
-      aria-valuenow={successPct + failedPct + skippedPct}
+      aria-valuenow={Math.round(successPct + failedPct + skippedPct)}
       aria-valuemin="0"
       aria-valuemax="100"
     >
       {successPct > 0 && (
         <div 
           style={{ width: `${successPct}%`, background: '#22c55e' }}
-          title={`Успешно: ${success}`}
+          title={`Успешно: ${success} (${successPct.toFixed(1)}%)`}
         />
       )}
       {failedPct > 0 && (
         <div 
           style={{ width: `${failedPct}%`, background: '#f87171' }}
-          title={`Ошибки: ${failed}`}
+          title={`Ошибки: ${failed} (${failedPct.toFixed(1)}%)`}
         />
       )}
       {skippedPct > 0 && (
         <div 
           style={{ width: `${skippedPct}%`, background: '#6b7280' }}
-          title={`Пропущено: ${skipped}`}
+          title={`Пропущено: ${skipped} (${skippedPct.toFixed(1)}%)`}
         />
       )}
       {pendingPct > 0 && (
         <div 
           style={{ width: `${pendingPct}%`, background: '#3b82f6' }}
-          title={`Ожидает: ${pending}`}
+          title={`Ожидает: ${pending} (${pendingPct.toFixed(1)}%)`}
         />
       )}
     </div>
