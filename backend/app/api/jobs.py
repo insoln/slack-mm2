@@ -310,10 +310,10 @@ async def list_jobs(limit: int = 50):
                 stats_status_order = ["success", "failed", "skipped", "pending"]
                 stats_matrix = {}
                 for et in orchestrator_order:
-                    row = {}
+                    stats_row = {}
                     for st in stats_status_order:
-                        row[st] = export_status.get(et, {}).get(st, 0)
-                    stats_matrix[et] = row
+                        stats_row[st] = export_status.get(et, {}).get(st, 0)
+                    stats_matrix[et] = stats_row
                 data["stats"] = {
                     "types": orchestrator_order,
                     "statuses": stats_status_order,
