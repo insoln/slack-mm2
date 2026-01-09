@@ -349,3 +349,45 @@ func TestConcurrentCacheAccessWithProperLocking(t *testing.T) {
 	assert.Equal(t, numGoroutines-1, skippedCount, "All other goroutines should skip due to cache")
 }
 
+func TestGetMaxFileSize_NilAPI(t *testing.T) {
+	// Test that the endpoint handles nil API gracefully (test mode)
+	plugin := Plugin{}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/config/max_file_size", nil)
+
+	plugin.GetMaxFileSize(w, r)
+
+	result := w.Result()
+	assert.Equal(t, http.StatusInternalServerError, result.StatusCode)
+	
+	defer result.Body.Close()
+	var response MaxFileSizeResponse
+	err := json.NewDecoder(result.Body).Decode(&response)
+	assert.NoError(t, err)
+	assert.Equal(t, "API not available", response.Error)
+	assert.Equal(t, int64(0), response.MaxFileSize)
+}
+
+func TestGetMaxFileSize_ResponseFormat(t *testing.T) {
+	// Test that the endpoint returns proper JSON format in error case
+	// (We can't easily test success case without full API mock, but this validates
+	// the error response structure which is important for the backend integration)
+	plugin := Plugin{}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/config/max_file_size", nil)
+
+	plugin.GetMaxFileSize(w, r)
+
+	result := w.Result()
+	defer result.Body.Close()
+	
+	// Verify response structure is valid JSON
+	var response MaxFileSizeResponse
+	err := json.NewDecoder(result.Body).Decode(&response)
+	assert.NoError(t, err, "Response should be valid JSON")
+	assert.NotEmpty(t, response.Error, "Error field should be populated")
+	
+	// Verify the response contains the expected error
+	assert.Equal(t, "API not available", response.Error)
+}
+
