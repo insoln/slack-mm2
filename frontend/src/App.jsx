@@ -30,6 +30,14 @@ function App() {
   // Export matrix ordering (kept consistent with backend exporter)
   const exportOrder = ['user','custom_emoji','channel','message','attachment','reaction'];
   const labelMap = { user:'user', custom_emoji:'custom_emoji', attachment:'attachment', channel:'channel', message:'message', reaction:'reaction' };
+  
+  // Helper: Convert entity type to plural meta key
+  const getMetaPlural = (t) => {
+    if (t === 'user') return 'users';
+    if (t === 'custom_emoji') return 'emojis';
+    if (t === 'channel') return 'channels';
+    return t + (t.endsWith('s') ? '' : 's');
+  };
 
   // Toast helpers (deduplicated by tone+title+message within 5s)
   const pushToast = (t) => {
@@ -548,8 +556,7 @@ function App() {
                             let localTotal = succ + pend + fail + skip;
                             if (localTotal === 0 && !hasMatrixData) {
                               // Only use meta.totals for types completely absent from matrix
-                              const metaPlural = t === 'user' ? 'users' : t === 'custom_emoji' ? 'emojis' : t + (t.endsWith('s') ? '' : 's');
-                              const metaVal = Number((totals || {})[metaPlural]) || 0;
+                              const metaVal = Number((totals || {})[getMetaPlural(t)]) || 0;
                               localTotal = metaVal;
                             }
                             if (localTotal > 0 || hasMatrixData) {
