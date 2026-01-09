@@ -288,20 +288,40 @@ async def list_jobs(limit: int = 50):
                 all_status_values = [
                     m.value for m in MappingStatus
                 ]  # ['pending','skipped','failed','success']
-                for et in (
+                # Orchestrator order (matching stats endpoint for consistency)
+                orchestrator_order = [
                     "user",
+                    "custom_emoji",
                     "channel",
                     "message",
-                    "reaction",
                     "attachment",
-                    "custom_emoji",
-                ):
+                    "reaction",
+                ]
+                # Build matrix with zero-filled statuses for all types
+                for et in orchestrator_order:
                     et_counts_raw = br_map.get(et, {})
                     et_counts: dict[str, int] = {
                         s: int(et_counts_raw.get(s, 0)) for s in all_status_values
                     }
                     export_status[et] = et_counts
                 meta["export_status"] = export_status
+                # Add structured stats field matching /api/stats/mappings format
+                # Status order: success, failed, skipped, pending (UI-friendly)
+                stats_status_order = ["success", "failed", "skipped", "pending"]
+                # Types to include: exclude channel if not exported (or include with zeros)
+                # For now, include all types present in breakdown or orchestrator_order
+                types_present = set(orchestrator_order)
+                stats_matrix = {}
+                for et in orchestrator_order:
+                    row = {}
+                    for st in stats_status_order:
+                        row[st] = export_status.get(et, {}).get(st, 0)
+                    stats_matrix[et] = row
+                data["stats"] = {
+                    "types": orchestrator_order,
+                    "statuses": stats_status_order,
+                    "matrix": stats_matrix,
+                }
                 data["meta"] = meta
             jobs_out.append(data)
     return {"jobs": jobs_out}
