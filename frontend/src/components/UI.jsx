@@ -106,13 +106,13 @@ export const FileButton = ({ children = 'Выбрать файл', accept, onCha
 /**
  * SegmentedProgressBar - A multi-status progress bar with colored segments
  * @param {Object} props
- * @param {number} props.success - Percentage of success (0-100)
- * @param {number} props.failed - Percentage of failed (0-100)
- * @param {number} props.skipped - Percentage of skipped (0-100)
- * @param {number} props.pending - Percentage of pending (0-100)
+ * @param {number} props.success - Count of successful items
+ * @param {number} props.failed - Count of failed items
+ * @param {number} props.skipped - Count of skipped items
+ * @param {number} props.pending - Count of pending items
  */
 export const SegmentedProgressBar = ({ success = 0, failed = 0, skipped = 0, pending = 0 }) => {
-  // Normalize percentages to ensure they sum to 100
+  // Normalize counts into percentages so segments sum to 100
   const total = success + failed + skipped + pending;
   const normalize = (val) => total > 0 ? (val / total) * 100 : 0;
   
@@ -132,6 +132,7 @@ export const SegmentedProgressBar = ({ success = 0, failed = 0, skipped = 0, pen
         border: '1px solid var(--border)'
       }}
       role="progressbar"
+      // aria-valuenow intentionally excludes "pending" items, which represent unprocessed (incomplete) work
       aria-valuenow={Math.round(successPct + failedPct + skippedPct)}
       aria-valuemin="0"
       aria-valuemax="100"

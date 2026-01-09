@@ -73,9 +73,9 @@ async def get_mapping_stats(job_id: int | None = None):
         orchestrator_order = [
             "user",
             "custom_emoji",
-            "attachment",
             "channel",
             "message",
+            "attachment",
             "reaction",
         ]
         all_types_set = {row[0] for row in matrix_rows} | set(by_type.keys())

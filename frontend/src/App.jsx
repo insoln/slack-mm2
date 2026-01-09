@@ -28,7 +28,7 @@ function App() {
   const [restartingJobs, setRestartingJobs] = useState(new Set());
 
   // Export matrix ordering (kept consistent with backend exporter)
-  const exportOrder = ['user','custom_emoji','attachment','channel','message','reaction'];
+  const exportOrder = ['user','custom_emoji','channel','message','attachment','reaction'];
   const labelMap = { user:'user', custom_emoji:'custom_emoji', attachment:'attachment', channel:'channel', message:'message', reaction:'reaction' };
 
   // Toast helpers (deduplicated by tone+title+message within 5s)
@@ -654,9 +654,9 @@ function App() {
                                   totalAll = successAll + failedAll + skippedAll;
                                 }
                                 const label = totalAll > 0 ? `${successAll}/${totalAll}` : `${processed.messages}/${totals.messages || 0}`;
-                                const skippedNote = skippedAll > 0 ? ` (${skippedAll} skipped)` : '';
                                 const failNote = failedAll > 0 ? ` (${failedAll} failed)` : '';
-                                return <span>export {label}{skippedNote}{failNote}</span>;
+                                const skippedNote = skippedAll > 0 ? ` (${skippedAll} skipped)` : '';
+                                return <span>export {label}{failNote}{skippedNote}</span>;
                               })()}
                               {etaText && <span style={{color:'#6b7280'}}>{etaText}</span>}
                               <span style={{color:'#6b7280'}}>{pct}%</span>
