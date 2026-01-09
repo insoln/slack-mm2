@@ -1,6 +1,5 @@
 """Unit tests for stats API ordering logic."""
 
-import pytest
 from app.models.status_enum import MappingStatus
 
 
@@ -69,15 +68,6 @@ class TestStatsOrdering:
         )
 
         # Known types in orchestrator order, then unknown types alphabetically
-        expected = [
-            "user",
-            "channel",
-            "message",
-            "attachment",
-            "apple_type",
-            "zebra_type",
-        ]
-        # Fix: channel shouldn't be there if not in all_types_set
         expected = ["user", "message", "attachment", "apple_type", "zebra_type"]
         assert all_types == expected
 
