@@ -308,9 +308,6 @@ async def list_jobs(limit: int = 50):
                 # Add structured stats field matching /api/stats/mappings format
                 # Status order: success, failed, skipped, pending (UI-friendly)
                 stats_status_order = ["success", "failed", "skipped", "pending"]
-                # Types to include: exclude channel if not exported (or include with zeros)
-                # For now, include all types present in breakdown or orchestrator_order
-                types_present = set(orchestrator_order)
                 stats_matrix = {}
                 for et in orchestrator_order:
                     row = {}
