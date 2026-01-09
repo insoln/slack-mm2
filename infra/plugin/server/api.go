@@ -726,31 +726,7 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 	
 	fi, err := p.API.UploadData(us, reader)
 	if err != nil {
-		// On streaming error, attempt one-time fallback to legacy read+UploadFile if body still readable
-		data, rerr := io.ReadAll(resp.Body)
-		if rerr == nil && len(data) > 0 {
-			if p.API != nil {
-				p.API.LogWarn("Streaming UploadData failed; retrying with legacy UploadFile", "error", err.Error(), "channelId", req.ChannelID, "filename", req.Filename, "bytes", len(data))
-			}
-			if fi2, appErr := p.API.UploadFile(data, req.ChannelID, req.Filename); appErr == nil {
-				if p.API != nil {
-					p.API.LogInfo("Fallback after stream succeeded", "channelId", req.ChannelID, "filename", req.Filename, "fileId", fi2.Id)
-				}
-
-				// Attach to existing post if post_id provided
-				if req.PostID != "" {
-					if err := p.attachFileToPost(req.PostID, fi2.Id); err != nil {
-						w.WriteHeader(http.StatusBadRequest)
-						_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: err.Error()})
-						return
-					}
-				}
-
-				w.WriteHeader(http.StatusOK)
-				_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{FileID: fi2.Id})
-				return
-			}
-		}
+		// Streaming failed - body already consumed by reader, cannot retry
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: err.Error()})
 		return

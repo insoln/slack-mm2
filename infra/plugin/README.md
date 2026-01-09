@@ -35,7 +35,7 @@ The plugin performs multiple layers of size validation to prevent wasting bandwi
 
 1. **Preflight check**: When `Content-Length` is available in the download response, the plugin compares it against `FileSettings.MaxFileSize`. If exceeded, it returns HTTP 413 immediately without downloading.
 
-2. **Streaming limit**: During file streaming, `io.LimitReader` enforces a hard cap at `MaxFileSize + 1` bytes to detect and abort oversized transfers early.
+2. **Streaming limit**: During file streaming, `io.LimitReader` enforces a hard cap at `MaxFileSize` bytes to detect and abort oversized transfers early.
 
 3. **Error responses**: 
    - `HTTP 413` (Request Entity Too Large) — file size exceeds Mattermost limit
