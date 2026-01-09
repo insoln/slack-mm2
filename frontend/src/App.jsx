@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import './App.css';
-import { Header, Sidebar, Main, Card, Button, StatusBadge, Modal, FileButton, Toasts } from './components/UI';
+import { Header, Sidebar, Main, Card, Button, StatusBadge, Modal, FileButton, Toasts, SegmentedProgressBar } from './components/UI';
 import './components/ui.css';
 
 function App() {
@@ -625,9 +625,19 @@ function App() {
                               </span>
                               <span>{new Date(j.created_at || Date.now()).toLocaleString()}</span>
                             </div>
-                            <div style={{height: 8, background: '#0b1223', border: '1px solid var(--border)', borderRadius: 9999, overflow: 'hidden'}}>
-                              <div style={{width: `${pct}%`, height: '100%', background: barBg, transition: 'width 0.3s'}} />
-                            </div>
+                            {/* Progress bar: Use segmented bar for export/done stages, simple bar for import */}
+                            {inImport ? (
+                              <div style={{height: 8, background: '#0b1223', border: '1px solid var(--border)', borderRadius: 9999, overflow: 'hidden'}}>
+                                <div style={{width: `${pct}%`, height: '100%', background: barBg, transition: 'width 0.3s'}} />
+                              </div>
+                            ) : (
+                              <SegmentedProgressBar
+                                success={(j._exportAgg?.successAll || 0)}
+                                failed={(j._exportAgg?.failedAll || 0)}
+                                skipped={(j._exportAgg?.skippedAll || 0)}
+                                pending={Math.max(0, (j._exportAgg?.totalAll || 0) - (j._exportAgg?.successAll || 0) - (j._exportAgg?.failedAll || 0) - (j._exportAgg?.skippedAll || 0))}
+                              />
+                            )}
                             <div className="small" style={{marginTop: 4, color:'#9ca3af', display:'flex', gap:12, flexWrap:'wrap'}}>
                               {inImport ? (
                                 jsonTotal > 0
@@ -644,8 +654,9 @@ function App() {
                                   totalAll = successAll + failedAll + skippedAll;
                                 }
                                 const label = totalAll > 0 ? `${successAll}/${totalAll}` : `${processed.messages}/${totals.messages || 0}`;
+                                const skippedNote = skippedAll > 0 ? ` (${skippedAll} skipped)` : '';
                                 const failNote = failedAll > 0 ? ` (${failedAll} failed)` : '';
-                                return <span>export {label}{failNote}</span>;
+                                return <span>export {label}{skippedNote}{failNote}</span>;
                               })()}
                               {etaText && <span style={{color:'#6b7280'}}>{etaText}</span>}
                               <span style={{color:'#6b7280'}}>{pct}%</span>

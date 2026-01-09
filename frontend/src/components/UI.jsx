@@ -102,3 +102,64 @@ export const FileButton = ({ children = 'Выбрать файл', accept, onCha
     />
   </div>
 );
+
+/**
+ * SegmentedProgressBar - A multi-status progress bar with colored segments
+ * @param {Object} props
+ * @param {number} props.success - Percentage of success (0-100)
+ * @param {number} props.failed - Percentage of failed (0-100)
+ * @param {number} props.skipped - Percentage of skipped (0-100)
+ * @param {number} props.pending - Percentage of pending (0-100)
+ */
+export const SegmentedProgressBar = ({ success = 0, failed = 0, skipped = 0, pending = 0 }) => {
+  // Normalize percentages to ensure they sum to 100
+  const total = success + failed + skipped + pending;
+  const normalize = (val) => total > 0 ? (val / total) * 100 : 0;
+  
+  const successPct = normalize(success);
+  const failedPct = normalize(failed);
+  const skippedPct = normalize(skipped);
+  const pendingPct = normalize(pending);
+  
+  return (
+    <div 
+      style={{
+        display: 'flex',
+        height: 8,
+        borderRadius: 9999,
+        overflow: 'hidden',
+        background: '#0b1223',
+        border: '1px solid var(--border)'
+      }}
+      role="progressbar"
+      aria-valuenow={successPct + failedPct + skippedPct}
+      aria-valuemin="0"
+      aria-valuemax="100"
+    >
+      {successPct > 0 && (
+        <div 
+          style={{ width: `${successPct}%`, background: '#22c55e' }}
+          title={`Успешно: ${success}`}
+        />
+      )}
+      {failedPct > 0 && (
+        <div 
+          style={{ width: `${failedPct}%`, background: '#f87171' }}
+          title={`Ошибки: ${failed}`}
+        />
+      )}
+      {skippedPct > 0 && (
+        <div 
+          style={{ width: `${skippedPct}%`, background: '#6b7280' }}
+          title={`Пропущено: ${skipped}`}
+        />
+      )}
+      {pendingPct > 0 && (
+        <div 
+          style={{ width: `${pendingPct}%`, background: '#3b82f6' }}
+          title={`Ожидает: ${pending}`}
+        />
+      )}
+    </div>
+  );
+};
