@@ -24,9 +24,10 @@ import (
 // returns an error if more data is available beyond the limit, preventing
 // silent truncation of oversized files.
 type limitedReader struct {
-	r         io.Reader
-	limit     int64
-	bytesRead int64
+	r            io.Reader
+	limit        int64
+	bytesRead    int64
+	limitReached bool
 }
 
 func newLimitedReader(r io.Reader, limit int64) *limitedReader {
@@ -37,19 +38,27 @@ var errSizeExceeded = errors.New("file size exceeds maximum allowed size")
 
 func (lr *limitedReader) Read(p []byte) (n int, err error) {
 	if lr.bytesRead >= lr.limit {
-		// Check if there's more data available
-		var peek [1]byte
-		pn, perr := lr.r.Read(peek[:])
-		if pn > 0 {
-			// More data available beyond limit - return error
-			return 0, errSizeExceeded
+		// If we previously hit the exact limit, check on next call if there's more data
+		if lr.limitReached {
+			// Try to read to see if there's more data beyond the limit
+			// This is safe because we only do this check once after hitting the limit
+			var peek [1]byte
+			pn, perr := lr.r.Read(peek[:])
+			if pn > 0 {
+				// More data available beyond limit - return error
+				return 0, errSizeExceeded
+			}
+			if perr == io.EOF {
+				// No more data - this is OK, return EOF
+				return 0, io.EOF
+			}
+			// Some other error occurred
+			return 0, perr
 		}
-		if perr == io.EOF {
-			// No more data - this is OK
-			return 0, io.EOF
-		}
-		// Some other error occurred
-		return 0, perr
+		// First time hitting the limit - set flag and return EOF
+		// Next Read() call will check if there's more data
+		lr.limitReached = true
+		return 0, io.EOF
 	}
 
 	// Calculate how much we can read without exceeding limit
@@ -60,6 +69,12 @@ func (lr *limitedReader) Read(p []byte) (n int, err error) {
 
 	n, err = lr.r.Read(p)
 	lr.bytesRead += int64(n)
+	
+	// If we've hit exactly the limit, mark it
+	if lr.bytesRead >= lr.limit {
+		lr.limitReached = true
+	}
+	
 	return n, err
 }
 
