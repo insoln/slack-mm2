@@ -24,10 +24,9 @@ import (
 // returns an error if more data is available beyond the limit, preventing
 // silent truncation of oversized files.
 type limitedReader struct {
-	r            io.Reader
-	limit        int64
-	bytesRead    int64
-	limitReached bool
+	r         io.Reader
+	limit     int64
+	bytesRead int64
 }
 
 func newLimitedReader(r io.Reader, limit int64) *limitedReader {
@@ -38,26 +37,18 @@ var errSizeExceeded = errors.New("file size exceeds maximum allowed size")
 
 func (lr *limitedReader) Read(p []byte) (n int, err error) {
 	if lr.bytesRead >= lr.limit {
-		// If we previously hit the exact limit, check on next call if there's more data
-		if lr.limitReached {
-			// Try to read to see if there's more data beyond the limit
-			// This is safe because we only do this check once after hitting the limit
-			var peek [1]byte
-			pn, perr := lr.r.Read(peek[:])
-			if pn > 0 {
-				// More data available beyond limit - return error
-				return 0, errSizeExceeded
-			}
-			if perr == io.EOF {
-				// No more data - this is OK, return EOF
-				return 0, io.EOF
-			}
-			// Some other error occurred
+		// We've already read limit bytes. Check if there's more data to detect overflow.
+		var peek [1]byte
+		pn, perr := lr.r.Read(peek[:])
+		if pn > 0 {
+			// More data available beyond limit - file is oversized
+			return 0, errSizeExceeded
+		}
+		// No more data (EOF) or other error
+		if perr != nil {
 			return 0, perr
 		}
-		// First time hitting the limit - set flag and return EOF
-		// Next Read() call will check if there's more data
-		lr.limitReached = true
+		// Shouldn't reach here (pn=0, perr=nil), but return EOF to be safe
 		return 0, io.EOF
 	}
 
@@ -70,9 +61,19 @@ func (lr *limitedReader) Read(p []byte) (n int, err error) {
 	n, err = lr.r.Read(p)
 	lr.bytesRead += int64(n)
 	
-	// If we've hit exactly the limit, mark it
-	if lr.bytesRead >= lr.limit {
-		lr.limitReached = true
+	// If we've just hit exactly the limit, immediately check for overflow
+	if lr.bytesRead >= lr.limit && n > 0 && err == nil {
+		// We read up to the limit. Check if there's more data.
+		var peek [1]byte
+		pn, perr := lr.r.Read(peek[:])
+		if pn > 0 {
+			// More data exists - file exceeds limit
+			return n, errSizeExceeded
+		}
+		// Return the original error from peek (EOF or other error)
+		if perr != nil {
+			return n, perr
+		}
 	}
 	
 	return n, err

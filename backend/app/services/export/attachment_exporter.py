@@ -137,10 +137,13 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 error_category = "plugin_error"
                 if resp.status_code == 413:
                     error_category = "file_too_large"
+                elif resp.status_code == 429:
+                    error_category = "rate_limit"
+                elif resp.status_code in (408, 502, 503, 504):
+                    # Treat upstream and gateway timeouts as timeout conditions
+                    error_category = "timeout"
                 elif resp.status_code >= 500:
                     error_category = "mm_server_error"
-                elif resp.status_code == 408 or resp.status_code == 504:
-                    error_category = "timeout"
 
                 # Try to parse error
                 try:
