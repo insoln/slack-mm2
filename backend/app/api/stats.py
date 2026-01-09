@@ -69,14 +69,28 @@ async def get_mapping_stats(job_id: int | None = None):
             )
         matrix_rows = matrix_q.all()
         # Collect all types and build a nested dict with zero-filled statuses
-        all_types = sorted({row[0] for row in matrix_rows} | set(by_type.keys()))
+        # Order must match orchestrator processing order for UI consistency
+        orchestrator_order = [
+            "user",
+            "custom_emoji",
+            "channel",
+            "message",
+            "attachment",
+            "reaction",
+        ]
+        all_types_set = {row[0] for row in matrix_rows} | set(by_type.keys())
+        # Preserve orchestrator order, then append any unexpected types
+        all_types = [t for t in orchestrator_order if t in all_types_set]
+        all_types.extend(
+            sorted(t for t in all_types_set if t not in orchestrator_order)
+        )
         statuses_order = [
             s.value
             for s in (
-                MappingStatus.pending,
-                MappingStatus.skipped,
-                MappingStatus.failed,
                 MappingStatus.success,
+                MappingStatus.failed,
+                MappingStatus.skipped,
+                MappingStatus.pending,
             )
         ]
         matrix: dict[str, dict[str, int]] = {

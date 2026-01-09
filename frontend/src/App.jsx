@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import './App.css';
-import { Header, Sidebar, Main, Card, Button, StatusBadge, Modal, FileButton, Toasts } from './components/UI';
+import { Header, Sidebar, Main, Card, Button, StatusBadge, Modal, FileButton, Toasts, SegmentedProgressBar } from './components/UI';
 import './components/ui.css';
 
 function App() {
@@ -28,7 +28,7 @@ function App() {
   const [restartingJobs, setRestartingJobs] = useState(new Set());
 
   // Export matrix ordering (kept consistent with backend exporter)
-  const exportOrder = ['user','custom_emoji','attachment','channel','message','reaction'];
+  const exportOrder = ['user','custom_emoji','channel','message','attachment','reaction'];
   const labelMap = { user:'user', custom_emoji:'custom_emoji', attachment:'attachment', channel:'channel', message:'message', reaction:'reaction' };
 
   // Toast helpers (deduplicated by tone+title+message within 5s)
@@ -625,9 +625,19 @@ function App() {
                               </span>
                               <span>{new Date(j.created_at || Date.now()).toLocaleString()}</span>
                             </div>
-                            <div style={{height: 8, background: '#0b1223', border: '1px solid var(--border)', borderRadius: 9999, overflow: 'hidden'}}>
-                              <div style={{width: `${pct}%`, height: '100%', background: barBg, transition: 'width 0.3s'}} />
-                            </div>
+                            {/* Progress bar: Use segmented bar for export/done stages, simple bar for import */}
+                            {inImport ? (
+                              <div style={{height: 8, background: '#0b1223', border: '1px solid var(--border)', borderRadius: 9999, overflow: 'hidden'}}>
+                                <div style={{width: `${pct}%`, height: '100%', background: barBg, transition: 'width 0.3s'}} />
+                              </div>
+                            ) : (
+                              <SegmentedProgressBar
+                                success={(j._exportAgg?.successAll || 0)}
+                                failed={(j._exportAgg?.failedAll || 0)}
+                                skipped={(j._exportAgg?.skippedAll || 0)}
+                                pending={Math.max(0, (j._exportAgg?.totalAll || 0) - (j._exportAgg?.successAll || 0) - (j._exportAgg?.failedAll || 0) - (j._exportAgg?.skippedAll || 0))}
+                              />
+                            )}
                             <div className="small" style={{marginTop: 4, color:'#9ca3af', display:'flex', gap:12, flexWrap:'wrap'}}>
                               {inImport ? (
                                 jsonTotal > 0
@@ -645,7 +655,8 @@ function App() {
                                 }
                                 const label = totalAll > 0 ? `${successAll}/${totalAll}` : `${processed.messages}/${totals.messages || 0}`;
                                 const failNote = failedAll > 0 ? ` (${failedAll} failed)` : '';
-                                return <span>export {label}{failNote}</span>;
+                                const skippedNote = skippedAll > 0 ? ` (${skippedAll} skipped)` : '';
+                                return <span>export {label}{failNote}{skippedNote}</span>;
                               })()}
                               {etaText && <span style={{color:'#6b7280'}}>{etaText}</span>}
                               <span style={{color:'#6b7280'}}>{pct}%</span>
@@ -790,7 +801,7 @@ function JobsSection({ jobs, jobStats, liveStats, expandedJobs, setExpandedJobs 
   if(jobs.error) return <div style={{color:'#f87171'}}>Ошибка: {jobs.error}</div>;
   if((!jobs.data||jobs.data.length===0) && !jobs.loading) return <div className="small" style={{color:'#9ca3af'}}>Задач нет</div>;
   if(!jobs.data || jobs.data.length===0) return null;
-  const exportOrder=['user','custom_emoji','attachment','channel','message','reaction'];
+  const exportOrder=['user','custom_emoji','channel','message','attachment','reaction'];
   const labelMap={ user:'user', custom_emoji:'custom_emoji', attachment:'attachment', channel:'channel', message:'message', reaction:'reaction' };
   return (
     <div style={{marginBottom:12}}>
