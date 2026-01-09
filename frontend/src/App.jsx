@@ -30,6 +30,14 @@ function App() {
   // Export matrix ordering (kept consistent with backend exporter)
   const exportOrder = ['user','custom_emoji','channel','message','attachment','reaction'];
   const labelMap = { user:'user', custom_emoji:'custom_emoji', attachment:'attachment', channel:'channel', message:'message', reaction:'reaction' };
+  
+  // Helper: Convert entity type to plural meta key
+  const getMetaPlural = (t) => {
+    if (t === 'user') return 'users';
+    if (t === 'custom_emoji') return 'emojis';
+    if (t === 'channel') return 'channels';
+    return t + (t.endsWith('s') ? '' : 's');
+  };
 
   // Toast helpers (deduplicated by tone+title+message within 5s)
   const pushToast = (t) => {
@@ -543,31 +551,36 @@ function App() {
                             const pend = Number(row.pending || 0);
                             const fail = Number(row.failed || 0);
                             const skip = Number(row.skipped || 0);
+                            // Prefer matrix data when any counts exist (avoid mixing sources)
+                            const hasMatrixData = succ > 0 || pend > 0 || fail > 0 || skip > 0;
                             let localTotal = succ + pend + fail + skip;
-                            if (localTotal === 0) {
-                              const metaPlural = t === 'user' ? 'users' : t === 'custom_emoji' ? 'emojis' : t + (t.endsWith('s') ? '' : 's');
-                              const metaVal = Number((totals || {})[metaPlural]) || 0;
+                            if (localTotal === 0 && !hasMatrixData) {
+                              // Only use meta.totals for types completely absent from matrix
+                              const metaVal = Number((totals || {})[getMetaPlural(t)]) || 0;
                               localTotal = metaVal;
                             }
-                            if (localTotal > 0) {
+                            if (localTotal > 0 || hasMatrixData) {
                               successAll += succ;
                               failedAll += fail;
                               skippedAll += skip;
                               totalAll += localTotal;
                             }
                           });
+                          // For completed jobs, force totalAll to match completed units
+                          const completedAll = successAll + failedAll + skippedAll;
                           if (j.status === 'success') {
-                            // For a completed job treat failed+skipped as completed units.
-                            const completedAll = successAll + failedAll + skippedAll;
-                            if (totalAll > 0 && completedAll < totalAll) {
-                              // If denominator still bloated by a non-exported type, trim it.
-                              totalAll = completedAll; // align visual and numeric 100%
-                            }
+                            totalAll = completedAll;
                             pct = 100;
-                          } else if (totalAll > 0) {
-                            pct = Math.max(1, Math.min(100, Math.round((successAll / totalAll) * 100)));
                           } else {
-                            pct = totalsFrozen ? 100 : 1;
+                            // For in-progress jobs, ensure totalAll >= completedAll to prevent success > total
+                            if (completedAll > totalAll) {
+                              totalAll = completedAll;
+                            }
+                            if (totalAll > 0) {
+                              pct = Math.max(1, Math.min(100, Math.round((successAll / totalAll) * 100)));
+                            } else {
+                              pct = totalsFrozen ? 100 : 1;
+                            }
                           }
                           // Stash aggregates for label reuse via closure variables
                           // Attach aggregate transiently to job object (not persisted) for reuse in label render
