@@ -801,7 +801,7 @@ function JobsSection({ jobs, jobStats, liveStats, expandedJobs, setExpandedJobs 
   if(jobs.error) return <div style={{color:'#f87171'}}>Ошибка: {jobs.error}</div>;
   if((!jobs.data||jobs.data.length===0) && !jobs.loading) return <div className="small" style={{color:'#9ca3af'}}>Задач нет</div>;
   if(!jobs.data || jobs.data.length===0) return null;
-  const exportOrder=['user','custom_emoji','attachment','channel','message','reaction'];
+  const exportOrder=['user','custom_emoji','channel','message','attachment','reaction'];
   const labelMap={ user:'user', custom_emoji:'custom_emoji', attachment:'attachment', channel:'channel', message:'message', reaction:'reaction' };
   return (
     <div style={{marginBottom:12}}>
