@@ -4,6 +4,7 @@ import (
 	"database/sql/driver"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,50 @@ import (
 	"golang.org/x/text/transform"
 	"golang.org/x/text/unicode/norm"
 )
+
+// limitedReader wraps an io.Reader and enforces a maximum byte limit.
+// Unlike io.LimitReader which returns EOF when limit is reached, this reader
+// returns an error if more data is available beyond the limit, preventing
+// silent truncation of oversized files.
+type limitedReader struct {
+	r         io.Reader
+	limit     int64
+	bytesRead int64
+}
+
+func newLimitedReader(r io.Reader, limit int64) *limitedReader {
+	return &limitedReader{r: r, limit: limit}
+}
+
+var errSizeExceeded = errors.New("file size exceeds maximum allowed size")
+
+func (lr *limitedReader) Read(p []byte) (n int, err error) {
+	if lr.bytesRead >= lr.limit {
+		// Check if there's more data available
+		var peek [1]byte
+		pn, perr := lr.r.Read(peek[:])
+		if pn > 0 {
+			// More data available beyond limit - return error
+			return 0, errSizeExceeded
+		}
+		if perr == io.EOF {
+			// No more data - this is OK
+			return 0, io.EOF
+		}
+		// Some other error occurred
+		return 0, perr
+	}
+
+	// Calculate how much we can read without exceeding limit
+	maxRead := lr.limit - lr.bytesRead
+	if int64(len(p)) > maxRead {
+		p = p[:maxRead]
+	}
+
+	n, err = lr.r.Read(p)
+	lr.bytesRead += int64(n)
+	return n, err
+}
 
 // ServeHTTP wires plugin REST endpoints under /api/v1.
 func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Request) {
@@ -717,16 +762,29 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Stream file data to Mattermost (happy path)
-	// Wrap response body with LimitedReader to enforce hard cap on bytes read
+	// Wrap response body with custom limitedReader to enforce hard cap on bytes read
+	// and return error if file exceeds limit (prevents silent truncation)
 	var reader io.Reader = resp.Body
 	if maxFileSize > 0 {
-		// Enforce strict size limit to match MM config
-		reader = io.LimitReader(resp.Body, maxFileSize)
+		reader = newLimitedReader(resp.Body, maxFileSize)
 	}
 	
 	fi, err := p.API.UploadData(us, reader)
 	if err != nil {
-		// Streaming failed - body already consumed by reader, cannot retry
+		// Check if error is due to size exceeded
+		if errors.Is(err, errSizeExceeded) {
+			if p.API != nil {
+				p.API.LogWarn("File exceeded size limit during streaming",
+					"filename", req.Filename,
+					"maxFileSize", maxFileSize)
+			}
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{
+				Error: fmt.Sprintf("File exceeds maximum allowed size %d bytes", maxFileSize),
+			})
+			return
+		}
+		// Other streaming error
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: err.Error()})
 		return
