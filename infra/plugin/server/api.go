@@ -4,6 +4,7 @@ import (
 	"database/sql/driver"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,66 @@ import (
 	"golang.org/x/text/transform"
 	"golang.org/x/text/unicode/norm"
 )
+
+// limitedReader wraps an io.Reader and enforces a maximum byte limit.
+// Unlike io.LimitReader which returns EOF when limit is reached, this reader
+// returns an error if more data is available beyond the limit, preventing
+// silent truncation of oversized files.
+type limitedReader struct {
+	r         io.Reader
+	limit     int64
+	bytesRead int64
+}
+
+func newLimitedReader(r io.Reader, limit int64) *limitedReader {
+	return &limitedReader{r: r, limit: limit}
+}
+
+var errSizeExceeded = errors.New("file size exceeds maximum allowed size")
+
+func (lr *limitedReader) Read(p []byte) (n int, err error) {
+	if lr.bytesRead >= lr.limit {
+		// We've already read limit bytes. Check if there's more data to detect overflow.
+		var peek [1]byte
+		pn, perr := lr.r.Read(peek[:])
+		if pn > 0 {
+			// More data available beyond limit - file is oversized
+			return 0, errSizeExceeded
+		}
+		// No more data (EOF) or other error
+		if perr != nil {
+			return 0, perr
+		}
+		// Shouldn't reach here (pn=0, perr=nil), but return EOF to be safe
+		return 0, io.EOF
+	}
+
+	// Calculate how much we can read without exceeding limit
+	maxRead := lr.limit - lr.bytesRead
+	if int64(len(p)) > maxRead {
+		p = p[:maxRead]
+	}
+
+	n, err = lr.r.Read(p)
+	lr.bytesRead += int64(n)
+	
+	// If we've just hit exactly the limit, immediately check for overflow
+	if lr.bytesRead >= lr.limit && n > 0 && err == nil {
+		// We read up to the limit. Check if there's more data.
+		var peek [1]byte
+		pn, perr := lr.r.Read(peek[:])
+		if pn > 0 {
+			// More data exists - file exceeds limit
+			return n, errSizeExceeded
+		}
+		// Return the original error from peek (EOF or other error)
+		if perr != nil {
+			return n, perr
+		}
+	}
+	
+	return n, err
+}
 
 // ServeHTTP wires plugin REST endpoints under /api/v1.
 func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Request) {
@@ -38,6 +99,7 @@ func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Req
 	})
 
 	apiRouter.HandleFunc("/hello", p.HelloWorld).Methods(http.MethodGet)
+	apiRouter.HandleFunc("/config/max_file_size", p.GetMaxFileSize).Methods(http.MethodGet)
 	apiRouter.HandleFunc("/import", p.ImportPost).Methods(http.MethodPost)
 	apiRouter.HandleFunc("/import/clear_cache", p.ClearImportCache).Methods(http.MethodPost)
 	apiRouter.HandleFunc("/reaction", p.ImportReaction).Methods(http.MethodPost)
@@ -93,6 +155,32 @@ func (p *Plugin) HelloWorld(w http.ResponseWriter, r *http.Request) {
 	// Return plain text for compatibility with existing unit test
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = w.Write([]byte("Hello, world!"))
+}
+
+// GetMaxFileSize returns the Mattermost FileSettings.MaxFileSize configuration value.
+// This allows the backend to preflight-check attachment sizes before attempting upload.
+type MaxFileSizeResponse struct {
+	MaxFileSize int64  `json:"max_file_size"`
+	Error       string `json:"error,omitempty"`
+}
+
+func (p *Plugin) GetMaxFileSize(w http.ResponseWriter, r *http.Request) {
+	if p.API == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(MaxFileSizeResponse{Error: "API not available"})
+		return
+	}
+
+	config := p.API.GetConfig()
+	if config == nil || config.FileSettings.MaxFileSize == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(MaxFileSizeResponse{Error: "Could not retrieve file settings"})
+		return
+	}
+
+	maxFileSize := *config.FileSettings.MaxFileSize
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(MaxFileSizeResponse{MaxFileSize: maxFileSize})
 }
 
 // ---------------- Posts ----------------
@@ -517,6 +605,15 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// Get Mattermost MaxFileSize for preflight validation
+	var maxFileSize int64
+	if p.API != nil {
+		config := p.API.GetConfig()
+		if config != nil && config.FileSettings.MaxFileSize != nil {
+			maxFileSize = *config.FileSettings.MaxFileSize
+		}
+	}
+
 	// Use the shared plugin HTTP client to download the file
 	httpReq, err := http.NewRequest("GET", req.FileURL, nil)
 	if err != nil {
@@ -542,6 +639,21 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 
 	// Get content length for upload session
 	contentLength := resp.ContentLength
+	
+	// Preflight size check: reject files exceeding MaxFileSize before streaming
+	if maxFileSize > 0 && contentLength > 0 && contentLength > maxFileSize {
+		if p.API != nil {
+			p.API.LogWarn("Rejecting oversized file before download",
+				"filename", req.Filename,
+				"content_length", contentLength,
+				"max_file_size", maxFileSize)
+		}
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{
+			Error: fmt.Sprintf("File size %d bytes exceeds maximum allowed size %d bytes", contentLength, maxFileSize),
+		})
+		return
+	}
 	if contentLength <= 0 {
 		// If content length is not provided, we need to fall back to reading all data
 		data, err := io.ReadAll(resp.Body)
@@ -666,33 +778,29 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Stream file data to Mattermost (happy path)
-	fi, err := p.API.UploadData(us, resp.Body)
+	// Wrap response body with custom limitedReader to enforce hard cap on bytes read
+	// and return error if file exceeds limit (prevents silent truncation)
+	var reader io.Reader = resp.Body
+	if maxFileSize > 0 {
+		reader = newLimitedReader(resp.Body, maxFileSize)
+	}
+	
+	fi, err := p.API.UploadData(us, reader)
 	if err != nil {
-		// On streaming error, attempt one-time fallback to legacy read+UploadFile if body still readable
-		data, rerr := io.ReadAll(resp.Body)
-		if rerr == nil && len(data) > 0 {
+		// Check if error is due to size exceeded
+		if errors.Is(err, errSizeExceeded) {
 			if p.API != nil {
-				p.API.LogWarn("Streaming UploadData failed; retrying with legacy UploadFile", "error", err.Error(), "channelId", req.ChannelID, "filename", req.Filename, "bytes", len(data))
+				p.API.LogWarn("File exceeded size limit during streaming",
+					"filename", req.Filename,
+					"maxFileSize", maxFileSize)
 			}
-			if fi2, appErr := p.API.UploadFile(data, req.ChannelID, req.Filename); appErr == nil {
-				if p.API != nil {
-					p.API.LogInfo("Fallback after stream succeeded", "channelId", req.ChannelID, "filename", req.Filename, "fileId", fi2.Id)
-				}
-
-				// Attach to existing post if post_id provided
-				if req.PostID != "" {
-					if err := p.attachFileToPost(req.PostID, fi2.Id); err != nil {
-						w.WriteHeader(http.StatusBadRequest)
-						_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: err.Error()})
-						return
-					}
-				}
-
-				w.WriteHeader(http.StatusOK)
-				_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{FileID: fi2.Id})
-				return
-			}
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{
+				Error: fmt.Sprintf("File exceeds maximum allowed size %d bytes", maxFileSize),
+			})
+			return
 		}
+		// Other streaming error
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: err.Error()})
 		return

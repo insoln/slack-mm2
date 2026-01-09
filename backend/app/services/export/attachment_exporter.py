@@ -37,13 +37,29 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
         filename = (
             raw.get("name") or raw.get("title") or raw.get("filename") or "file.bin"
         )
+        size_bytes = raw.get("size")
 
-        # Enforce size cap (skip huge files safely)
+        # Preflight size check against Mattermost MaxFileSize
+        # This prevents wasting time/bandwidth on files that MM will reject
+        mm_max_size = await self.get_mm_max_file_size()
+        if mm_max_size and isinstance(size_bytes, int) and size_bytes > mm_max_size:
+            size_mb = size_bytes / (1024 * 1024)
+            max_mb = mm_max_size / (1024 * 1024)
+            await self.set_status(
+                "skipped",
+                error=f"File {filename} ({size_mb:.1f}MB) exceeds Mattermost limit ({max_mb:.1f}MB)",
+            )
+            backend_logger.warning(
+                f"Skip oversized attachment {self.entity.slack_id}: {size_mb:.1f}MB > {max_mb:.1f}MB (MM limit)"
+            )
+            return
+
+        # Legacy size cap (ATTACHMENT_MAX_MB) - kept for backwards compatibility
+        # but Mattermost MaxFileSize takes precedence
         try:
             max_mb_env = os.environ.get("ATTACHMENT_MAX_MB")
             if max_mb_env is not None:
                 max_mb = float(max_mb_env)
-                size_bytes = raw.get("size")
                 if isinstance(size_bytes, int) and size_bytes > 0:
                     size_mb = size_bytes / (1024 * 1024)
                     if size_mb > max_mb:
@@ -117,14 +133,31 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
         try:
             resp = await _retry_plugin_post()
             if resp.status_code not in (200, 201):
+                # Categorize errors for better visibility
+                error_category = "plugin_error"
+                if resp.status_code == 413:
+                    error_category = "file_too_large"
+                elif resp.status_code == 429:
+                    error_category = "rate_limit"
+                elif resp.status_code in (408, 502, 503, 504):
+                    # Treat upstream and gateway timeouts as timeout conditions
+                    error_category = "timeout"
+                elif resp.status_code >= 500:
+                    error_category = "mm_server_error"
+
                 # Try to parse error
                 try:
                     data = resp.json()
                     err = data.get("error") or data
                 except Exception:
                     err = resp.text
-                await self.set_status(
-                    "failed", error=f"Plugin upload failed: {resp.status_code} {err}"
+
+                error_msg = (
+                    f"[{error_category}] Plugin upload failed: {resp.status_code} {err}"
+                )
+                await self.set_status("failed", error=error_msg)
+                backend_logger.warning(
+                    f"Attachment {self.entity.slack_id} failed: {error_msg}"
                 )
                 return
             data = resp.json()
@@ -140,7 +173,19 @@ class AttachmentExporter(ExporterBase, LoggingMixin, MMApiMixin):
                 f"Attachment uploaded and attached to post {post_id}, file_id={file_id}"
             )
         except Exception as e:  # noqa: BLE001
-            await self.set_status("failed", error=str(e))
+            error_str = str(e)
+            # Categorize common exceptions
+            error_category = "unknown_error"
+            if "timeout" in error_str.lower() or "timed out" in error_str.lower():
+                error_category = "timeout"
+            elif "connection" in error_str.lower():
+                error_category = "connection_error"
+
+            categorized_error = f"[{error_category}] {error_str}"
+            await self.set_status("failed", error=categorized_error)
+            backend_logger.error(
+                f"Attachment {self.entity.slack_id} exception: {categorized_error}"
+            )
 
     async def _resolve_mm_channel_id_for_attachment(self) -> Optional[str]:
         """Find the MM channel id where this attachment should be uploaded.

@@ -57,6 +57,8 @@ async def close_clients():
 
 
 class MMApiMixin:
+    _cached_max_file_size: int | None = None  # Cache MM max file size
+
     def _redact_payload(self, payload):
         """Return a payload copy safe for logging: mask large/sensitive fields."""
         try:
@@ -104,6 +106,33 @@ class MMApiMixin:
             )
             return resp
         return last  # type: ignore
+
+    async def get_mm_max_file_size(self) -> int | None:
+        """Get Mattermost MaxFileSize config value from plugin endpoint.
+        Returns size in bytes, or None if unavailable. Result is cached.
+        """
+        if MMApiMixin._cached_max_file_size is not None:
+            return MMApiMixin._cached_max_file_size
+
+        try:
+            resp = await self.mm_api_get(
+                "/plugins/mm-importer/api/v1/config/max_file_size"
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                max_size = data.get("max_file_size")
+                if isinstance(max_size, int) and max_size > 0:
+                    MMApiMixin._cached_max_file_size = max_size
+                    backend_logger.info(
+                        f"MM MaxFileSize: {max_size} bytes ({max_size/(1024*1024):.1f}MB)"
+                    )
+                    return max_size
+            backend_logger.warning(
+                f"Could not retrieve MM MaxFileSize: status={resp.status_code}"
+            )
+        except Exception as e:  # noqa: BLE001
+            backend_logger.warning(f"Error fetching MM MaxFileSize: {e}")
+        return None
 
     async def mm_api_post(self, path: str, payload: dict):
         client = _get_mm_client()
