@@ -360,6 +360,53 @@ type UploadAttachmentResponse struct {
 	Error  string `json:"error,omitempty"`
 }
 
+// uploadFileWithUserID uploads a file and sets the creator ID to the specified user.
+// If userID is empty or equals model.UploadNoUserID, the file is uploaded with the plugin's context (nouser).
+// Otherwise, it uploads the file and then uses CopyFileInfos to set the correct creator.
+func (p *Plugin) uploadFileWithUserID(data []byte, channelID, filename, userID string) (*model.FileInfo, *model.AppError) {
+	// Upload the file first using the legacy UploadFile API
+	fi, appErr := p.API.UploadFile(data, channelID, filename)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	// If no user ID provided or it's the system user, return the file as-is
+	if userID == "" || userID == model.UploadNoUserID {
+		return fi, nil
+	}
+
+	// Validate that the user exists
+	user, userErr := p.API.GetUser(userID)
+	if userErr != nil || user == nil {
+		// User doesn't exist, return the file with system user
+		p.API.LogWarn("User validation failed, keeping file with system user", "userId", userID, "fileId", fi.Id, "error", userErr)
+		return fi, nil
+	}
+
+	// Use CopyFileInfos to create a new FileInfo with the correct creator ID
+	newFileIds, copyErr := p.API.CopyFileInfos(userID, []string{fi.Id})
+	if copyErr != nil {
+		// If copy fails, log warning but return the original file
+		p.API.LogWarn("Failed to copy file info with user ID, using original file", "userId", userID, "fileId", fi.Id, "error", copyErr)
+		return fi, nil
+	}
+
+	if len(newFileIds) == 0 {
+		p.API.LogWarn("CopyFileInfos returned no file IDs, using original file", "userId", userID, "fileId", fi.Id)
+		return fi, nil
+	}
+
+	// Get the new FileInfo to return
+	newFi, getErr := p.API.GetFileInfo(newFileIds[0])
+	if getErr != nil {
+		p.API.LogWarn("Failed to get new file info, using original file", "userId", userID, "newFileId", newFileIds[0], "error", getErr)
+		return fi, nil
+	}
+
+	p.API.LogDebug("Successfully created file with user ID", "userId", userID, "originalFileId", fi.Id, "newFileId", newFi.Id)
+	return newFi, nil
+}
+
 func (p *Plugin) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -384,8 +431,8 @@ func (p *Plugin) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Invalid base64 content"})
 		return
 	}
-	// Upload the file; it will become fully downloadable via API after being attached to a post
-	fi, appErr := p.API.UploadFile(data, req.ChannelID, req.Filename)
+	// Upload the file with the correct user ID
+	fi, appErr := p.uploadFileWithUserID(data, req.ChannelID, req.Filename, req.UserID)
 	if appErr != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: appErr.Error()})
@@ -413,6 +460,7 @@ func (p *Plugin) UploadAttachmentMultipart(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	filename := r.FormValue("filename")
+	userID := r.FormValue("user_id")
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -433,7 +481,7 @@ func (p *Plugin) UploadAttachmentMultipart(w http.ResponseWriter, r *http.Reques
 		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Failed to read file"})
 		return
 	}
-	fi, appErr := p.API.UploadFile(data, channelID, filename)
+	fi, appErr := p.uploadFileWithUserID(data, channelID, filename, userID)
 	if appErr != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: appErr.Error()})
@@ -670,8 +718,8 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 			_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Failed to read downloaded file"})
 			return
 		}
-		// Upload file to Mattermost using legacy method
-		fi, appErr := p.API.UploadFile(data, req.ChannelID, req.Filename)
+		// Upload file to Mattermost using legacy method with user ID
+		fi, appErr := p.uploadFileWithUserID(data, req.ChannelID, req.Filename, req.UserID)
 		if appErr != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: appErr.Error()})
@@ -755,14 +803,14 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 				_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Failed to read downloaded file (fallback)"})
 				return
 			}
-			fi, appErr := p.API.UploadFile(data, req.ChannelID, req.Filename)
+			fi, appErr := p.uploadFileWithUserID(data, req.ChannelID, req.Filename, userId)
 			if appErr != nil {
 				w.WriteHeader(http.StatusInternalServerError)
 				_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: appErr.Error()})
 				return
 			}
 			if p.API != nil {
-				p.API.LogInfo("Fallback UploadFile succeeded", "channelId", req.ChannelID, "filename", req.Filename, "bytes", len(data), "fileId", fi.Id)
+				p.API.LogInfo("Fallback UploadFile succeeded", "channelId", req.ChannelID, "filename", req.Filename, "bytes", len(data), "fileId", fi.Id, "userId", userId)
 			}
 
 			// Attach to existing post if post_id provided
