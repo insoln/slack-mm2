@@ -246,6 +246,14 @@ func (p *Plugin) ImportPost(w http.ResponseWriter, r *http.Request) {
 	// Only run for threaded posts (when RootID is set) to avoid unnecessary database operations
 	// Use caches to avoid redundant operations for the same thread and channel during bulk imports
 	if req.RootID != "" {
+		// Ensure threadmemberships exist for thread participants (root author and reply author)
+		// This fixes the issue where Mattermost's CreatePost API creates threadmembership for reply
+		// author but not for the root author, causing root authors to miss thread notifications
+		if err := p.ensureThreadMembershipsForReply(req.RootID, req.UserID, created.CreateAt); err != nil {
+			p.API.LogWarn("Failed to ensure thread memberships for participants", "channel_id", req.ChannelID, "root_post_id", req.RootID, "error", err.Error())
+			// Don't fail the request - the post was created successfully
+		}
+
 		// Mark this thread as read for all members so imported historical mentions do not generate unread counters.
 		// This is called on EVERY threaded reply import to ensure that lastviewed tracks the latest reply.
 		// Without this, Mattermost's CreatePost API increments unreadmentions when a reply contains @mentions.
@@ -1503,6 +1511,77 @@ func (p *Plugin) ClearFixedChannelsCache() {
 
 	// Clear the cache by creating a new empty map
 	p.fixedChannels = make(map[string]bool)
+}
+
+// ensureThreadMembershipsForReply ensures that threadmemberships records exist for both
+// the thread root author and the reply author. This fixes the issue where CreatePost API
+// creates threadmembership for the reply author but not for the root author, causing
+// root authors to not receive notifications about replies to their threads.
+func (p *Plugin) ensureThreadMembershipsForReply(rootPostID, replyAuthorID string, replyCreateAt int64) error {
+	if p.Driver == nil || p.API == nil {
+		return nil
+	}
+
+	// Get the root post to find the root author
+	rootPost, appErr := p.API.GetPost(rootPostID)
+	if appErr != nil {
+		return fmt.Errorf("failed to get root post: %w", appErr)
+	}
+
+	connID, err := p.Driver.Conn(false)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = p.Driver.ConnClose(connID)
+	}()
+
+	// Ensure threadmemberships exist for both root author and reply author
+	// Using INSERT with ON CONFLICT DO NOTHING for PostgreSQL / INSERT IGNORE for MySQL
+	// We'll use a portable approach: INSERT if not exists using a subquery
+	
+	// For PostgreSQL and MySQL, we use INSERT with a WHERE NOT EXISTS subquery
+	// This is more portable than ON CONFLICT which has different syntax between databases
+	query := `INSERT INTO ThreadMemberships (PostId, UserId, Following, LastViewed, LastUpdated, UnreadMentions)
+	          SELECT $1, $2, true, $3, $3, 0
+	          WHERE NOT EXISTS (
+	              SELECT 1 FROM ThreadMemberships WHERE PostId = $1 AND UserId = $2
+	          )`
+
+	// Create threadmembership for root author
+	args := p.makeDriverArgs(rootPostID, rootPost.UserId, replyCreateAt)
+	result, err := p.Driver.ConnExec(connID, query, args)
+	if err != nil {
+		return fmt.Errorf("failed to ensure threadmembership for root author: %w", err)
+	}
+	if result.RowsAffectedError != nil {
+		return result.RowsAffectedError
+	}
+	
+	rootAuthorInserted := result.RowsAffected > 0
+
+	// Create threadmembership for reply author (should already exist from CreatePost, but ensure it)
+	args = p.makeDriverArgs(rootPostID, replyAuthorID, replyCreateAt)
+	result, err = p.Driver.ConnExec(connID, query, args)
+	if err != nil {
+		return fmt.Errorf("failed to ensure threadmembership for reply author: %w", err)
+	}
+	if result.RowsAffectedError != nil {
+		return result.RowsAffectedError
+	}
+	
+	replyAuthorInserted := result.RowsAffected > 0
+
+	if rootAuthorInserted || replyAuthorInserted {
+		p.API.LogDebug("Ensured threadmemberships for thread participants",
+			"root_post_id", rootPostID,
+			"root_author", rootPost.UserId,
+			"reply_author", replyAuthorID,
+			"root_author_inserted", rootAuthorInserted,
+			"reply_author_inserted", replyAuthorInserted)
+	}
+
+	return nil
 }
 
 // makeDriverArgs converts variadic arguments to driver.NamedValue slice
