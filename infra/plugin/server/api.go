@@ -365,6 +365,10 @@ type UploadAttachmentResponse struct {
 // Otherwise, it uploads the file and then uses CopyFileInfos to create a duplicate FileInfo
 // with the correct creator ID. Note: This creates a new file record, not modifying the original.
 // If setting the creator fails, it falls back to returning the original file (graceful degradation).
+//
+// IMPORTANT: This function creates an orphaned FileInfo record (the original upload with 'nouser' creator)
+// that is not attached to any post. Mattermost's data retention policies will clean up these orphaned
+// records. The physical file is NOT duplicated - both FileInfo records point to the same file on disk.
 func (p *Plugin) uploadFileWithUserID(data []byte, channelID, filename, userID string) (*model.FileInfo, *model.AppError) {
 	// Upload the file first using the legacy UploadFile API
 	fi, appErr := p.API.UploadFile(data, channelID, filename)
