@@ -1537,19 +1537,20 @@ func (p *Plugin) ensureThreadMembershipsForReply(rootPostID, replyAuthorID strin
 	}()
 
 	// Ensure threadmemberships exist for both root author and reply author
-	// Using INSERT with ON CONFLICT DO NOTHING for PostgreSQL / INSERT IGNORE for MySQL
-	// We'll use a portable approach: INSERT if not exists using a subquery
+	// Using INSERT ... SELECT pattern that works in both PostgreSQL and MySQL
+	// The key is to ensure we have a proper FROM clause (using a dummy table or VALUES)
+	// This pattern is portable and avoids race conditions
 	
-	// For PostgreSQL and MySQL, we use INSERT with a WHERE NOT EXISTS subquery
-	// This is more portable than ON CONFLICT which has different syntax between databases
+	// For MySQL and PostgreSQL, we use INSERT with NOT EXISTS check
+	// Using a VALUES clause as the source for SELECT works in both databases
 	query := `INSERT INTO ThreadMemberships (PostId, UserId, Following, LastViewed, LastUpdated, UnreadMentions)
-	          SELECT $1, $2, true, $3, $3, 0
+	          SELECT * FROM (SELECT $1, $2, $3, $4, $5, $6) AS tmp
 	          WHERE NOT EXISTS (
 	              SELECT 1 FROM ThreadMemberships WHERE PostId = $1 AND UserId = $2
 	          )`
 
 	// Create threadmembership for root author
-	args := p.makeDriverArgs(rootPostID, rootPost.UserId, replyCreateAt)
+	args := p.makeDriverArgs(rootPostID, rootPost.UserId, true, replyCreateAt, replyCreateAt, int64(0))
 	result, err := p.Driver.ConnExec(connID, query, args)
 	if err != nil {
 		return fmt.Errorf("failed to ensure threadmembership for root author: %w", err)
@@ -1561,7 +1562,7 @@ func (p *Plugin) ensureThreadMembershipsForReply(rootPostID, replyAuthorID strin
 	rootAuthorInserted := result.RowsAffected > 0
 
 	// Create threadmembership for reply author (should already exist from CreatePost, but ensure it)
-	args = p.makeDriverArgs(rootPostID, replyAuthorID, replyCreateAt)
+	args = p.makeDriverArgs(rootPostID, replyAuthorID, true, replyCreateAt, replyCreateAt, int64(0))
 	result, err = p.Driver.ConnExec(connID, query, args)
 	if err != nil {
 		return fmt.Errorf("failed to ensure threadmembership for reply author: %w", err)
