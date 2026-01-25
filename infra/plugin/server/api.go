@@ -60,7 +60,7 @@ func (lr *limitedReader) Read(p []byte) (n int, err error) {
 
 	n, err = lr.r.Read(p)
 	lr.bytesRead += int64(n)
-	
+
 	// If we've just hit exactly the limit, immediately check for overflow
 	if lr.bytesRead >= lr.limit && n > 0 && err == nil {
 		// We read up to the limit. Check if there's more data.
@@ -75,7 +75,7 @@ func (lr *limitedReader) Read(p []byte) (n int, err error) {
 			return n, perr
 		}
 	}
-	
+
 	return n, err
 }
 
@@ -246,6 +246,14 @@ func (p *Plugin) ImportPost(w http.ResponseWriter, r *http.Request) {
 	// Only run for threaded posts (when RootID is set) to avoid unnecessary database operations
 	// Use caches to avoid redundant operations for the same thread and channel during bulk imports
 	if req.RootID != "" {
+		// Ensure threadmemberships exist for thread participants (root author and reply author)
+		// This fixes the issue where Mattermost's CreatePost API creates threadmembership for reply
+		// author but not for the root author, causing root authors to miss thread notifications
+		if err := p.ensureThreadMembershipsForReply(req.RootID, req.UserID, created.CreateAt); err != nil {
+			p.API.LogWarn("Failed to ensure thread memberships for participants", "channel_id", req.ChannelID, "root_post_id", req.RootID, "error", err.Error())
+			// Don't fail the request - the post was created successfully
+		}
+
 		// Mark this thread as read for all members so imported historical mentions do not generate unread counters.
 		// This is called on EVERY threaded reply import to ensure that lastviewed tracks the latest reply.
 		// Without this, Mattermost's CreatePost API increments unreadmentions when a reply contains @mentions.
@@ -639,7 +647,7 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 
 	// Get content length for upload session
 	contentLength := resp.ContentLength
-	
+
 	// Preflight size check: reject files exceeding MaxFileSize before streaming
 	if maxFileSize > 0 && contentLength > 0 && contentLength > maxFileSize {
 		if p.API != nil {
@@ -784,7 +792,7 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 	if maxFileSize > 0 {
 		reader = newLimitedReader(resp.Body, maxFileSize)
 	}
-	
+
 	fi, err := p.API.UploadData(us, reader)
 	if err != nil {
 		// Check if error is due to size exceeded
@@ -877,7 +885,7 @@ func normalizeUnicode(s string) string {
 			cyrillic.WriteRune(r)
 		}
 	}
-	
+
 	// Second pass: NFD normalization to decompose characters
 	// Example: "é" → "e" + combining accent
 	t := transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
@@ -887,14 +895,14 @@ func normalizeUnicode(s string) string {
 		// to aid debugging of unexpected Unicode input
 		return cyrillic.String() // Fallback to Cyrillic-only transliteration
 	}
-	
+
 	return result
 }
 
 func normalizeChannelName(name string) string {
 	// Apply Unicode normalization first
 	normalized := normalizeUnicode(name)
-	
+
 	out := ""
 	for _, r := range normalized {
 		switch {
@@ -960,12 +968,12 @@ func (p *Plugin) CreateOrGetChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := normalizeChannelName(req.Name)
-	
+
 	// Log normalization for debugging
 	if p.API != nil && name != req.Name {
 		p.API.LogDebug("Channel name normalized", "original", req.Name, "normalized", name)
 	}
-	
+
 	// First try to find existing channel, INCLUDING archived/deleted channels
 	ch, appErr := p.API.GetChannelByName(name, req.TeamID, true)
 	if appErr == nil && ch != nil {
@@ -976,7 +984,7 @@ func (p *Plugin) CreateOrGetChannel(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(CreateOrGetChannelResponse{ChannelID: ch.Id})
 		return
 	}
-	
+
 	// Try to create the channel
 	channel := &model.Channel{
 		TeamId:      req.TeamID,
@@ -994,7 +1002,7 @@ func (p *Plugin) CreateOrGetChannel(w http.ResponseWriter, r *http.Request) {
 			if p.API != nil {
 				p.API.LogWarn("Channel name conflict detected, trying with suffix", "name", name, "error", errStr)
 			}
-			
+
 			// Try to find the existing channel again with includeDeleted=true
 			// This handles race conditions where channel was created between our check and creation attempt
 			ch, lookupErr := p.API.GetChannelByName(name, req.TeamID, true)
@@ -1006,7 +1014,7 @@ func (p *Plugin) CreateOrGetChannel(w http.ResponseWriter, r *http.Request) {
 				_ = json.NewEncoder(w).Encode(CreateOrGetChannelResponse{ChannelID: ch.Id})
 				return
 			}
-			
+
 			// If still not found, try creating with auto-suffix
 			suffix := model.NewId()[:6]
 			newName := name
@@ -1014,12 +1022,12 @@ func (p *Plugin) CreateOrGetChannel(w http.ResponseWriter, r *http.Request) {
 				newName = name[:57]
 			}
 			newName = newName + "-" + suffix
-			
+
 			channel.Name = newName
 			if p.API != nil {
 				p.API.LogInfo("Retrying channel creation with suffix", "original_name", name, "new_name", newName)
 			}
-			
+
 			created, appErr = p.API.CreateChannel(channel)
 			if appErr != nil {
 				if p.API != nil {
@@ -1036,7 +1044,7 @@ func (p *Plugin) CreateOrGetChannel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	
+
 	if p.API != nil {
 		p.API.LogDebug("Channel created successfully", "name", channel.Name, "channel_id", created.Id)
 	}
@@ -1503,6 +1511,94 @@ func (p *Plugin) ClearFixedChannelsCache() {
 
 	// Clear the cache by creating a new empty map
 	p.fixedChannels = make(map[string]bool)
+}
+
+// ensureThreadMembershipsForReply ensures that threadmemberships records exist for both
+// the thread root author and the reply author. This fixes the issue where CreatePost API
+// creates threadmembership for the reply author but not for the root author, causing
+// root authors to not receive notifications about replies to their threads.
+func (p *Plugin) ensureThreadMembershipsForReply(rootPostID, replyAuthorID string, replyCreateAt int64) error {
+	if p.Driver == nil || p.API == nil {
+		return nil
+	}
+
+	// Get the root post to find the root author
+	rootPost, appErr := p.API.GetPost(rootPostID)
+	if appErr != nil {
+		// If the root post does not exist (deleted, invalid ID, or not imported yet),
+		// treat this as a non-fatal condition and skip ensuring threadmembership
+		// for the root author. This avoids repeated failures in out-of-order import
+		// scenarios where the reply arrives before the root post.
+		if appErr.StatusCode == http.StatusNotFound {
+			p.API.LogDebug("Root post not found when ensuring thread memberships for reply; skipping root author",
+				"root_post_id", rootPostID,
+				"reply_author", replyAuthorID,
+				"error", appErr.Error())
+			return nil
+		}
+		return fmt.Errorf("failed to get root post: %w", appErr)
+	}
+
+	connID, err := p.Driver.Conn(false)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = p.Driver.ConnClose(connID)
+	}()
+
+	// Ensure threadmemberships exist for both root author and reply author
+	// Using an INSERT ... SELECT pattern that works in both PostgreSQL and MySQL
+	// This pattern is portable and avoids race conditions by checking existence before insert
+
+	// For MySQL and PostgreSQL, we use INSERT with NOT EXISTS check
+	// Using a direct SELECT (without subquery aliasing) is more reliably portable across both databases
+	query := `INSERT INTO ThreadMemberships (PostId, UserId, Following, LastViewed, LastUpdated, UnreadMentions)
+	          SELECT $1, $2, $3, $4, $5, $6
+	          WHERE NOT EXISTS (
+	              SELECT 1 FROM ThreadMemberships WHERE PostId = $1 AND UserId = $2
+	          )`
+
+	// Create threadmembership for root author
+	args := p.makeDriverArgs(rootPostID, rootPost.UserId, true, replyCreateAt, replyCreateAt, int64(0))
+	result, err := p.Driver.ConnExec(connID, query, args)
+	if err != nil {
+		return fmt.Errorf("failed to ensure threadmembership for root author: %w", err)
+	}
+	if result.RowsAffectedError != nil {
+		return result.RowsAffectedError
+	}
+
+	rootAuthorInserted := result.RowsAffected > 0
+
+	// Create threadmembership for reply author (should already exist from CreatePost, but ensure it).
+	// If the reply author is the same as the root author, the first INSERT already ensured membership,
+	// so we can skip a redundant second INSERT and just mirror the insertion flag.
+	var replyAuthorInserted bool
+	if rootPost.UserId == replyAuthorID {
+		replyAuthorInserted = rootAuthorInserted
+	} else {
+		args = p.makeDriverArgs(rootPostID, replyAuthorID, true, replyCreateAt, replyCreateAt, int64(0))
+		result, err = p.Driver.ConnExec(connID, query, args)
+		if err != nil {
+			return fmt.Errorf("failed to ensure threadmembership for reply author: %w", err)
+		}
+		if result.RowsAffectedError != nil {
+			return result.RowsAffectedError
+		}
+		replyAuthorInserted = result.RowsAffected > 0
+	}
+
+	if rootAuthorInserted || replyAuthorInserted {
+		p.API.LogDebug("Ensured threadmemberships for thread participants",
+			"root_post_id", rootPostID,
+			"root_author", rootPost.UserId,
+			"reply_author", replyAuthorID,
+			"root_author_inserted", rootAuthorInserted,
+			"reply_author_inserted", replyAuthorInserted)
+	}
+
+	return nil
 }
 
 // makeDriverArgs converts variadic arguments to driver.NamedValue slice
