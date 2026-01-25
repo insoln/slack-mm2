@@ -810,7 +810,7 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 				_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: "Failed to read downloaded file (fallback)"})
 				return
 			}
-			fi, appErr := p.uploadFileWithUserID(data, req.ChannelID, req.Filename, userId)
+			fi, appErr := p.uploadFileWithUserID(data, req.ChannelID, req.Filename, req.UserID)
 			if appErr != nil {
 				w.WriteHeader(http.StatusInternalServerError)
 				_ = json.NewEncoder(w).Encode(UploadAttachmentResponse{Error: appErr.Error()})
