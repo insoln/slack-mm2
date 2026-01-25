@@ -362,7 +362,9 @@ type UploadAttachmentResponse struct {
 
 // uploadFileWithUserID uploads a file and sets the creator ID to the specified user.
 // If userID is empty or equals model.UploadNoUserID, the file is uploaded with the plugin's context (nouser).
-// Otherwise, it uploads the file and then uses CopyFileInfos to set the correct creator.
+// Otherwise, it uploads the file and then uses CopyFileInfos to create a duplicate FileInfo
+// with the correct creator ID. Note: This creates a new file record, not modifying the original.
+// If setting the creator fails, it falls back to returning the original file (graceful degradation).
 func (p *Plugin) uploadFileWithUserID(data []byte, channelID, filename, userID string) (*model.FileInfo, *model.AppError) {
 	// Upload the file first using the legacy UploadFile API
 	fi, appErr := p.API.UploadFile(data, channelID, filename)
@@ -375,18 +377,19 @@ func (p *Plugin) uploadFileWithUserID(data []byte, channelID, filename, userID s
 		return fi, nil
 	}
 
-	// Validate that the user exists
+	// Validate that the user exists before attempting to set as creator
 	user, userErr := p.API.GetUser(userID)
 	if userErr != nil || user == nil {
-		// User doesn't exist, return the file with system user
+		// User doesn't exist, return the file with system user (graceful degradation)
 		p.API.LogWarn("User validation failed, keeping file with system user", "userId", userID, "fileId", fi.Id, "error", userErr)
 		return fi, nil
 	}
 
-	// Use CopyFileInfos to create a new FileInfo with the correct creator ID
+	// Use CopyFileInfos to create a duplicate FileInfo with the correct creator ID.
+	// Note: This creates a new file record pointing to the same physical file.
 	newFileIds, copyErr := p.API.CopyFileInfos(userID, []string{fi.Id})
 	if copyErr != nil {
-		// If copy fails, log warning but return the original file
+		// If copy fails, log warning but return the original file (graceful degradation)
 		p.API.LogWarn("Failed to copy file info with user ID, using original file", "userId", userID, "fileId", fi.Id, "error", copyErr)
 		return fi, nil
 	}
