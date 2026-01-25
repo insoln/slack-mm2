@@ -60,7 +60,7 @@ func (lr *limitedReader) Read(p []byte) (n int, err error) {
 
 	n, err = lr.r.Read(p)
 	lr.bytesRead += int64(n)
-	
+
 	// If we've just hit exactly the limit, immediately check for overflow
 	if lr.bytesRead >= lr.limit && n > 0 && err == nil {
 		// We read up to the limit. Check if there's more data.
@@ -75,7 +75,7 @@ func (lr *limitedReader) Read(p []byte) (n int, err error) {
 			return n, perr
 		}
 	}
-	
+
 	return n, err
 }
 
@@ -647,7 +647,7 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 
 	// Get content length for upload session
 	contentLength := resp.ContentLength
-	
+
 	// Preflight size check: reject files exceeding MaxFileSize before streaming
 	if maxFileSize > 0 && contentLength > 0 && contentLength > maxFileSize {
 		if p.API != nil {
@@ -792,7 +792,7 @@ func (p *Plugin) UploadAttachmentFromURL(w http.ResponseWriter, r *http.Request)
 	if maxFileSize > 0 {
 		reader = newLimitedReader(resp.Body, maxFileSize)
 	}
-	
+
 	fi, err := p.API.UploadData(us, reader)
 	if err != nil {
 		// Check if error is due to size exceeded
@@ -885,7 +885,7 @@ func normalizeUnicode(s string) string {
 			cyrillic.WriteRune(r)
 		}
 	}
-	
+
 	// Second pass: NFD normalization to decompose characters
 	// Example: "é" → "e" + combining accent
 	t := transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
@@ -895,14 +895,14 @@ func normalizeUnicode(s string) string {
 		// to aid debugging of unexpected Unicode input
 		return cyrillic.String() // Fallback to Cyrillic-only transliteration
 	}
-	
+
 	return result
 }
 
 func normalizeChannelName(name string) string {
 	// Apply Unicode normalization first
 	normalized := normalizeUnicode(name)
-	
+
 	out := ""
 	for _, r := range normalized {
 		switch {
@@ -968,12 +968,12 @@ func (p *Plugin) CreateOrGetChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := normalizeChannelName(req.Name)
-	
+
 	// Log normalization for debugging
 	if p.API != nil && name != req.Name {
 		p.API.LogDebug("Channel name normalized", "original", req.Name, "normalized", name)
 	}
-	
+
 	// First try to find existing channel, INCLUDING archived/deleted channels
 	ch, appErr := p.API.GetChannelByName(name, req.TeamID, true)
 	if appErr == nil && ch != nil {
@@ -984,7 +984,7 @@ func (p *Plugin) CreateOrGetChannel(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(CreateOrGetChannelResponse{ChannelID: ch.Id})
 		return
 	}
-	
+
 	// Try to create the channel
 	channel := &model.Channel{
 		TeamId:      req.TeamID,
@@ -1002,7 +1002,7 @@ func (p *Plugin) CreateOrGetChannel(w http.ResponseWriter, r *http.Request) {
 			if p.API != nil {
 				p.API.LogWarn("Channel name conflict detected, trying with suffix", "name", name, "error", errStr)
 			}
-			
+
 			// Try to find the existing channel again with includeDeleted=true
 			// This handles race conditions where channel was created between our check and creation attempt
 			ch, lookupErr := p.API.GetChannelByName(name, req.TeamID, true)
@@ -1014,7 +1014,7 @@ func (p *Plugin) CreateOrGetChannel(w http.ResponseWriter, r *http.Request) {
 				_ = json.NewEncoder(w).Encode(CreateOrGetChannelResponse{ChannelID: ch.Id})
 				return
 			}
-			
+
 			// If still not found, try creating with auto-suffix
 			suffix := model.NewId()[:6]
 			newName := name
@@ -1022,12 +1022,12 @@ func (p *Plugin) CreateOrGetChannel(w http.ResponseWriter, r *http.Request) {
 				newName = name[:57]
 			}
 			newName = newName + "-" + suffix
-			
+
 			channel.Name = newName
 			if p.API != nil {
 				p.API.LogInfo("Retrying channel creation with suffix", "original_name", name, "new_name", newName)
 			}
-			
+
 			created, appErr = p.API.CreateChannel(channel)
 			if appErr != nil {
 				if p.API != nil {
@@ -1044,7 +1044,7 @@ func (p *Plugin) CreateOrGetChannel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	
+
 	if p.API != nil {
 		p.API.LogDebug("Channel created successfully", "name", channel.Name, "channel_id", created.Id)
 	}
@@ -1540,7 +1540,7 @@ func (p *Plugin) ensureThreadMembershipsForReply(rootPostID, replyAuthorID strin
 	// Using INSERT ... SELECT pattern that works in both PostgreSQL and MySQL
 	// The key is to ensure we have a proper FROM clause (using a dummy table or VALUES)
 	// This pattern is portable and avoids race conditions
-	
+
 	// For MySQL and PostgreSQL, we use INSERT with NOT EXISTS check
 	// Using a VALUES clause as the source for SELECT works in both databases
 	query := `INSERT INTO ThreadMemberships (PostId, UserId, Following, LastViewed, LastUpdated, UnreadMentions)
@@ -1558,7 +1558,7 @@ func (p *Plugin) ensureThreadMembershipsForReply(rootPostID, replyAuthorID strin
 	if result.RowsAffectedError != nil {
 		return result.RowsAffectedError
 	}
-	
+
 	rootAuthorInserted := result.RowsAffected > 0
 
 	// Create threadmembership for reply author (should already exist from CreatePost, but ensure it)
@@ -1570,7 +1570,7 @@ func (p *Plugin) ensureThreadMembershipsForReply(rootPostID, replyAuthorID strin
 	if result.RowsAffectedError != nil {
 		return result.RowsAffectedError
 	}
-	
+
 	replyAuthorInserted := result.RowsAffected > 0
 
 	if rootAuthorInserted || replyAuthorInserted {
