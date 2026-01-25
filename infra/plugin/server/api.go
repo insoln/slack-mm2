@@ -1525,6 +1525,17 @@ func (p *Plugin) ensureThreadMembershipsForReply(rootPostID, replyAuthorID strin
 	// Get the root post to find the root author
 	rootPost, appErr := p.API.GetPost(rootPostID)
 	if appErr != nil {
+		// If the root post does not exist (deleted, invalid ID, or not imported yet),
+		// treat this as a non-fatal condition and skip ensuring threadmembership
+		// for the root author. This avoids repeated failures in out-of-order import
+		// scenarios where the reply arrives before the root post.
+		if appErr.StatusCode == http.StatusNotFound {
+			p.API.LogDebug("Root post not found when ensuring thread memberships for reply; skipping root author",
+				"root_post_id", rootPostID,
+				"reply_author", replyAuthorID,
+				"error", appErr.Error())
+			return nil
+		}
 		return fmt.Errorf("failed to get root post: %w", appErr)
 	}
 
@@ -1537,14 +1548,13 @@ func (p *Plugin) ensureThreadMembershipsForReply(rootPostID, replyAuthorID strin
 	}()
 
 	// Ensure threadmemberships exist for both root author and reply author
-	// Using INSERT ... SELECT pattern that works in both PostgreSQL and MySQL
-	// The key is to ensure we have a proper FROM clause (using a dummy table or VALUES)
-	// This pattern is portable and avoids race conditions
+	// Using an INSERT ... SELECT pattern that works in both PostgreSQL and MySQL
+	// This pattern is portable and avoids race conditions by checking existence before insert
 
 	// For MySQL and PostgreSQL, we use INSERT with NOT EXISTS check
-	// Using a VALUES clause as the source for SELECT works in both databases
+	// Using a direct SELECT (without subquery aliasing) is more reliably portable across both databases
 	query := `INSERT INTO ThreadMemberships (PostId, UserId, Following, LastViewed, LastUpdated, UnreadMentions)
-	          SELECT * FROM (SELECT $1, $2, $3, $4, $5, $6) AS tmp
+	          SELECT $1, $2, $3, $4, $5, $6
 	          WHERE NOT EXISTS (
 	              SELECT 1 FROM ThreadMemberships WHERE PostId = $1 AND UserId = $2
 	          )`
@@ -1561,17 +1571,23 @@ func (p *Plugin) ensureThreadMembershipsForReply(rootPostID, replyAuthorID strin
 
 	rootAuthorInserted := result.RowsAffected > 0
 
-	// Create threadmembership for reply author (should already exist from CreatePost, but ensure it)
-	args = p.makeDriverArgs(rootPostID, replyAuthorID, true, replyCreateAt, replyCreateAt, int64(0))
-	result, err = p.Driver.ConnExec(connID, query, args)
-	if err != nil {
-		return fmt.Errorf("failed to ensure threadmembership for reply author: %w", err)
+	// Create threadmembership for reply author (should already exist from CreatePost, but ensure it).
+	// If the reply author is the same as the root author, the first INSERT already ensured membership,
+	// so we can skip a redundant second INSERT and just mirror the insertion flag.
+	var replyAuthorInserted bool
+	if rootPost.UserId == replyAuthorID {
+		replyAuthorInserted = rootAuthorInserted
+	} else {
+		args = p.makeDriverArgs(rootPostID, replyAuthorID, true, replyCreateAt, replyCreateAt, int64(0))
+		result, err = p.Driver.ConnExec(connID, query, args)
+		if err != nil {
+			return fmt.Errorf("failed to ensure threadmembership for reply author: %w", err)
+		}
+		if result.RowsAffectedError != nil {
+			return result.RowsAffectedError
+		}
+		replyAuthorInserted = result.RowsAffected > 0
 	}
-	if result.RowsAffectedError != nil {
-		return result.RowsAffectedError
-	}
-
-	replyAuthorInserted := result.RowsAffected > 0
 
 	if rootAuthorInserted || replyAuthorInserted {
 		p.API.LogDebug("Ensured threadmemberships for thread participants",

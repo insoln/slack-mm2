@@ -180,6 +180,16 @@ func TestMarkThreadAsReadForAllMembers_NoDriver(t *testing.T) {
 	assert.Nil(t, err)
 }
 
+func TestEnsureThreadMembershipsForReply_NoDriver(t *testing.T) {
+	// Test that the function handles missing driver gracefully
+	plugin := Plugin{}
+
+	err := plugin.ensureThreadMembershipsForReply("root-post-id", "reply-author-id", int64(123456789))
+
+	// Should not error when driver is nil
+	assert.Nil(t, err)
+}
+
 func TestFixedChannelsCache(t *testing.T) {
 	// Test that the cache properly tracks fixed channels
 	// Note: mutex is initialized via zero value, which is valid for sync.Mutex
