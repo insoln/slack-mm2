@@ -1457,7 +1457,7 @@ func (p *Plugin) markThreadAsReadForAllMembers(threadRootPostID string, lastView
 	return nil
 }
 
-// fixInconsistentThreadMemberships fixes thread memberships where lastviewed > lastreplyat but unreadmentions > 0.
+// fixInconsistentThreadMemberships fixes thread memberships where lastviewed >= lastreplyat but unreadmentions > 0.
 // This prevents phantom notification counters after bulk imports.
 // It also sets threadteamid for threads that are missing it (common for DM channels).
 func (p *Plugin) fixInconsistentThreadMemberships(channelID string) error {
