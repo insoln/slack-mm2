@@ -1457,7 +1457,7 @@ func (p *Plugin) markThreadAsReadForAllMembers(threadRootPostID string, lastView
 	return nil
 }
 
-// fixInconsistentThreadMemberships fixes thread memberships where lastviewed > lastreplyat but unreadmentions > 0.
+// fixInconsistentThreadMemberships fixes thread memberships where lastviewed >= lastreplyat but unreadmentions > 0.
 // This prevents phantom notification counters after bulk imports.
 // It also sets threadteamid for threads that are missing it (common for DM channels).
 func (p *Plugin) fixInconsistentThreadMemberships(channelID string) error {
@@ -1484,7 +1484,7 @@ func (p *Plugin) fixInconsistentThreadMemberships(channelID string) error {
 		}
 	}
 
-	// Fix inconsistent thread memberships where lastviewed > lastreplyat but unreadmentions > 0
+	// Fix inconsistent thread memberships where lastviewed >= lastreplyat but unreadmentions > 0
 	// This is the core fix for the phantom notifications issue
 	// Note: This query operates on a per-channel basis to minimize impact.
 	// Uses subquery approach for compatibility with both PostgreSQL and MySQL.
@@ -1499,7 +1499,7 @@ func (p *Plugin) fixInconsistentThreadMemberships(channelID string) error {
 			        FROM Threads t
 			        WHERE t.PostId = ThreadMemberships.PostId
 			          AND t.ChannelId = $1
-			          AND ThreadMemberships.LastViewed > t.LastReplyAt
+			          AND ThreadMemberships.LastViewed >= t.LastReplyAt
 			    )`
 
 	args := p.makeDriverArgs(channelID)

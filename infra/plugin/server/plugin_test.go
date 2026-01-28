@@ -170,6 +170,31 @@ func TestFixInconsistentThreadMemberships_NoDriver(t *testing.T) {
 	assert.Nil(t, err)
 }
 
+func TestFixInconsistentThreadMemberships_BehaviorDocumentation(t *testing.T) {
+	// This test documents the expected behavior of fixInconsistentThreadMemberships.
+	// The function should fix thread memberships where:
+	// - UnreadMentions > 0
+	// - LastViewed >= LastReplyAt (thread is fully read, including the equality case)
+	//
+	// Test scenarios:
+	// 1. LastViewed > LastReplyAt, UnreadMentions > 0 → should be fixed (UnreadMentions = 0)
+	// 2. LastViewed = LastReplyAt, UnreadMentions > 0 → should be fixed (UnreadMentions = 0)
+	// 3. LastViewed < LastReplyAt, UnreadMentions > 0 → should NOT be fixed (has unread replies)
+	// 4. LastViewed >= LastReplyAt, UnreadMentions = 0 → no change needed
+	//
+	// The fix for issue #threadmemberships.unreadmentions changed the condition from
+	// "LastViewed > LastReplyAt" to "LastViewed >= LastReplyAt" to handle the case
+	// where the user has read all replies (LastViewed = LastReplyAt) but UnreadMentions
+	// is incorrectly > 0, which causes phantom notification counters in the UI.
+	//
+	// SQL condition used:
+	// WHERE UnreadMentions > 0
+	//   AND ThreadMemberships.LastViewed >= t.LastReplyAt
+	//
+	// Note: This is a documentation test. Full integration testing requires database setup.
+	t.Log("fixInconsistentThreadMemberships should clear UnreadMentions when LastViewed >= LastReplyAt")
+}
+
 func TestMarkThreadAsReadForAllMembers_NoDriver(t *testing.T) {
 	// Test that the function handles missing driver gracefully
 	plugin := Plugin{}
